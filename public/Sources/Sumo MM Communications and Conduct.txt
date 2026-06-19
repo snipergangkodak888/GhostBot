@@ -1,0 +1,252 @@
+===== PAGE 1 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          Sumo    MM   Communications        & Conduct    Policy                    
+                                                                                    
+                                                                                    
+                                                                                    
+          Purpose                                                                   
+                                                                                    
+          To standardize client communications and internal language around MM and trading operations.
+                                                                                    
+          Goals                                                                     
+                                                                                    
+            -  standardize client communications across MM and launch operations    
+            -  reduce operational and reputational risk from screenshots or leaked conversations
+                                                                                    
+            -  ensure communication remains aligned with supported Sumo functionality and execution
+               behavior                                                             
+                                                                                    
+          Assume all messages can become public.                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          General    Communication      Principles                                  
+                                                                                    
+          Avoid:                                                                    
+                                                                                    
+                                                                                    
+            -  slang implying manipulation                                          
+            -  implying retail investor deception                                   
+            -  promises of price outcomes or chart structure                        
+            -  language implying artificial activity                                
+            -  discussion around “looking organic”                                  
+            -  discussion around avoiding analytics/detection                       
+                                                                                    
+          Communication should remain:                                              
+                                                                                    
+                                                                                    
+            -  trade-execution focused                                              
+            -  operational and technical                                            
+            -  framed around supported Sumo strategy functionality                  
+                                                                                    
+          If a message sounds bad out of context or when screenshotted, rewrite it. 
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          Restricted   Phrasing                                                     
+                                                                                    
+          Avoid directly engaging with phrasing such as:
+
+===== PAGE 2 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+            -  “add/run/increase volume”                                            
+            -  “increase trading activity”                                          
+            -  “make chart bullish”                                                 
+            -  “paint the chart”                                                    
+            -  “shake out holders”                                                  
+            -  “add holders”                                                        
+            -  “farm”                                                               
+                                                                                    
+            -  “wash”                                                               
+            -  “launder”                                                            
+            -  “rug”                                                                
+            -  “suppress price”                                                     
+            -  “bypass screeners”                                                   
+            -  “avoid bubblemaps”                                                   
+            -  “make it look organic”                                               
+            -  “simulate activity”                                                  
+                                                                                    
+            -  “make it seem active”                                                
+            -  “we’ll hold this floor”                                              
+            -  “we’re creating a range”                                             
+            -  “we’ll send it higher”                                               
+            -  “we’ll paint the chart”                                              
+            -  “we’re creating a bull flag”                                         
+            -  “we’ll make it bullish”                                              
+                                                                                    
+                                                                                    
+          Do NOT:                                                                   
+                                                                                    
+            -  directly acknowledge or agree to the request (no direct response thread on TG)
+            -  validate manipulative framing                                        
+            -  give direct “yes” responses                                          
+            -  mirror the same terminology back to the client                       
+                                                                                    
+          Never guarantee price behavior, chart structure, or market outcomes.      
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          What   To  Do  Instead                                                    
+                                                                                    
+                                                                                    
+          If a request is blatant:                                                  
+                                                                                    
+            -  delay response if possible                                           
+            -  redirect conversation                                                
+            -  avoid prolonged written discussion
+
+===== PAGE 3 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          If responding:                                                            
+                                                                                    
+            -  discuss execution, treasury, participation, or supported Sumo strategy behavior only
+            -  keep responses technical and operational                             
+            -  reframe the conversation around strategy configuration and execution behavior
+                                                                                    
+          The preferred approach is to defer, deflect, or redirect.                 
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          Showing    Activity  Instead   of Explaining                              
+                                                                                    
+                                                                                    
+          Prefer demonstrating strategy configuration over debating terminology or intent.
+                                                                                    
+          Instead of debating the wording, send:                                    
+                                                                                    
+            -  active DCA strategies                                                
+            -  counters                                                             
+            -  limit orders                                                         
+                                                                                    
+            -  strategy configurations                                              
+            -  treasury balances (/balance in TG)                                   
+            -  strategy usage metrics                                               
+                                                                                    
+          Then follow with:                                                         
+                                                                                    
+              “We can adjust these as needed depending on your preferred strategy   
+              configuration.”                                                       
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          Translation   Matrix                                                      
+                                                                                    
+                                                                                    
+           Client Phrase                   Internal Translation                     
+                                                                                    
+           Support                         Increase net buy-side participation in range
+                                                                                    
+           Suppress price                  Increase net sell-side participation in range
+                                                                                    
+           Running / increase volume       Increase DCA size, trade frequency, and  
+                                           participation                            
+                                                                                    
+           Increase trading activity       Increase market participation
+
+===== PAGE 4 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+           Client Phrase                   Internal Translation                     
+                                                                                    
+           Farming                         Heavier / more aggressive selling within 
+                                           range                                    
+                                                                                    
+           Token wash / launder            Wallet rotation / wallet redistribution / wallet
+                                           swap                                     
+                                                                                    
+           Rug                             ideally do not engage whatsoever         
+                                                                                    
+                                                                                    
+                                           But can use “exit MM supply position“    
+                                                                                    
+           Add holders                     Increase supply distribution amongst wallets
+                                                                                    
+           Make bullish / “we’ll make it bullish” Stronger buy-side participation   
+                                                                                    
+           Hold level                      Increase treasury deployment near range  
+           Create range                    Increase liquidity concentration near range
+                                                                                    
+           Paint chart / “we’ll paint the chart” Increase market participation      
+                                                                                    
+           Shake out holders               Increase sell-side pressure              
+                                                                                    
+           Avoid bubblemaps / bypass screeners Wallet redistribution strategy       
+                                                                                    
+           Launder funds                   Privacy swap                             
+                                                                                    
+           Organic / natural activity      Continuous strategy-driven participation 
+                                                                                    
+           Simulate / “make it seem active” Increase participation frequency        
+                                                                                    
+           “We’ll send it higher”          Increase buy-side participation          
+                                                                                    
+           “We’re creating a bull flag”    Maintain stronger buy-side participation 
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          Safe  Redirect   Responses                                                
+                                                                                    
+                                                                                    
+          Volume  / Activity                                                        
+                                                                                    
+              “We don’t target volume directly- activity comes from our current trading strategies
+              that are running. We can adjust if needed.”
+
+===== PAGE 5 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          Chart / “Make it bullish”                                                 
+                                                                                    
+              “Our focus is on maintaining treasury liquidity and structure. We can increase
+              buy-side participation during pullbacks.”                             
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          “Make  it look natural”                                                   
+                                                                                    
+              “Strategies already run continuously based on market conditions- we can tune
+              frequency and size if needed though.”                                 
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          Key  Rule                                                                 
+                                                                                    
+                                                                                    
+          If it sounds bad out of context or when screenshotted, don’t say it.

@@ -1,0 +1,924 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { createHmac, randomUUID } from 'crypto'
+import { withDb, getDb } from '@/lib/db'
+import { ObjectId } from '@/lib/object-id'
+
+const TELEGRAM_API = 'https://api.telegram.org'
+const TG_ANALYTICS_API = 'https://tganalytics.xyz'
+
+async function checkAndStoreInitDataReplay(initData: string): Promise<boolean> {
+  try {
+    const params = new URLSearchParams(initData)
+    const hash = params.get('hash')
+    const queryId = params.get('query_id')
+    const authDateRaw = params.get('auth_date')
+
+    if (!hash || !authDateRaw) return false
+
+    const authDateSec = Number(authDateRaw)
+    if (!Number.isFinite(authDateSec)) return false
+
+    const maxAgeSec = Number(process.env.TELEGRAM_INITDATA_MAX_AGE_SEC || 900)
+    const expiresAt = new Date((authDateSec + maxAgeSec) * 1000)
+
+    const db = await getDb()
+    const col = db.collection('telegramInitDataReplay')
+
+    // Reject exact replay of the same signed initData.
+    const existing = await col.findOne({ hash })
+    if (existing) {
+      console.log('⚠️ Replay detected for initData hash')
+      return false
+    }
+
+    await col.insertOne({
+      hash,
+      queryId: queryId || null,
+      authDateSec,
+      expiresAt,
+      createdAt: new Date(),
+    })
+
+    return true
+  } catch (error) {
+    console.error('⚠️ Replay check error:', error)
+    return false
+  }
+}
+
+async function sendAuthEventToTgAnalytics(params: {
+  userId: number
+  isNewUser: boolean
+  isPremium?: boolean
+  locale?: string
+  startParam?: string | null
+}) {
+  const token = process.env.NEXT_PUBLIC_TG_ANALYTICS_TOKEN || ''
+  const appName = process.env.NEXT_PUBLIC_TG_ANALYTICS_APP_NAME || ''
+
+  if (!token || !appName) {
+    return
+  }
+
+  // TG Analytics validates token origin. For server-to-server calls,
+  // provide Origin/Referer explicitly from token payload app_domain.
+  let tokenAppDomain = ''
+  try {
+    const base64Part = token.split('!')[0]
+    if (base64Part) {
+      const payload = JSON.parse(Buffer.from(base64Part, 'base64').toString('utf-8'))
+      if (typeof payload?.app_domain === 'string') {
+        tokenAppDomain = payload.app_domain.trim().replace(/\/$/, '')
+      }
+    }
+  } catch {
+    tokenAppDomain = ''
+  }
+
+  const event = {
+    event_name: 'custom-event',
+    session_id: randomUUID(),
+    user_id: params.userId,
+    app_name: appName,
+    is_premium: !!params.isPremium,
+    locale: params.locale || 'en',
+    platform: 'telegram-webapp',
+    start_param: params.startParam || undefined,
+    client_timestamp: String(Date.now()),
+    custom_data: {
+      auth_event: params.isNewUser ? 'auth_register' : 'auth_login',
+      is_new_user: params.isNewUser,
+      source: 'api/telegram/auth',
+    },
+  }
+
+  try {
+    const headers: Record<string, string> = {
+      'TGA-Auth-Token': token,
+      'Content-Type': 'application/json',
+    }
+
+    if (tokenAppDomain) {
+      headers.Origin = tokenAppDomain
+      headers.Referer = `${tokenAppDomain}/`
+    }
+
+    const res = await fetch(`${TG_ANALYTICS_API}/events`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify([event]),
+    })
+
+    const responseText = await res.text()
+
+    try {
+      const db = await getDb()
+      await db.collection('tgAnalyticsAuthEvents').insertOne({
+        createdAt: new Date(),
+        ok: res.ok,
+        status: res.status,
+        userId: params.userId,
+        authEvent: params.isNewUser ? 'auth_register' : 'auth_login',
+        tokenAppDomain: tokenAppDomain || null,
+        event,
+        responseText: responseText.slice(0, 1500),
+      })
+    } catch (dbLogError) {
+      console.warn('⚠️ Failed to save tgAnalyticsAuthEvents debug log:', dbLogError)
+    }
+
+    if (!res.ok) {
+      console.warn('⚠️ TG Analytics auth event failed:', res.status, responseText)
+    }
+  } catch (error) {
+    try {
+      const db = await getDb()
+      await db.collection('tgAnalyticsAuthEvents').insertOne({
+        createdAt: new Date(),
+        ok: false,
+        status: null,
+        userId: params.userId,
+        authEvent: params.isNewUser ? 'auth_register' : 'auth_login',
+        tokenAppDomain: tokenAppDomain || null,
+        event,
+        responseText: null,
+        transportError: error instanceof Error ? error.message : String(error),
+      })
+    } catch (dbLogError) {
+      console.warn('⚠️ Failed to save tgAnalyticsAuthEvents transport error log:', dbLogError)
+    }
+
+    console.warn('⚠️ TG Analytics auth event error:', error)
+  }
+}
+
+// Fetch user's profile photo URL from Telegram API
+async function fetchProfilePhotoUrl(telegramId: number, token: string): Promise<string | null> {
+  try {
+    // Get user profile photos
+    const photosRes = await fetch(`${TELEGRAM_API}/bot${token}/getUserProfilePhotos?user_id=${telegramId}&limit=1`)
+    const photosData = await photosRes.json()
+    
+    if (!photosData.ok || !photosData.result?.photos?.[0]?.[0]) {
+      return null
+    }
+    
+    // Get the smallest size (first item) for efficiency
+    const fileId = photosData.result.photos[0][0].file_id
+    
+    // Get file path
+    const fileRes = await fetch(`${TELEGRAM_API}/bot${token}/getFile?file_id=${fileId}`)
+    const fileData = await fileRes.json()
+    
+    if (!fileData.ok || !fileData.result?.file_path) {
+      return null
+    }
+    
+    // Return the full URL
+    return `${TELEGRAM_API}/file/bot${token}/${fileData.result.file_path}`
+  } catch (error) {
+    console.error('⚠️ Error fetching profile photo:', error)
+    return null
+  }
+}
+
+// Send welcome message to new user
+async function sendWelcomeMessage(chatId: number, firstName: string) {
+  console.log('🎉 sendWelcomeMessage called for chatId:', chatId, 'firstName:', firstName)
+  try {
+    const token = process.env.TELEGRAM_BOT_TOKEN
+    if (!token) {
+      console.log('⚠️ No TELEGRAM_BOT_TOKEN set, skipping welcome message')
+      return
+    }
+    console.log('✓ Bot token found, length:', token.length)
+
+    // Get own db connection
+    const db = await getDb()
+    
+    // Get startMessage settings
+    const row = await db.collection('settings').findOne({ key: 'startMessage' })
+    console.log('📋 startMessage settings from DB:', JSON.stringify(row?.value || 'NOT FOUND'))
+    const sm: any = row?.value || {}
+
+    // If no message configured, skip
+    if (!sm.text && !sm.mediaEnabled) {
+      console.log('ℹ️ No welcome message configured (no text and no media), skipping')
+      return
+    }
+
+    const prefix = `Hello ${firstName}, `
+    const baseText = typeof sm.text === 'string' ? sm.text : ''
+    const caption = `${prefix}${baseText}`.trim()
+
+    if (!caption) {
+      console.log('ℹ️ Empty welcome message, skipping')
+      return
+    }
+
+    // Build inline keyboard from settings (each button in its own row)
+    const buttons = Array.isArray(sm.inlineButtons) ? sm.inlineButtons : []
+    const inline = buttons
+      .filter((b: any) => b && typeof b.text === 'string' && typeof b.url === 'string' && /^https?:\/\//i.test(b.url))
+      .sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0))
+      .map((b: any) => [{ text: b.text, url: b.url }]) // Each button in its own row
+    const replyMarkup = inline.length ? { inline_keyboard: inline } : undefined
+
+    if (sm.mediaEnabled && sm.fileId) {
+      const cleanedFileId = typeof sm.fileId === 'string' ? sm.fileId.trim() : ''
+      const isVideoPreferred = sm.mediaType === 'video'
+      
+      const tryOrder: Array<{ method: string; field: string }> = isVideoPreferred
+        ? [
+            { method: 'sendVideo', field: 'video' },
+            { method: 'sendAnimation', field: 'animation' },
+            { method: 'sendPhoto', field: 'photo' },
+          ]
+        : [
+            { method: 'sendPhoto', field: 'photo' },
+            { method: 'sendVideo', field: 'video' },
+            { method: 'sendAnimation', field: 'animation' },
+          ]
+
+      let sent = false
+      for (const attempt of tryOrder) {
+        const url = `${TELEGRAM_API}/bot${token}/${attempt.method}`
+        const payload: Record<string, any> = { chat_id: chatId }
+        if (caption) payload.caption = caption
+        if (replyMarkup) payload.reply_markup = JSON.stringify(replyMarkup)
+        payload[attempt.field] = cleanedFileId
+        
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        })
+        
+        if (resp.ok) {
+          console.log('✅ Welcome message sent with media via', attempt.method)
+          sent = true
+          break
+        }
+      }
+
+      // Fallback to text only
+      if (!sent) {
+        const fallbackUrl = `${TELEGRAM_API}/bot${token}/sendMessage`
+        await fetch(fallbackUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chatId, text: caption, ...(replyMarkup ? { reply_markup: JSON.stringify(replyMarkup) } : {}) })
+        })
+        console.log('✅ Welcome message sent as text (media fallback)')
+      }
+    } else {
+      // Text only
+      const url = `${TELEGRAM_API}/bot${token}/sendMessage`
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, text: caption, ...(replyMarkup ? { reply_markup: JSON.stringify(replyMarkup) } : {}) })
+      })
+      
+      if (resp.ok) {
+        console.log('✅ Welcome message sent to new user')
+      } else {
+        console.log('⚠️ Failed to send welcome message:', resp.status)
+      }
+    }
+  } catch (error) {
+    console.error('⚠️ Error sending welcome message:', error)
+    // Don't fail auth if welcome message fails
+  }
+}
+
+// Validate Telegram WebApp initData
+function validateTelegramWebAppData(initData: string, botToken: string): boolean {
+  try {
+    // Log the validation attempt
+    console.log('🔍 Validating initData:', {
+      initDataLength: initData.length,
+      hasHash: initData.includes('hash='),
+      tokenLength: botToken.length,
+    })
+
+    const urlParams = new URLSearchParams(initData)
+    const hash = urlParams.get('hash')
+    const authDateRaw = urlParams.get('auth_date')
+    
+    if (!hash) {
+      console.log('⚠️ No hash found in initData')
+      return false
+    }
+
+    // Check auth_date freshness to reduce replay attacks with stolen initData.
+    // Telegram recommends validating auth_date; defaulting to 15 minutes here.
+    const maxAgeSec = Number(process.env.TELEGRAM_INITDATA_MAX_AGE_SEC || 900)
+    const authDateSec = authDateRaw ? Number(authDateRaw) : NaN
+    if (!Number.isFinite(authDateSec)) {
+      console.log('⚠️ Invalid auth_date in initData:', authDateRaw)
+      return false
+    }
+    const nowSec = Math.floor(Date.now() / 1000)
+    const ageSec = nowSec - authDateSec
+    if (ageSec < -120 || ageSec > maxAgeSec) {
+      console.log('⚠️ initData auth_date outside allowed window:', {
+        authDateSec,
+        nowSec,
+        ageSec,
+        maxAgeSec,
+      })
+      return false
+    }
+    
+    urlParams.delete('hash')
+    
+    // Create data check string
+    const dataCheckArray: string[] = []
+    for (const [key, value] of urlParams.entries()) {
+      dataCheckArray.push(`${key}=${value}`)
+    }
+    dataCheckArray.sort()
+    const dataCheckString = dataCheckArray.join('\n')
+    
+    console.log('📝 Data check string created:', {
+      fields: dataCheckArray.length,
+      firstField: dataCheckArray[0]?.substring(0, 20) + '...',
+    })
+    
+    // Calculate secret key
+    const secretKey = createHmac('sha256', 'WebAppData').update(botToken).digest()
+    
+    // Calculate hash
+    const calculatedHash = createHmac('sha256', secretKey)
+      .update(dataCheckString)
+      .digest('hex')
+    
+    const isValid = calculatedHash === hash
+    console.log('🔐 Validation result:', {
+      isValid,
+      receivedHash: hash.substring(0, 10) + '...',
+      calculatedHash: calculatedHash.substring(0, 10) + '...',
+    })
+    
+    return isValid
+  } catch (error) {
+    console.error('❌ Telegram validation error:', error)
+    return false
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json()
+    const { initData, userData, startParam: frontendStartParam } = body
+    
+    // Log raw request body for debugging
+    console.log('📨 Raw auth request body:', JSON.stringify(body))
+    
+    // Try to extract start_param from multiple sources
+    let startParam = frontendStartParam
+    
+    // Source 1: From initData string
+    if (!startParam && initData) {
+      try {
+        const urlParams = new URLSearchParams(initData)
+        startParam = urlParams.get('start_param') || null
+        if (startParam) {
+          console.log('📎 Extracted start_param from initData:', startParam)
+        }
+      } catch (e) {
+        // Ignore parsing errors
+      }
+    }
+    
+    // Source 2: Check request headers
+    if (!startParam) {
+      const headerStartParam = request.headers.get('x-telegram-start-param') || 
+                               request.headers.get('telegram-web-app-start-param') ||
+                               request.headers.get('x-start-param')
+      if (headerStartParam) {
+        startParam = headerStartParam
+        console.log('📎 Extracted start_param from header:', startParam)
+      }
+    }
+    
+    // Log for debugging
+    console.log('🔐 Auth attempt:', {
+      hasInitData: !!initData,
+      initDataLength: initData?.length || 0,
+      userData: userData?.id,
+      startParam: startParam || 'none',
+      frontendStartParam: frontendStartParam || 'none',
+    })
+    
+    // Get bot token from environment
+    const botToken = process.env.TELEGRAM_BOT_TOKEN
+    
+    if (!botToken) {
+      console.error('❌ TELEGRAM_BOT_TOKEN not configured')
+      return NextResponse.json(
+        { error: 'Telegram bot token not configured', details: 'Environment variable missing' },
+        { status: 500 }
+      )
+    }
+    
+    // Validate initData - always required in production
+    const isDevelopment = process.env.NODE_ENV === 'development'
+    const shouldValidate = initData && initData.length > 0
+    
+    if (shouldValidate) {
+      const isValid = validateTelegramWebAppData(initData, botToken)
+      console.log('🔍 Validation result:', isValid)
+      
+      if (!isValid) {
+        console.log('❌ Validation failed - initData:', initData.substring(0, 100) + '...')
+        return NextResponse.json(
+          { 
+            error: 'Invalid Telegram data', 
+            details: 'Data validation failed. Check Vercel logs for details.',
+            hint: 'Verify bot token matches BotFather'
+          },
+          { status: 401 }
+        )
+      }
+
+      // One-time replay protection for initData in production.
+      if (!isDevelopment) {
+        const replayOk = await checkAndStoreInitDataReplay(initData)
+        if (!replayOk) {
+          return NextResponse.json(
+            {
+              error: 'Invalid Telegram data',
+              details: 'Replay detected or invalid initData proof',
+            },
+            { status: 401 }
+          )
+        }
+      }
+    } else if (!isDevelopment) {
+      console.log('❌ No initData provided in production')
+      return NextResponse.json(
+        { error: 'Authentication required', details: 'initData is required' },
+        { status: 401 }
+      )
+    } else {
+      console.log('⚠️ Development mode - Skipping validation')
+    }
+    
+    // Ensure we have user data
+    if (!userData || !userData.id) {
+      console.error('❌ No user data provided')
+      return NextResponse.json(
+        { error: 'User data missing', details: 'userData.id is required' },
+        { status: 400 }
+      )
+    }
+    
+    // Find or create user in Supabase
+    let user
+    try {
+      user = await withDb(async (db) => {
+        const usersCollection = db.collection('users')
+        
+        console.log('📊 Looking up user:', userData.id)
+        
+        // Find existing user
+        let user = await usersCollection.findOne({ telegramId: userData.id })
+        
+        if (!user) {
+          console.log('➕ Creating new user, startParam:', startParam)
+          
+          // Extract referrer ID if startParam is a referral code
+          let referredBy: number | null = null
+          if (startParam && startParam.startsWith('ref')) {
+            referredBy = parseInt(startParam.replace('ref', ''))
+            // Don't allow self-referral
+            if (referredBy === userData.id) {
+              referredBy = null
+            }
+            console.log('📎 Referrer ID extracted:', referredBy)
+          }
+          
+          // Fetch profile photo from Telegram API for new user
+          let photoUrl = userData.photo_url || ''
+          const botToken = process.env.TELEGRAM_BOT_TOKEN
+          if (botToken) {
+            const freshPhotoUrl = await fetchProfilePhotoUrl(userData.id, botToken)
+            if (freshPhotoUrl) {
+              photoUrl = freshPhotoUrl
+              console.log('📷 Fetched profile photo from Telegram API for new user')
+            }
+          }
+          
+          // Create new user with referral info
+          const newUser = {
+            telegramId: userData.id,
+            firstName: userData.first_name,
+            lastName: userData.last_name || '',
+            username: userData.username || '',
+            languageCode: userData.language_code || 'en',
+            isPremium: userData.is_premium || false,
+            photoUrl: photoUrl,
+            walletAddress: null,
+            walletLinked: false,
+            createdAt: new Date(),
+            lastActive: new Date(),
+            role: 'user',
+            isActive: true,
+            // Store referral info directly in user document
+            referredBy: referredBy,
+            referralCode: startParam || null,
+          }
+          
+          const result = await usersCollection.insertOne(newUser)
+          user = { ...newUser, _id: result.insertedId, _isNewUser: true }
+          console.log('✅ User created:', user._id, 'referredBy:', referredBy)
+          
+          // Initialize user data collections
+          try {
+            // Create or update tokens record (use upsert to avoid duplicate key error)
+            await db.collection('userTokens').updateOne(
+              { telegramId: userData.id },
+              {
+                $setOnInsert: {
+                  userId: user._id,
+                  telegramId: userData.id,
+                  totalTokens: 0,
+                  tokensPerSecond: 0,
+                  createdAt: new Date(),
+                },
+                $set: {
+                  lastUpdated: new Date(),
+                }
+              },
+              { upsert: true }
+            )
+            console.log('✅ Initial tokens created')
+            
+            // Process referral if startParam is provided (new user came via referral link)
+            if (startParam && startParam.startsWith('ref')) {
+              try {
+                const referrerId = parseInt(startParam.replace('ref', ''))
+                
+                console.log('🔗 Processing referral:', { startParam, referrerId, newUserId: userData.id })
+                
+                // Don't allow self-referral
+                if (referrerId !== userData.id) {
+                  // Check if referrer exists
+                  const referrerExists = await db.collection('users').findOne({ telegramId: referrerId })
+                  
+                  if (referrerExists) {
+                    // Check if this user was already referred (prevent duplicate entries)
+                    const existingReferral = await db.collection('referrals').findOne({ referredId: userData.id })
+                    
+                    if (!existingReferral) {
+                      // Get referral settings
+                      const referralSettingsDoc = await db.collection('settings').findOne({ key: 'referralSettings' })
+                      const referralSettings = referralSettingsDoc?.value || { enabled: true, rewardValue: 1 }
+                      
+                      console.log('📋 Referral settings:', referralSettings)
+                      
+                      if (referralSettings.enabled !== false) {
+                        const reward = referralSettings.rewardValue || 1
+                        const now = new Date()
+                        
+                        // Create referral record linking this user to the referrer
+                        const referralResult = await db.collection('referrals').insertOne({
+                          referrerId: referrerId,
+                          referredId: userData.id,
+                          referralCode: startParam,
+                          bonusEarned: reward,
+                          bonusAwarded: true, // Track that bonus was actually given
+                          referredUserActive: true,
+                          createdAt: now,
+                          updatedAt: now,
+                        })
+                        console.log('✅ Referral record created:', referralResult.insertedId)
+                        
+                        // Award spins to referrer (default to spins)
+                        const rewardToken = referralSettings.rewardToken || 'spins'
+                        if (rewardToken === 'spins') {
+                          // Update spinBalance in users collection
+                          const updateResult = await db.collection('users').updateOne(
+                            { telegramId: referrerId },
+                            { $inc: { spinBalance: reward } }
+                          )
+                          console.log('✅ Referral reward: referrer', referrerId, 'earned', reward, 'spins', updateResult)
+                          
+                          // Also update userSpins if exists
+                          await db.collection('userSpins').updateOne(
+                            { telegramId: referrerId },
+                            { 
+                              $inc: { 
+                                available: reward, 
+                                total: reward,
+                                referrals: reward 
+                              },
+                              $set: { updatedAt: now }
+                            },
+                            { upsert: true }
+                          )
+                        } else {
+                          await db.collection('userTokens').updateOne(
+                            { telegramId: referrerId },
+                            { $inc: { totalTokens: reward, referralTokens: reward } },
+                            { upsert: true }
+                          )
+                          console.log('✅ Referral reward: referrer', referrerId, 'earned', reward, 'tokens')
+                        }
+                        
+                        console.log('✅ Referral processed successfully!')
+                      } else {
+                        // Referrals disabled - still create record but don't award bonus
+                        const now = new Date()
+                        await db.collection('referrals').insertOne({
+                          referrerId: referrerId,
+                          referredId: userData.id,
+                          referralCode: startParam,
+                          bonusEarned: 0,
+                          bonusAwarded: false, // No bonus was given
+                          referredUserActive: true,
+                          createdAt: now,
+                          updatedAt: now,
+                        })
+                        console.log('⚠️ Referral recorded but rewards are disabled in settings')
+                      }
+                    } else {
+                      console.log('⚠️ User already has a referrer:', existingReferral.referrerId)
+                    }
+                  } else {
+                    console.log('⚠️ Referrer not found:', referrerId)
+                  }
+                } else {
+                  console.log('⚠️ Self-referral attempt blocked')
+                }
+              } catch (refError) {
+                console.error('⚠️ Error processing referral:', refError)
+                // Don't fail auth if referral processing fails
+              }
+            } else if (startParam) {
+              console.log('⚠️ startParam provided but does not start with "ref":', startParam)
+            } else {
+              console.log('ℹ️ No referral code provided for new user')
+            }
+            
+          } catch (initError) {
+            console.error('⚠️ Error initializing user data:', initError)
+            // Don't fail auth if initialization fails
+          }
+        } else {
+          console.log('🔄 Updating existing user')
+          // Update existing user info including photo URL
+          const updateData: any = {
+            firstName: userData.first_name,
+            lastName: userData.last_name || '',
+            username: userData.username || '',
+            isPremium: userData.is_premium || false,
+            lastActive: new Date(),
+          }
+
+          // Ensure wallet fields exist on older user documents
+          if (typeof user.walletLinked !== 'boolean') {
+            updateData.walletLinked = false
+          }
+          if (typeof user.walletAddress === 'undefined') {
+            updateData.walletAddress = null
+          }
+          
+          // Always fetch fresh profile photo from Telegram API
+          const botToken = process.env.TELEGRAM_BOT_TOKEN
+          if (botToken) {
+            const freshPhotoUrl = await fetchProfilePhotoUrl(userData.id, botToken)
+            if (freshPhotoUrl) {
+              updateData.photoUrl = freshPhotoUrl
+              console.log('📷 Updated photo URL from Telegram API')
+            } else if (userData.photo_url) {
+              // Fallback to userData photo if Telegram API fails
+              updateData.photoUrl = userData.photo_url
+              console.log('📷 Using photo URL from userData')
+            }
+          } else if (userData.photo_url) {
+            updateData.photoUrl = userData.photo_url
+            console.log('📷 Updating photo URL from userData (no bot token)')
+          }
+          
+          await usersCollection.updateOne(
+            { telegramId: userData.id },
+            { $set: updateData }
+          )
+          console.log('✅ User updated:', user._id)
+          
+          // ALSO process referral for existing users who don't have a referrer yet
+          if (startParam && startParam.startsWith('ref')) {
+            try {
+              const referrerId = parseInt(startParam.replace('ref', ''))
+              console.log('🔗 Processing referral for existing user:', { startParam, referrerId, userId: userData.id })
+              
+              // Don't allow self-referral
+              if (referrerId !== userData.id) {
+                // Check if this user already has a referrer
+                const existingReferral = await db.collection('referrals').findOne({ referredId: userData.id })
+                
+                if (!existingReferral) {
+                  // Check if referrer exists
+                  const referrerExists = await db.collection('users').findOne({ telegramId: referrerId })
+                  
+                  if (referrerExists) {
+                    // Get referral settings
+                    const referralSettingsDoc = await db.collection('settings').findOne({ key: 'referralSettings' })
+                    const referralSettings = referralSettingsDoc?.value || { enabled: true, rewardValue: 1 }
+                    
+                    if (referralSettings.enabled !== false) {
+                      const reward = referralSettings.rewardValue || 1
+                      const now = new Date()
+                      
+                      // Create referral record
+                      await db.collection('referrals').insertOne({
+                        referrerId: referrerId,
+                        referredId: userData.id,
+                        referralCode: startParam,
+                        bonusEarned: reward,
+                        bonusAwarded: true, // Track that bonus was actually given
+                        referredUserActive: true,
+                        createdAt: now,
+                        updatedAt: now,
+                      })
+                      
+                      // Award spins to referrer
+                      await db.collection('users').updateOne(
+                        { telegramId: referrerId },
+                        { $inc: { spinBalance: reward } }
+                      )
+                      
+                      // Also update userSpins
+                      await db.collection('userSpins').updateOne(
+                        { telegramId: referrerId },
+                        { 
+                          $inc: { available: reward, total: reward, referrals: reward },
+                          $set: { updatedAt: now }
+                        },
+                        { upsert: true }
+                      )
+                      
+                      console.log('✅ Referral processed for existing user! Referrer', referrerId, 'earned', reward, 'spins')
+                    } else {
+                      // Referrals disabled - still create record but don't award bonus
+                      const now = new Date()
+                      await db.collection('referrals').insertOne({
+                        referrerId: referrerId,
+                        referredId: userData.id,
+                        referralCode: startParam,
+                        bonusEarned: 0,
+                        bonusAwarded: false, // No bonus was given
+                        referredUserActive: true,
+                        createdAt: now,
+                        updatedAt: now,
+                      })
+                      console.log('⚠️ Referral recorded for existing user but rewards are disabled')
+                    }
+                  } else {
+                    console.log('⚠️ Referrer not found:', referrerId)
+                  }
+                } else {
+                  console.log('ℹ️ User already has a referrer:', existingReferral.referrerId)
+                }
+              } else {
+                console.log('⚠️ Self-referral blocked')
+              }
+            } catch (refError) {
+              console.error('⚠️ Error processing referral for existing user:', refError)
+            }
+          }
+        }
+        
+        return user
+      })
+    } catch (dbError: any) {
+      console.error('❌ Database error:', dbError)
+      
+      // Check if it's an SSL error
+      if (dbError.message?.includes('SSL') || dbError.message?.includes('TLS')) {
+        return NextResponse.json(
+          { 
+            error: 'Database connection error',
+            details: 'SSL/TLS error connecting to Supabase. Check your project URL and service role key.',
+            hint: 'Verify SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in your deployment environment'
+          },
+          { status: 500 }
+        )
+      }
+      
+      // Other database errors
+      return NextResponse.json(
+        { 
+          error: 'Database error',
+          details: dbError.message || 'Failed to access database',
+        },
+        { status: 500 }
+      )
+    }
+    
+    // Determine if this is a new user (created in this request)
+    const isNewUser = user._isNewUser === true
+    console.log('📊 isNewUser check:', { _isNewUser: user._isNewUser, isNewUser })
+
+    // Fire custom auth analytics event (non-blocking)
+    void sendAuthEventToTgAnalytics({
+      userId: Number(user.telegramId),
+      isNewUser,
+      isPremium: !!user.isPremium,
+      locale: user.languageCode || userData.language_code || 'en',
+      startParam,
+    })
+    
+    // Create session or JWT token here if needed
+    const response = NextResponse.json({
+      success: true,
+      isNewUser,
+      user: {
+        id: user._id,
+        telegramId: user.telegramId,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        username: user.username,
+        isPremium: user.isPremium,
+        walletAddress: user.walletAddress || null,
+        walletLinked: user.walletLinked === true,
+      },
+    })
+    
+    console.log('✅ Authentication successful for user:', user._id)
+    
+    // Generate session token
+    const sessionToken = `session_${user._id}_${Date.now()}_${Math.random().toString(36).substring(7)}`
+    
+    // Set session cookies with proper settings for Telegram WebApp
+    // Note: Telegram WebApp needs 'none' sameSite since it's in iframe/different context
+    const cookieOptions = {
+      httpOnly: true,
+      secure: true, // Always true for production (Telegram requires HTTPS)
+      sameSite: 'none' as const, // Required for cross-origin (Telegram iframe)
+      maxAge: 60 * 60 * 24 * 7, // 7 days
+      path: '/',
+    }
+    
+    response.cookies.set('telegram_user_id', user._id.toString(), cookieOptions)
+    response.cookies.set('telegram_session', sessionToken, cookieOptions)
+    
+    console.log('🍪 Cookies set:', {
+      telegram_user_id: user._id.toString(),
+      telegram_session: sessionToken.substring(0, 20) + '...',
+      sameSite: 'none',
+      secure: true,
+    })
+    
+    return response
+  } catch (error: any) {
+    console.error('❌ Telegram auth error:', error)
+    return NextResponse.json(
+      { 
+        error: 'Authentication failed',
+        details: error.message || 'Unknown error',
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      },
+      { status: 500 }
+    )
+  }
+}
+
+// Get current user from session
+export async function GET(request: NextRequest) {
+  try {
+    const userId = request.cookies.get('telegram_user_id')?.value
+    
+    if (!userId) {
+      return NextResponse.json({ user: null })
+    }
+    
+    const user = await withDb(async (db) => {
+      const usersCollection = db.collection('users')
+      return await usersCollection.findOne({ _id: new ObjectId(userId) })
+    })
+    
+    if (!user) {
+      return NextResponse.json({ user: null })
+    }
+    
+    return NextResponse.json({
+      user: {
+        id: user._id,
+        telegramId: user.telegramId,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        username: user.username,
+        isPremium: user.isPremium,
+        walletAddress: user.walletAddress || null,
+        walletLinked: user.walletLinked === true,
+      },
+    })
+  } catch (error) {
+    console.error('Get user error:', error)
+    return NextResponse.json({ user: null })
+  }
+}

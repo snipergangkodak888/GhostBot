@@ -1,0 +1,164 @@
+export const MAX_LEVEL = 99
+export const MEDALS_PER_LEVEL = 10
+
+export interface LevelProgressInfo {
+  level: number
+  medals: number
+  currentLevelMin: number
+  nextLevelTarget: number
+  progressPercent: number
+  medalsToNext: number
+  badgePath: string
+}
+
+/** Maps level number → Telegram file-ID folder name inside public/images/Level_Badges/ */
+const BADGE_FOLDER: Record<number, string> = {
+  1: 'CAACAgQAAxUAAWm1isZa2XPD8GV-Qw18acZCe3NdAAIeGwACW_l4ULR_Gc_BN8PpOgQ',
+  2: 'CAACAgQAAxUAAWm1isbQM7_rRsdRgv9JP5fs1IIwAAKoFwACroZ5UBZboe-l_a79OgQ',
+  3: 'CAACAgQAAxUAAWm1isb54guLVd54CvX1fyAuTRL7AAJyHwACeERwUKI6BMNGYtnHOgQ',
+  4: 'CAACAgQAAxUAAWm1isYdCCmZHxnFm_j8e9k0BQw5AALLGQACGKp5UMJWu8mYP9IwOgQ',
+  5: 'CAACAgQAAxUAAWm1isbUTW-EEzy97_bK13e5rJQQAAJMHQACc0Z4UMqo1SHpqcpUOgQ',
+  6: 'CAACAgQAAxUAAWm1isbB_jtxg435T3zm71NNJ9dzAALfGgACOq95UP38tcsV1yebOgQ',
+  7: 'CAACAgQAAxUAAWm1isbFwXmnoQVt1S6s0iHes2cdAAJxGgAC8a9wUPZhDsdTDsRUOgQ',
+  8: 'CAACAgQAAxUAAWm1isaMUpaAjsMeRi8zBWr4n39GAAIhHgACCsV5UMMBxHqSVE3UOgQ',
+  9: 'CAACAgQAAxUAAWm1isYDRC-pcKWzxkLo9Ioo7kojAAK-GwACxu5xUOLLxvNPreklOgQ',
+  10: 'CAACAgQAAxUAAWm1isbwZ8HyWU3-9_Uzf8NIiPZQAAK3GgACSr95UL62uGjDJTufOgQ',
+  11: 'CAACAgQAAxUAAWm1isZq-MqzI2EzvbL-lCY_sLndAAJnHQACOGVwUKuwrovu6lYMOgQ',
+  12: 'CAACAgQAAxUAAWm1isbnFf_dEgxv0JrWVaN9XgcaAALMGwACaH1wUAuVkcNQxejHOgQ',
+  13: 'CAACAgQAAxUAAWm1isbb2di6wl6KraMw8XqlwuyyAAIGGQAClwp4UGpRt41okFZYOgQ',
+  14: 'CAACAgQAAxUAAWm1isZazS13OBh9UONe88PJZlefAAKQGwAC6_h4UAGipU48CwABdToE',
+  15: 'CAACAgQAAxUAAWm1isbrxAPetgOQk8BTCluP4XtDAAJiHAAC1C14UDzZgGd-8TCLOgQ',
+  16: 'CAACAgQAAxUAAWm1isb3GqmXP5bOuyzODSi6DPF1AAKaHAACMIZ4UOU4rM2kusKDOgQ',
+  17: 'CAACAgQAAxUAAWm1isYfCsujEgoeBfc-R5tj0Hi5AAK5HwACUKhwUOysJ9hvuSUIOgQ',
+  18: 'CAACAgQAAxUAAWm1isYPXQca-Tzi12u2TvoKXfGMAAL9GgACl8x5UK4-3usAASinnzoE',
+  19: 'CAACAgQAAxUAAWm1isYuATzjTi2hKT3lJjpylFFwAAJTGwACEOl5UJ6WNXrTYacCOgQ',
+  20: 'CAACAgQAAxUAAWm1isYxdEXYbpYAAekXk8bfDfzxEAACGhkAAs7ScFBIchBZyb5QHjoE',
+  21: 'CAACAgQAAxUAAWm1isbj-qCmL5LIOpZKz_f1lUXUAALAGQACaE15ULHN4MZ-9kXROgQ',
+  22: 'CAACAgQAAxUAAWm1isZNobAt2AXWSUoB3v5I2G28AAIjGAAC-Wh5UI0xxbbhbrTjOgQ',
+  23: 'CAACAgQAAxUAAWm1isYc88MSwaWJRdDptoia9BP6AALoGAAC_354UKxN7am1sS6COgQ',
+  24: 'CAACAgQAAxUAAWm1isauGU-CePSkxjv7-wY6CiZaAAI0GQACaLt4UF56u8jdpB0tOgQ',
+  25: 'CAACAgQAAxUAAWm1isZ50iSYwNK0auJ8jrpV_r9TAALVGAACJmJ4UPXygzM96aeJOgQ',
+  26: 'CAACAgQAAxUAAWm1isaPp4U1mBkolTQTg_CfmtmAAALGHQACRPZ5UJvbktl49WseOgQ',
+  27: 'CAACAgQAAxUAAWm1isbmIt0nWWj1w1QzPkpZvcqtAAJMGgAC_fB4UI-QiLFzXsolOgQ',
+  28: 'CAACAgQAAxUAAWm1isas3cPkXWk12UAk9891H55eAAJzFwACEgABeFA8HdiTRKwGqzoE',
+  29: 'CAACAgQAAxUAAWm1isak08-ZJ9q5pVdMosmlWeJ6AAJjGAACjMh5UAzGqgbiAgABYDoE',
+  30: 'CAACAgQAAxUAAWm1isaG0a0mEp_8xe4wRX6QGVCEAAL2GQACOASBUAkXozIdxYdCOgQ',
+  31: 'CAACAgQAAxUAAWm1isYVJ5aSrm_y-r3atDOimpH2AAIxHgAClZZ4UF_jqFXy2gGKOgQ',
+  32: 'CAACAgQAAxUAAWm1isZO3ZoC28nouRwweKIjxSL9AAKeGQACEXJ4UPnoZ7waZ6bWOgQ',
+  33: 'CAACAgQAAxUAAWm1isatE711xnWodH1pMOr7QXAIAAITGwACC7B5UOKdu9gPHqcQOgQ',
+  34: 'CAACAgQAAxUAAWm1isYYUU9mrouJUPoqdE9QSchUAAI5GQACkk95UMhZo2e1eMN-OgQ',
+  35: 'CAACAgQAAxUAAWm1isa0Nqg2tSED6y92t1o9RwFEAAJJGQACPCt4UHPcJeVr4noNOgQ',
+  36: 'CAACAgQAAxUAAWm1isaIP6PeE9fwSFe13mU-qZozAAKZHwACWTl4UCugf75AL1Y_OgQ',
+  37: 'CAACAgQAAxUAAWm1isbEc0SHyKwiWAxhcBFD8F4mAAJLHAACpc55UK9q7qqiIvnQOgQ',
+  38: 'CAACAgQAAxUAAWm1isayqCYNJowssw1Zp21QOA9NAAJBGgACNNh4UJ7tDyHg9isoOgQ',
+  39: 'CAACAgQAAxUAAWm1isbV61uUSsPDshHrYauMjl07AAKmFwACBkiAULgPKTHA_Yv8OgQ',
+  40: 'CAACAgQAAxUAAWm1isZ8CuZQe32Sat4odtVIPz8SAALXGwACGJx4ULmNULyrtL2DOgQ',
+  41: 'CAACAgQAAxUAAWm1isbPbItRyA4lRRyBoFZ_ORO8AAI7GwACiYZ4UNgvMAy14VYzOgQ',
+  42: 'CAACAgQAAxUAAWm1isa9mAAB38fnK2F1t6T_8sa6owACOR4AAhL7eFA92RA5H-2mJzoE',
+  43: 'CAACAgQAAxUAAWm1isbd96E4m_skCDqh0gbkP6VhAAIzHAACIGZ5UFc9y2-85KCSOgQ',
+  44: 'CAACAgQAAxUAAWm1isbdHQZCa0m5IHCFUdaSxPQ3AALRHQACYU55UIl1w5HTKS-6OgQ',
+  45: 'CAACAgQAAxUAAWm1isbokCIEDngYOQZcqHB64QNVAAJkHAACNTN5UBPFAwebJd0eOgQ',
+  46: 'CAACAgQAAxUAAWm1isY8OQgOH2AmvBk8SmP1oZrCAAK8KAACOYd4UJXNi961tx1pOgQ',
+  47: 'CAACAgQAAxUAAWm1isarkRC0IXJhmfH4hx3-zdEFAALdGAACTdqBUDlVV3U5K3Y7OgQ',
+  48: 'CAACAgQAAxUAAWm1isardzsubz4S4_MsktaQe41kAAL2GQACQKh4UMbZZ9OBTHFLOgQ',
+  49: 'CAACAgQAAxUAAWm1isYKLQf-29wIOcg5ZJECE1hlAALKGAAC7vV5UGdUXMsi1ODvOgQ',
+  50: 'CAACAgQAAxUAAWm1isZwWE862AI_1hnPxuCe4SVxAAIhGQAC6PGBUPDZYitNmbb7OgQ',
+  51: 'CAACAgQAAxUAAWm1isaEcq6l2FMCkeG9kPPGmWTOAALxGgAC1-yBULbzoMLrKtGdOgQ',
+  52: 'CAACAgQAAxUAAWm1isayKEzbGKIhKijQxSKTck8gAAJ-GgAC_N14UO3U-4vXo7_XOgQ',
+  53: 'CAACAgQAAxUAAWm1isY3PTeK36bRtGIpGQgag07VAAJDGAACu8l4UMOlGlRFF9EEOgQ',
+  54: 'CAACAgQAAxUAAWm1isZUomMX7uQvf70nEr4yI5ueAAK5GgACyWh5UIIi-UvLltxcOgQ',
+  55: 'CAACAgQAAxUAAWm1isbWS87__p_5Fx5O9Esp8de2AAIjGQAC0q94UGW6crxHDipUOgQ',
+  56: 'CAACAgQAAxUAAWm1isbosW3_jNkcIK1-o6RLyW4cAAJFHQAC-N54UNWTYn4UcxnAOgQ',
+  57: 'CAACAgQAAxUAAWm1isZLvtt_aq17kQABir-srExsoQAC7R8AAtLKeVAiq3Fa_njwczoE',
+  58: 'CAACAgQAAxUAAWm1isYpApQioXuPTNHLeRYIrlydAAJiKQACWwABeFAP95QKuDVUbjoE',
+  59: 'CAACAgQAAxUAAWm1isYUNG43dhqy12zAkGwUtzLzAALpGAACYZ2BULBOSldTffpNOgQ',
+  60: 'CAACAgQAAxUAAWm1isYrcaq7WC5NsmStUmsJo-4LAAIlHQACNIyBUCXbBjozdSKnOgQ',
+  61: 'CAACAgQAAxUAAWm1isbaVKHoJBh-JpVMUGfx-swXAAIyGQACEpN4UAro61OmfHIyOgQ',
+  62: 'CAACAgQAAxUAAWm1isZDUj6YklKchmcLZCrw6OJ4AAKhHQACgBx5ULVR0iPSkg8yOgQ',
+  63: 'CAACAgQAAxUAAWm1isYjjkGCERke28uHilXj2dY0AAJ7GQACAk94UCFdRcwJCC39OgQ',
+  64: 'CAACAgQAAxUAAWm1isZ_PZMbF9LW_pgw3-lIIpLdAAInHgACuHp4UPZ61h3UIrsEOgQ',
+  65: 'CAACAgQAAxUAAWm1isb5NLVojA00sHJ6M1wkZ2nQAAI5FwACegp5UP4U-KODV1UROgQ',
+  66: 'CAACAgQAAxUAAWm1isaQNp1HrLFqOvifLzIRtndNAAJ-HAACZwR5UFQnIqb42kzcOgQ',
+  67: 'CAACAgQAAxUAAWm1isYD7qCfO_kpKSnIoaXb2W7yAAIRGwACokt4UIktbk1sPcBUOgQ',
+  68: 'CAACAgQAAxUAAWm1isaRk6UpMPh6LLT1bG4s_NzPAAL-HAACJB94UKGa4vI28BJlOgQ',
+  69: 'CAACAgQAAxUAAWm1isZQ35GFligqbXMxSdgpqC7CAAKCHgACh7KAUHb8qmDZNjo3OgQ',
+  70: 'CAACAgQAAxUAAWm1isaZdGER9wAB22NWVgna5sPS5wAC4i4AAlfTeVD8rCG9Ic6C1joE',
+  71: 'CAACAgQAAxUAAWm1isbAIvPf13QRgj-0KMRxIrZyAALMHAAC0LJ5UEhejMWRIvMpOgQ',
+  72: 'CAACAgQAAxUAAWm1isY_h6oE4QGGmwgOZ3OEvXbyAALZGwACH814UAjVePMfp6aYOgQ',
+  73: 'CAACAgQAAxUAAWm1isbefAABjVZfHdXu7x-OyRPzvgAC-xkAAoWIeFDAwIAaN-Q-rToE',
+  74: 'CAACAgQAAxUAAWm1isZtS4pU8mPNv8SFomL-lPC1AALTGQAC2L95UOkmYeWbAdfoOgQ',
+  75: 'CAACAgQAAxUAAWm1isbLi9qiiiPYetdCclesn1L6AAL6GgACK-J5UFiD9sMPNyhzOgQ',
+  76: 'CAACAgQAAxUAAWm1isZoCaMrkX3QXjK2mnjuXUR5AAKyGQAC-BB5UIa508vCW_rXOgQ',
+  77: 'CAACAgQAAxUAAWm1isY4YT54DjABZ56UwzaQdgwEAAKqFgACyrWBULwIwVNTSz6pOgQ',
+  78: 'CAACAgQAAxUAAWm1isavzhsvw3MAAalhR2-XgexwhAACsS4AAuiyeFAnJZMmk1GRLjoE',
+  79: 'CAACAgQAAxUAAWm1isbSVyP666rpJxWvjHY4tpQCAAILGwACug14UP9SDpzAI4f4OgQ',
+  80: 'CAACAgQAAxUAAWm1isaalqfGVRkpBsNk9GgLRzmCAAJbHgACWkR5UK8b3izVoh6hOgQ',
+  81: 'CAACAgQAAxUAAWm1isb4Uvivxmh6uh1kKmPdQ0X0AAILGQACPVJ5UHF4A0vZlBMUOgQ',
+  82: 'CAACAgQAAxUAAWm1isapC6SND_2IqYaubUWQ-WXiAAJ3HQACFnh5UCen2epnummYOgQ',
+  83: 'CAACAgQAAxUAAWm1isaUTAZ_OzCdl5oJ4HsLEazJAAKnHgAC8mJ4UMpcl62962qlOgQ',
+  84: 'CAACAgQAAxUAAWm1isajbxGpqStp3YcOpklTpzLpAAK2GAAC-1p4UBVUFIqXLFGZOgQ',
+  85: 'CAACAgQAAxUAAWm1isaXGxfSmlECQeNL8j6NEchlAAJ-GQACJat4UFDHZQcK7Dj6OgQ',
+  86: 'CAACAgQAAxUAAWm1isZsLWjQON2LiBgd9ApqaP_-AAL6GQACKUN4UC3WiYSmJlZjOgQ',
+  87: 'CAACAgQAAxUAAWm1isYHmoS0jwsUQXpkVSl5qRxqAAKEHAACydyBUH_Aqo0DTG6vOgQ',
+  88: 'CAACAgQAAxUAAWm1isZAw7Y81MkOEQxRZGFQM6dMAAIdGwACFt55UANjMD2irkoPOgQ',
+  89: 'CAACAgQAAxUAAWm1isZ-oFsTh753KgkZM1thNq_8AALAGAACl2N4UAo6fsyVAvLkOgQ',
+  90: 'CAACAgQAAxUAAWm1isbxKXzPXwO37fMMa0SYi8DeAAK4GwAC7KZ5UPHvmHcqvbIaOgQ',
+  91: 'CAACAgQAAxUAAWm1isb3sY4cgBokmeotV-kD_AABrAACYxwAApqBeVBN_nwFgrmt0ToE',
+  92: 'CAACAgQAAxUAAWm1isaK-UM6O3LsWzLUZhKEcBHvAALJHQACRzJ4UHWbDHdCN8QIOgQ',
+  93: 'CAACAgQAAxUAAWm1isZAXGiRAAEEuKndqdcsJKfMMwACQB0AAv4feFBWBvhVo5LmgDoE',
+  94: 'CAACAgQAAxUAAWm1isZGeOhZobMI0dwWoiwiCR1WAAL5HAACMYZ5UH3K0Z8pIbsJOgQ',
+  95: 'CAACAgQAAxUAAWm1isaa9DfQO6redN4rPQMcugv2AAJ0HAACwHV4UKwv8IrIOFWKOgQ',
+  96: 'CAACAgQAAxUAAWm1isbmPKh4SA1pm8p0FoVWXIr-AAKyHAACjNJ5UOVquJ8_aV0eOgQ',
+  97: 'CAACAgQAAxUAAWm1isYlUzkg6zcn-ocMxVV5-y8pAAIlGgACOb54UB28XkvB2wkKOgQ',
+  98: 'CAACAgQAAxUAAWm1isbduMYWlSpTsJ0_l5vXai8IAAIMGgAC5I94UJ4cPe2pMsIBOgQ',
+  99: 'CAACAgQAAxUAAWm1isYuWxOPEQXsq2JLP6JCX-ZnAAKWGAAC0wN5UC_RsO48SbFLOgQ',
+}
+
+function getBadgePath(level: number): string {
+  const folder = BADGE_FOLDER[level]
+  if (folder) return `/images/Level_Badges/${folder}/${folder}.png`
+  return `/images/Level_Badges/${BADGE_FOLDER[1]}/${BADGE_FOLDER[1]}.png`
+}
+
+export function getLevelFromMedals(rawMedals: number): number {
+  const medals = Math.max(0, Number(rawMedals) || 0)
+  const computed = Math.floor(medals / MEDALS_PER_LEVEL)
+  return Math.max(1, Math.min(MAX_LEVEL, computed))
+}
+
+export function getLevelThreshold(level: number): number {
+  const safeLevel = Math.max(1, Math.min(MAX_LEVEL, Math.floor(level || 1)))
+  return safeLevel === 1 ? 0 : safeLevel * MEDALS_PER_LEVEL
+}
+
+export function getNextLevelThreshold(level: number): number {
+  const safeLevel = Math.max(1, Math.min(MAX_LEVEL, Math.floor(level || 1)))
+  if (safeLevel >= MAX_LEVEL) return MAX_LEVEL * MEDALS_PER_LEVEL
+  return (safeLevel + 1) * MEDALS_PER_LEVEL
+}
+
+export function getLevelProgress(rawMedals: number): LevelProgressInfo {
+  const medals = Math.max(0, Number(rawMedals) || 0)
+  const level = getLevelFromMedals(medals)
+  const currentLevelMin = getLevelThreshold(level)
+  const nextLevelTarget = getNextLevelThreshold(level)
+
+  let progressPercent = 100
+  let medalsToNext = 0
+
+  if (level < MAX_LEVEL) {
+    const range = Math.max(1, nextLevelTarget - currentLevelMin)
+    progressPercent = Math.max(0, Math.min(100, ((medals - currentLevelMin) / range) * 100))
+    medalsToNext = Math.max(0, nextLevelTarget - medals)
+  }
+
+  return {
+    level,
+    medals,
+    currentLevelMin,
+    nextLevelTarget,
+    progressPercent,
+    medalsToNext,
+    badgePath: getBadgePath(level),
+  }
+}

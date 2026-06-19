@@ -1,0 +1,1690 @@
+===== PAGE 1 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                           SUMO            BIBLE                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                         Market  Making Operations  Manual                          
+                                                                                    
+                                                                                    
+                                                                                    
+                                      Version 1.3                                   
+                                                                                    
+                                     January 2026
+
+===== PAGE 2 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          Table  of Contents                                                        
+                                                                                    
+                                                                                    
+                                                                                    
+          PART I: FOUNDATIONS                                                       
+            1. Overview & Team Roles                                                
+                                                                                    
+            2. Security Philosophy                                                  
+            3. Rules & Red Lines                                                    
+            4. Fee Structure & Revenue Model                                        
+                                                                                    
+            5. Incident Response Protocol                                           
+                                                                                    
+                                                                                    
+          PART II: CLIENT LIFECYCLE                                                 
+            6. Phase 1: Business Development                                        
+                                                                                    
+            7. Phase 2: Launch Preparation                                          
+            8. Phase 3: Launch Execution                                            
+                                                                                    
+            9. Phase 4: Active Trading                                              
+            10. Phase 5: Cashout & Offboarding                                      
+                                                                                    
+                                                                                    
+          PART III: REFERENCE MODULES                                               
+                                                                                    
+            11. Trading Software (Peanuts) Guide                                    
+            12. Bot Configuration Reference                                         
+            13. Client Communications Templates                                     
+                                                                                    
+            14. Trader Shift Protocol                                               
+            15. Bot Commands Quick Reference                                        
+                                                                                    
+                                                                                    
+          PART IV: QUICK REFERENCE                                                  
+                                                                                    
+            16. Checklists
+
+===== PAGE 3 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                              PART  I: FOUNDATIONS                                  
+                                                                                    
+                                                                                    
+          1. Overview   &  Team   Roles                                             
+                                                                                    
+          What SUMO   Does                                                          
+                                                                                    
+          SUMO provides full-service dex market making for token launches on Solana. Our
+          services include:                                                         
+                                                                                    
+            •  Token launch and deployment                                          
+            •  Supply control through strategic accumulation                        
+            •  24/7 automated trading bot management                                
+            •  Manual trading and chart management                                  
+            •  Client dashboard and analytics                                       
+                                                                                    
+                                                                                    
+          Team  Roles                                                               
+                                                                                    
+           Team Member   Responsibilities                                           
+                                                                                    
+           Mawr          Business development, client relations, sales              
+                                                                                    
+           Kodak         Operations/systems, trade floor management, dashboard setup,
+                         analytics, client communications                           
+           Lee           Bundle execution, wash process, technical operations, collateral
+                                                                                    
+                         management                                                 
+           Jam           Trading software setup, bot management, balance tracking,  
+                         manual trading, client communication, treasury growth and chart
+                         strategy comms/organization                                
+                                                                                    
+                                                                                    
+                                                                                    
+          Key Principles                                                            
+                                                                                    
+            •  Everyone should have a narrow set of responsibilities and never feel 
+               overwhelmed.                                                         
+            •  The more we can set exact expectations with clients, the better.     
+            •  Client comms speed and urgency matter - always.
+
+===== PAGE 4 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          2. Security  Philosophy                                                   
+                                                                                    
+          Why  Intermediary Wallets Exist                                           
+                                                                                    
+          Intermediary wallets create a security checkpoint between treasury funds and final
+          destination:                                                              
+                                                                                    
+                                                                                    
+                                                                                    
+            •  Obfuscates direct exposure of treasury wallet addresses to clients   
+            •  Creates audit trail for every outbound transaction                   
+            •  Allows verification step before funds leave our control              
+            •  Limits blast radius if a client wallet is compromised or incorrect   
+                                                                                    
+                                                                                    
+          PRINCIPLE: Never send large amounts directly from treasury to external wallets.
+          Always route through intermediary.                                        
+                                                                                    
+                                                                                    
+                                                                                    
+          Why  Test Transactions Are Mandatory                                      
+                                                                                    
+          Test TXs catch mistakes before they become catastrophic:                  
+                                                                                    
+                                                                                    
+            •  Wrong wallet address = small loss, not total loss                    
+            •  Network issues get detected on small amounts                         
+            •  Client can confirm receipt before full transfer                      
+            •  Creates clear handoff point with client acknowledgment               
+                                                                                    
+                                                                                    
+          PRINCIPLE: The 2 minutes spent on a test TX can save hours of panic and potentially
+          unrecoverable funds.                                                      
+                                                                                    
+                                                                                    
+                                                                                    
+          Why  Private Key Handling Is Strict                                       
+                                                                                    
+          PKs are the master keys to wallets. Leaked PKs = total loss:              
+                                                                                    
+                                                                                    
+            •  Group chats can be screenshotted, forwarded, or hacked               
+            •  Not everyone in a group chat should have wallet access               
+            •  Once a PK is exposed, there's no way to know if it's been copied     
+            •  Only the decision maker should receive PKs - verify identity first   
+                                                                                    
+                                                                                    
+          PRINCIPLE: Treat PKs like nuclear launch codes. Private DM to verified decision
+          maker. Never in groups.
+
+===== PAGE 5 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          Why  Starting Balance Must Be Pinned                                      
+                                                                                    
+          The starting balance is the baseline for ALL fee calculations:            
+                                                                                    
+                                                                                    
+            •  Determines what counts as profit vs. return of principal             
+            •  Client disputes often come from unclear starting points              
+            •  Pinned message creates undeniable record both parties can reference  
+            •  Prevents 'he said / she said' situations at cashout                  
+                                                                                    
+                                                                                    
+          Re-Fill Clause                                                            
+                                                                                    
+          When additional funds are injected into MM after the initial starting balance:
+            •  Document each injection with date, amount, and source in the spreadsheet
+            •  Pin updated total balance in MM chat after each re-fill              
+            •  Re-fills add to the principal baseline (not treated as profit)       
+            •  At cashout: Total Principal = Starting Balance + All Re-Fills        
+                                                                                    
+                                                                                    
+          PRINCIPLE: If it's not communicated or pinned, it didn't happen. Pin starting balance
+          immediately after launch and dashboard setup.
+
+===== PAGE 6 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          3. Rules  &  Red  Lines                                                   
+                                                                                    
+          These are absolute rules. No exceptions. No judgment calls. Violating these puts client
+          funds, team reputation, and potentially legal standing at risk.           
+                                                                                    
+                                                                                    
+                                                                                    
+          Wallet & Key Security                                                     
+                                                                                    
+                                                                                    
+                                                                                    
+              NEVER send private keys in group chats - Private DM to verified decision
+           maker ONLY                                                               
+              NEVER import or trade from the Deployer wallet unless doing final cashout
+                                                                                    
+              NEVER send large transfers without test TX first                      
+              NEVER share treasury wallet addresses with clients - Use intermediary 
+           wallets                                                                  
+                                                                                    
+                                                                                    
+                                                                                    
+          Trading Operations                                                        
+                                                                                    
+                                                                                    
+                                                                                    
+              NEVER leave newly injected treasury liquidity in a chart for over an hour if
+           client is at a loss - 15-30 min max                                      
+              NEVER counter-trade our own wallets - Add all tertiary wallets to peanuts
+                                                                                    
+           black list                                                               
+              NEVER activate Peanuts profiles unless ready - They charge on activation
+              NEVER let bots run unmonitored for extended periods - Check every 15 min
+           minimum                                                                  
+                                                                                    
+              NEVER sell below bundle price when clipping supply into launch volume 
+                                                                                    
+                                                                                    
+                                                                                    
+          Client & Financial                                                        
+                                                                                    
+                                                                                    
+                                                                                    
+              NEVER calculate fees without subtracting starting balance first       
+              NEVER skip pinning the starting balance                               
+                                                                                    
+              NEVER process cashout without client confirming test TX - Wait for explicit
+           confirmation                                                             
+              NEVER promise specific returns or timelines, we control strategy execution,
+           not the market or organic volume
+
+===== PAGE 7 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          Communication                                                             
+                                                                                    
+                                                                                    
+                                                                                    
+              NEVER go offline without notifying client and documenting bot state   
+              NEVER ignore client messages for more than 5 minutes during active    
+           trading                                                                  
+                                                                                    
+              NEVER discuss one client's specifics with another client              
+                                                                                    
+                                                                                    
+           → See: Section 2: Security Philosophy — for the reasoning behind these rules
+
+===== PAGE 8 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          4. Fee  Structure  &  Revenue    Model                                    
+                                                                                    
+          Daily Minimum Fees                                                        
+                                                                                    
+                                                                                    
+           Service Level                         Daily Minimum                      
+           Launch Day (includes MM + Dev/Launch) $5,000/Day + 1% of Token           
+                                                 Supply                             
+                                                                                    
+           24/7 Live Trading Coverage            $850/Day                           
+                                                                                    
+                                                                                    
+          Launch Day Pricing Breakdown                                              
+                                                                                    
+          The $5K Launch Day fee is split as follows (useful for pricing discounts):
+            •  60% Launch Income ($3,000) — Dev/deployment, bundle execution, wash  
+               process                                                              
+            •  40% MM Income ($2,000) — Dashboard setup, bot configuration, day 1 trading
+          This breakdown allows for targeted discounts without reducing each team’s revenue
+          disproportionately.                                                       
+                                                                                    
+                                                                                    
+                                                                                    
+          Liquidation Fees                                                          
+                                                                                    
+           Fee Type                              Amount                             
+                                                                                    
+           Cashed-Out Token Liquidations         10%                                
+                                                                                    
+                                                                                    
+          The Core Fee Rule                                                         
+                                                                                    
+          RULE: 10% of liquidations IN EXCESS OF STARTING BALANCE (initial collateral +
+          any re-fills) OR the Daily Minimum - whichever is GREATER on a given day. 
+                                                                                    
+          Fee Calculation Formula:                                                  
+                                                                                    
+          Profit = Final Balance - Starting Balance (initial + re-fills)            
+                                                                                    
+          Liquidation Fee = 10% of Profit (only if profit exists)                   
+                                                                                    
+          Final Fee = MAX(Liquidation Fee, Daily Minimum)                           
+                                                                                    
+                                                                                    
+          Example 1: Liquidation Fee Applies (High Profit)                          
+                                                                                    
+            •  Service: 24/7 Trading Coverage($850 daily min)                       
+            •  Starting Balance: 50 SOL (~$6,500 at $130/SOL)                       
+            •  Final Balance at Cashout: $46,500
+
+===== PAGE 9 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+            •  Profit: $46,500 - $6,500 = $40,000                                   
+            •  Liquidation Fee: 10% x $40,000 = $4,000                              
+            •  Our Fee: $4,000 (liquidation fee > $850 daily min)                   
+                                                                                    
+                                                                                    
+          Example 2: Daily Minimum Applies (Low Profit)                             
+            •  Service: 24/7 Trading Coverage ($850 daily min)                      
+            •  Starting Balance: 90 SOL (~$11,500)                                  
+            •  Final Balance at Cashout: $16,500                                    
+            •  Profit: $16,500 - $11,500 = $5,000                                   
+            •  Liquidation Fee: 10% x $5,000 = $500                                 
+            •  Our Fee: $850 ($850 daily min > $500 liquidation fee)                
+                                                                                    
+                                                                                    
+          Example 3: With Re-Fill                                                   
+                                                                                    
+            •  Starting Balance: $6,500                                             
+            •  Re-Fill Day 5: +$3,000 injected                                      
+            •  Total Principal: $6,500 + $3,000 = $9,500                            
+            •  Final Balance at Cashout: $49,500                                    
+            •  Profit: $49,500 - $9,500 = $40,000                                   
+            •  Our Fee: $4,000 (10% of $40K profit)                                 
+                                                                                    
+                                                                                    
+          Daily Fee Collection Schedule                                             
+                                                                                    
+          DAILY AT 8PM EST: Collect Daily Minimum Fees from active projects, process
+          pending cashouts, update records, process team payroll.                   
+                                                                                    
+                                                                                    
+                                                                                    
+          Income & Expense  Tracking                                                
+                                                                                    
+          ALL MM income and expense transactions must be recorded in the master     
+          spreadsheet:                                                              
+                                                                                    
+                                                                                    
+            •  Daily fees collected                                                 
+                                                                                    
+            •  Liquidation fees                                                     
+            •  Team payroll                                                         
+            •  Operational expenses                                                 
+            •  Launch income                                                        
+                                                                                    
+                                                                                    
+            SPREADSHEET   LINK
+
+===== PAGE 10 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          5. Incident  Response    Protocol                                         
+                                                                                    
+          When things go wrong, follow these protocols. Don't improvise. Don't panic. Execute the
+          checklist.                                                                
+                                                                                    
+                                                                                    
+                                                                                    
+          Bot Failure                                                               
+                                                                                    
+                                                                                    
+                                                                                    
+          SYMPTOMS:                                                                 
+          Bots stopped, no counter-trades executing, wallet errors                  
+                                                                                    
+                                                                                    
+                                                                                    
+          IMMEDIATE ACTIONS:                                                        
+            1. Check Peanuts dashboard - is profile still active?                   
+            2. Check wallet SOL balances - are they depleted?                       
+            3. Restart profile if needed                                            
+            4. Notify client: 'Experiencing brief technical issue, monitoring now'  
+                                                                                    
+                                                                                    
+          ESCALATE IF: Bots won't restart after 10 min, or issue is unknown         
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          Wrong  Wallet Sells                                                       
+                                                                                    
+                                                                                    
+          SYMPTOMS:                                                                 
+                                                                                    
+          Counter-trading own wallets, unexpected sells                             
+                                                                                    
+                                                                                    
+          IMMEDIATE ACTIONS:                                                        
+            1. PAUSE all bots immediately                                           
+            2. Check wallet exclusion list - are all tertiary wallets added?        
+            3. Verify which wallets sold and calculate impact                       
+            4. Add missing wallets to exclusion list                                
+                                                                                    
+            5. Document the incident and SOL impact                                 
+            6. Resume bots only after verification                                  
+                                                                                    
+          ESCALATE IF: Significant treasury loss (>5 SOL)
+
+===== PAGE 11 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          Chart Nukes (Major Dump)                                                  
+                                                                                    
+                                                                                    
+          SYMPTOMS:                                                                 
+                                                                                    
+          Price drops 50%+, large organic sells in notification channel, or panic in the chat
+                                                                                    
+                                                                                    
+          IMMEDIATE ACTIONS:                                                        
+            1. DO NOT panic buy immediately                                         
+                                                                                    
+            2. Assess: Is this organic selling or something else?                   
+            3. Check: Are our wallets secure? Any unauthorized sells?               
+            4. Communicate with client: 'Seeing heavy selling, monitoring closely'  
+            5. Come up with a strategy – if we have heavy treasury, we should bid the chart up
+               slowly to healthy levels. Set a budget, and do not continue to burn treasury quote
+               beyond the projects means.                                           
+                                                                                    
+          ESCALATE IF: Signs of exploit, unauthorized wallet activity               
+                                                                                    
+                                                                                    
+                                                                                    
+          Funds Misrouted                                                           
+                                                                                    
+                                                                                    
+                                                                                    
+          SYMPTOMS:                                                                 
+                                                                                    
+          Sent to wrong wallet, funds not arriving                                  
+                                                                                    
+                                                                                    
+          IMMEDIATE ACTIONS:                                                        
+            1. STOP all pending transactions immediately                            
+            2. Verify transaction hash - where did funds actually go?               
+            3. If sent to wrong OUR wallet: recoverable, document and retrieve      
+            4. If sent to wrong EXTERNAL wallet: assess if recoverable              
+            5. Document everything with screenshots and TX hashes                   
+                                                                                    
+            6. Notify client immediately with honest assessment                     
+                                                                                    
+          ESCALATE IMMEDIATELY: Any funds sent to unknown external wallet           
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          When  to Pause Everything
+
+===== PAGE 12 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          FULL STOP CONDITIONS: Any of these = pause all operations immediately     
+                                                                                    
+                                                                                    
+            •  Signs of wallet compromise or unauthorized transactions              
+            •  Discovery of bug in our trading setup                                
+            •  Client requests immediate halt                                       
+                                                                                    
+            •  Any situation where continuing could make things worse               
+                                                                                    
+                                                                                    
+          Post-Incident                                                             
+                                                                                    
+                                                                                    
+                                                                                    
+            1. Document everything while fresh                                      
+            2. Calculate exact financial impact                                     
+            3. Communicate honestly with client                                     
+            4. Determine if SUMO covers the loss (our error) or not (market conditions or their
+               error)                                                               
+            5. Update this manual if new failure mode discovered                    
+                                                                                    
+          Treasury Loss (Passive Bleed)                                             
+                                                                                    
+                                                                                    
+                                                                                    
+          SYMPTOMS:                                                                 
+          Client passively losing treasury. Two balance updates in a row where SOL is down. No
+                                                                                    
+          obvious external dump or attack.                                          
+                                                                                    
+                                                                                    
+          DIAGNOSIS:                                                                
+            6. Is volume bot running? (Volume bot costs treasury over time)         
+            7. Are peanut settings misconfigured?                                   
+            8. Check trading logs - are transactions failing?                       
+            9. Is sell pressure from externals outpacing our collection?            
+                                                                                    
+                                                                                    
+          FIX:                                                                      
+                                                                                    
+            10. Reduce or pause volume bot                                          
+            11. Adjust token sell/buy strategy to counter volume bot drain          
+            12. Increase slippage tolerance if txns are failing                     
+            13. Review peanut config and fix any misconfigurations                  
+                                                                                    
+                                                                                    
+                                                                                    
+          Quick Response  Flowchart                                                 
+          Use this flowchart to quickly identify and respond to incidents:
+
+===== PAGE 13 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                            STEP  1: IDENTIFY THE INCIDENT                          
+                 What's happening? Bots stopped? Chart nuked? Wrong sells? Funds missing?
+                                          ⬇                                         
+                                STEP 2: STOP & ASSESS                               
+                                                                                    
+                     PAUSE bots if needed • DON'T panic trade • Check wallet security
+                                          ⬇                                         
+                                STEP 3: COMMUNICATE                                 
+                 Notify client: "Experiencing issue, investigating now" — Brief, calm, professional
+                                          ⬇                                         
+                             STEP 4: EXECUTE  PROTOCOL                              
+                                                                                    
+                      Follow the specific checklist for your incident type (see above)
+                                          ⬇                                         
+                             STEP 5: ESCALATE  IF NEEDED                            
+                 Can't resolve in 10 min? Unknown issue? Treasury loss >5 SOL? → ESCALATE
+                                                                                    
+          🚨 FULL STOP CONDITIONS:Signs of wallet compromise • Bug in trading setup •
+          Client requests halt • Situation could get worse
+
+===== PAGE 14 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                            PAR  II: CLIENT LIFECYCLE                               
+                                                                                    
+                                                                                    
+          6. Phase   1: Business   Development                                      
+                                                                                    
+          Sales Process                                                             
+                                                                                    
+            1. Sales Call with potential client                                     
+            2. Fill Out Token Launch Specifications Doc for the Project             
+            3. Send a Wallet Address for Launch Collateral (SOL) to be Sent to      
+            4. Hand off to launch dev for Launch Preparation                        
+                                                                                    
+                                                                                    
+                                                                                    
+          Token Launch  Specifications Doc                                          
+          Capture the following from the client:                                    
+                                                                                    
+                                                                                    
+                                                                                    
+            •  Target MC for bundle                                                 
+            •  Desired supply control percentage                                    
+            •  Launch date/time preferences                                         
+            •  Launch platform (PumpFun, Meteora, etc.)                             
+            •  Any specific requirements or constraints                             
+            •  Client wallet addresses for cashouts                                 
+            •  Communication preferences (Telegram handle)                          
+            •  Whether they want to lock any % of supply                            
+                                                                                    
+                                                                                    
+           → See: Section 13: Client Communications Templates — for standard onboarding
+           message format                                                           
+                                                                                    
+                                                                                    
+                                                                                    
+          Collateral Requirements by Launch Type                                    
+                                                                                    
+          NOTE: All estimates assume SOL @ ~$130. Adjust proportionally based on current
+          SOL price. The $5K fee buffer = ~38 SOL at this price.                    
+                                                                                    
+                                                                                    
+                                                                                    
+          PumpFun Bundle (50% - 79.1% Supply Control)                               
+          Same wallet setup and launch plan applies across this range. Supply % determines
+          bundle cost.                                                              
+                                                                                    
+          For 79.1% Supply:                                                         
+            •  Bundle cost: 107 SOL                                                 
+            •  Starting MM Balance: ~15 SOL
+
+===== PAGE 15 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+            •  Starting MC: $49,556.08 USD                                          
+                                                                                    
+          For 50% Supply:                                                           
+            •  Bundle cost: 43 SOL                                                  
+            •  Starting MM Balance: 10.44 SOL                                       
+            •  Starting MC: $12,019.93 USD (at $122.60/SOL)                         
+                                                                                    
+          Fee Structure                                                             
+                                                                                    
+          Our $5K launch fee can be handled two ways:                               
+                                                                                    
+          Option A: Fee Buffered in Collateral (Default)                            
+          Fee is built into SOL collateral. We withdraw fee from treasury over time.
+           Supply %   Bundle Cost  Total Collateral (incl. $5K fee buffer)          
+                                                                                    
+           79.1%      107 SOL      ~148 SOL                                         
+                                                                                    
+                                                                                    
+           50%        43 SOL       ~84 SOL                                          
+                                                                                    
+          *Fee buffer = ~41 SOL ($5K at ~$122/SOL)                                  
+                                                                                    
+          Option B: Fee Paid Upfront ($3K)                                          
+          Client pays $3K upfront in fiat/stables. Collateral = bundle cost only.   
+           Supply %         Upfront Fee         SOL Collateral                      
+                                                                                    
+                                                                                    
+           79.1%            $3,000              107 SOL                             
+                                                                                    
+                                                                                    
+           50%              $3,000              43 SOL                              
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          7. Phase   2: Launch   Preparation    (Launch   Dev)                      
+                                                                                    
+                                                                                    
+          Preparation Checklist                                                     
+                                                                                    
+            1. Read Token Launch Specifications Doc and Prepare Accordingly         
+            2. Confirm launch date with Client and mark on team calendar            
+            3. Cross-chain wash the collateral amount via debridge or rubic         
+            4. Set up funding amounts for each wallet in a CSV (labeled for Trading/MM)
+            5. Fund wallets                                                         
+                                                                                    
+                                                                                    
+           → See: Section 13: Client Communications Templates — for confirmation    
+           message format
+
+===== PAGE 16 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          Bundle Planning                                                           
+                                                                                    
+            1. Determine target MC for bundle                                       
+            2. Calculate with pumpfun-planner.ts script (or equivalent for platform)
+            3. Decide wallet distribution for good-looking holder spread            
+                 ◦  For every 1 wallet to wash into, need 3 passthrough wallets with 0.07 SOL
+                 ◦  Second wash likely necessary to remove time nodes               
+                 ◦  Can re-use same passthrough wallets for second wash             
+            4. Set up lookup tables for the bundle (Token CA computed here)         
+            5. Compute pool address based on CA                                     
+            6. Set up lookup tables for washout                                     
+                                                                                    
+                                                                                    
+                                                                                    
+          PumpFun  Bundle Specifications                                            
+                                                                                    
+           Parameter                       Typical Value                            
+           Bundle Supply Control           76-79% (washes to ~75%)                  
+                                                                                    
+           Bundle Wallets                  Dev + 7 (varies by setup)                
+                                                                                    
+           Migration LP Lock               ~20 SOL locked                           
+           Sumo Launch Fee                 1% of token supply                       
+                                                                                    
+                                                                                    
+                                                                                    
+          Meteora Bundle Specifications                                             
+                                                                                    
+          ***INSERT METEORA LAUNCH SPECIFICS HERE***                                
+                                                                                    
+          Wash  Timeline Options                                                    
+                                                                                    
+            •  Quick: 3 min                                                         
+            •  Longer: 15 min+                                                      
+            •  Timeline depends on how organic client wants the chart to look, and whether
+               client cares about bubblemaps time nodes.                            
+                                                                                    
+                                                                                    
+          Notification Channel Setup (Before CA)                                    
+                                                                                    
+            1. Create new Telegram notification channel                             
+            2. Add Sumo bot as admin                                                
+            3. Get channel ID (forward message to userInfoBot)                      
+            4. Set channel name: $TICKER - Organic Trade Notifications              
+            5. Set channel avatar as SUMO logo
+
+===== PAGE 17 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          8. Phase   3: Launch   Execution                                          
+                                                                                    
+          Pre-Launch (1H Minutes Before)                                            
+                                                                                    
+            1. Get on Team Launch Call with client                                  
+            2. Confirm Exact Deploy Timing                                          
+            3. Get CA ready (and Pool ID for pumpfun, otherwise will need to grab Pool ID at
+               launch from dexscreneer)                                             
+            4. Load seller (bundle) wallets into Phantom for manual selling         
+                                                                                    
+                 ◦  Higher numbered sellers in spreadsheet will have supply the longest (last
+                    to wash)                                                        
+                 ◦  Use these wallets for manual selling into launch volume         
+            5. Complete Pre-Launch Peanuts Setup                                    
+                                                                                    
+                                                                                    
+           → See: Section 11: Trading Software (Peanuts) Guide — for full Peanuts setup
+           procedure                                                                
+                                                                                    
+                                                                                    
+                                                                                    
+          Token Deployment  & Bundle                                                
+                                                                                    
+            1. Deploy Token + Execute Bundle                                        
+            2. Begin Wash - Communicate Exact ETA to Client + Team                  
+            3. Stay live on call during wash process                                
+                                                                                    
+                                                                                    
+           → See: Section 13: Client Communications Templates — for wash ETA        
+           communication format                                                     
+                                                                                    
+                                                                                    
+                                                                                    
+          Supply Clipping Into Launch Volume                                        
+          When pool is live (launched), clip supply into launch volume:             
+                                                                                    
+                                                                                    
+                                                                                    
+            •  Increase sell amount on high initial wicks                           
+            •  Lower sell amount on low initial wicks                               
+            •  Adjust dynamically based on volume                                   
+            •  If client is expecting lots of initial volume, prepare to collect hard
+                                                                                    
+                                                                                    
+          NEVER: Sell below bundle price when clipping supply.                      
+                                                                                    
+                                                                                    
+                                                                                    
+          Dashboard  & Analytics Setup
+
+===== PAGE 18 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+            1. Go to app.sumo.trade/admin (password Admin2025!Secure#Token)         
+            2. Create project with CA, name, chain                                  
+            3. Set password                                                         
+            4. Add Sumo Bot to project TG chat                                      
+            5. Run /setup <project_id> in Telegram                                  
+            6. Label all wallets (treasury > mm)                                    
+            7. Label LP and deployer wallet                                         
+            8. Link notification channel: /link_notifications <project_id> <channel_id>
+                                                                                    
+                                                                                    
+          VERIFY: Confirm Everything is Working 100% as Intended before proceeding. 
+                                                                                    
+                                                                                    
+                                                                                    
+          Trading Software Setup (Peanuts)                                          
+                                                                                    
+            1. Create token profile in Peanuts                                      
+            2. Add CA and Pool ID                                                   
+            3. Import wallets for MM (EXCEPT Deployer)                              
+            4. Approve all MM (child) wallets                                       
+            5. Add all tertiary wallets to exclusion list                           
+            6. Duplicate template strategies to profile                             
+            7. Go to profile settings and verify Pool ID                            
+            8. Start profile                                                        
+            9. Activate Counter-Trading Bots FIRST                                  
+            10. Then activate Target Based Strategies                               
+            11. Turn on volume bundle as needed                                     
+                                                                                    
+                                                                                    
+          IMPORTANT: Import ALL wallets EXCEPT the Deployer wallet. Only approve    
+          child/buyer wallets (others remain archived/blacklisted).                 
+                                                                                    
+                                                                                    
+                                                                                    
+           → See: Section 11: Trading Software (Peanuts) Guide — for detailed profile
+           management                                                               
+                                                                                    
+           → See: Section 12: Bot Configuration Reference — for counter-trade and volume
+           bot settings                                                             
+                                                                                    
+                                                                                    
+                                                                                    
+          Post-Bundle Actions                                                       
+                                                                                    
+            1. Immediately run Balance check once dashboard is set up and wallets are
+               labelled                                                             
+            2. Manually Sell into Launch Volume (from Phantom, using higher-numbered seller
+               wallets)                                                             
+            3. Message and Pin Starting Balance in MM Chat
+
+===== PAGE 19 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+           → See: Section 3: Rules & Red Lines — starting balance MUST be pinned - no
+           exceptions                                                               
+                                                                                    
+                                                                                    
+                                                                                    
+          Client Expectations to Set                                                
+          Communicate realistic expectations based on the specific launch type:     
+                                                                                    
+                                                                                    
+                                                                                    
+            •  Final supply control percentage after wash (varies by platform)      
+            •  Portion sold into launch volume with seller wallets (rough % supply amount)
+            •  Amount locked in LP (platform-dependent)                             
+            •  Typical ending supply control range after trading                    
+                                                                                    
+                                                                                    
+          NOTE: Specific numbers will vary between PumpFun, Meteora, and other platforms.
+          Adjust communication accordingly.                                         
+                                                                                    
+                                                                                    
+                                                                                    
+           → See: Section 13: Client Communications Templates — for onboarding message
+           with dashboard access                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          9. Phase   4: Active  Trading                                             
+                                                                                    
+                                                                                    
+          Core Principle: Always Have a Strategy                                    
+                                                                                    
+          CRITICAL: ALWAYS have a clear trading strategy and communicate it effectively to the
+          client. Never trade without a plan.                                       
+                                                                                    
+                                                                                    
+          Your strategy should include:                                             
+                                                                                    
+            •  Current market assessment                                            
+            •  Target price ranges                                                  
+            •  Bot settings rationale                                               
+            •  Entry/exit triggers                                                  
+            •  Fallback plan if things don't go as expected                         
+                                                                                    
+                                                                                    
+          Daily Operations                                                          
+                                                                                    
+            •  Have chart open at ALL times while on shift
+
+===== PAGE 20 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+            •  Be in VC at all times while on trader shift                          
+            •  Monitor all bots - don't let them stop for extended periods          
+            •  Check wallet SOL balances regularly                                  
+            •  Respond to client questions promptly                                 
+                                                                                    
+                                                                                    
+           → See: Section 14: Trader Shift Protocol — for complete shift requirements and
+           handoff procedures                                                       
+                                                                                    
+                                                                                    
+                                                                                    
+          Client Communication Rhythm                                               
+                                                                                    
+            •  Notify client when you come online                                   
+            •  Notify client when going offline                                     
+            •  Handle all cashout requests promptly                                 
+            •  Provide regular updates on treasury growth and trajectory            
+            •  Proactively share strategy updates, don't wait to be asked           
+                                                                                    
+                                                                                    
+           → See: Section 13: Client Communications Templates — for availability    
+           notifications and update formats                                         
+                                                                                    
+                                                                                    
+                                                                                    
+          Bot Management                                                            
+                                                                                    
+            •  Adjust bots per client requests or MM strategy                       
+            •  Counter-sell typically 10-35%, can be adjusted to 15-50% or 20-70% for higher
+               extraction                                                           
+            •  Counter-buy typically at 5-15%, only increase beyond if we have budget to
+               support with treasury                                                
+            •  Volume bot is BUDGET-BASED - set budget, it runs until depleted      
+                                                                                    
+                                                                                    
+           → See: Section 12: Bot Configuration Reference — for counter-trade settings and
+           volume bot details                                                       
+                                                                                    
+                                                                                    
+                                                                                    
+          Trading Strategy Guidelines                                               
+                                                                                    
+            •  Let counter trade bots collect on volume                             
+            •  Only buy on big dumps                                                
+            •  Don't let chart wick too high                                        
+            •  Aim for 30-40% collection of buy volume                              
+            •  Add all tertiary wallets to avoid counter trading yourself
+
+===== PAGE 21 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          NEVER: leave newly injected treasury liquidity in a chart for over an hour if client
+          is at a loss - 15-30 min max                                              
+                                                                                    
+                                                                                    
+           → See: Section 5: Incident Response Protocol — if something goes wrong during
+           trading                                                                  
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          Daily Fee Collection                                                      
+          DAILY AT 8PM EST: Collect Daily Minimum Fees, process cashouts, update records,
+          process team payroll.                                                     
+                                                                                    
+                                                                                    
+                                                                                    
+           → See: Section 4: Fee Structure & Revenue Model — for fee calculation rules and
+           Fee Decision Flow                                                        
+                                                                                    
+                                                                                    
+                                                                                    
+          Shift Handoff                                                             
+                                                                                    
+          Before ending your shift:                                                 
+                                                                                    
+                                                                                    
+            •  Notify client about current chart state                              
+            •  Document current bot settings                                        
+            •  Note any issues or things to watch                                   
+            •  Provide info for the off period                                      
+                                                                                    
+                                                                                    
+           → See: Section 14: Trader Shift Protocol — for complete handoff checklist
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          10. Phase   5: Cashout    & Offboarding                                   
+                                                                                    
+                                                                                    
+          Cashout Types                                                             
+                                                                                    
+                                                                                    
+            •  Final Cashout - Project ending, sell all supply                      
+            •  Interim Cashout - Partial withdrawal, project continues              
+            •  Team's Own Money - Return original funds (NO FEE)
+
+===== PAGE 22 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          Final Cashout Process                                                     
+            1. Current Balance Check                                                
+                                                                                    
+            2. Sell Down Supply                                                     
+            3. If PumpSwap: Claim Creator Fees                                      
+            4. Calculate Fee (subtract starting balance first, then 10% or daily min)
+            5. CLIENT COMMS: Send breakdown (Sumo Fee, Client Profit)               
+            6. CLIENT COMMS: Request client wallet for test TX                      
+            7. Upload ALL wallets + Deployer to pnuts                               
+            8. Create Intermediary Wallet                                           
+            9. Send Test TX to Intermediary, verify                                 
+            10. Send Full Balance to Intermediary                                   
+            11. Verify all numbers                                                  
+            12. Send Test TX to Client Wallet, notify client                        
+            13. Wait for client confirmation                                        
+            14. Notify client, send final payment                                   
+            15. Confirm completion with client                                      
+            16. Send Sumo fee to Treasury                                           
+            17. Enter into Spreadsheet                                              
+                                                                                    
+                                                                                    
+           → See: Section 4: Fee Structure & Revenue Model — for Fee Decision Flow  
+           (subtract starting balance FIRST)                                        
+                                                                                    
+           → See: Section 13: Client Communications Templates — for cashout breakdown
+           message format                                                           
+                                                                                    
+           → See: Section 2: Security Philosophy — for why intermediary wallets and test TXs
+           are mandatory                                                            
+                                                                                    
+                                                                                    
+                                                                                    
+          Hands-Off Options                                                         
+                                                                                    
+          When client requests to go hands-off, offer two options:                  
+                                                                                    
+                                                                                    
+          Option A: Liquidate Remaining Tokens                                      
+                                                                                    
+            •  Liquidate all tokens                                                 
+            •  Final Cashout with 10% fee (or daily min)                            
+            •  Follow standard Final Cashout Process                                
+                                                                                    
+                                                                                    
+          Option B: Send Private Keys                                               
+            •  Prepare all PKs in CSV file                                          
+            •  Send in PRIVATE DM only                                              
+            •  Only to confirmed decision maker
+
+===== PAGE 23 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          Once project is completed, stop peanut trade profile, and use /unlink in TG to unlink the
+          sumo bot.                                                                 
+                                                                                    
+          SECURITY: NEVER send PKs in group chats. Private DM to decision maker ONLY.
+                                                                                    
+                                                                                    
+           → See: Section 3: Rules & Red Lines — PK handling is a RED LINE - no     
+           exceptions
+
+===== PAGE 24 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                         PART  III: REFERENCE    MODULES                            
+                                                                                    
+                                                                                    
+          11. Trading   Software   (Peanuts)   Guide                                
+                                                                                    
+          This section is referenced from: Phase 3 (Launch Execution) - Trading Software Setup
+                                                                                    
+          Profile Setup Procedure                                                   
+                                                                                    
+            1. Create token profile (after confirming w/ client token name)         
+            2. Open newly created token profile                                     
+            3. Add CA (Contract Address), Pool ID, and Quote Token address (Select “trade
+               with native” if quote is SOL                                         
+            4. Import MM trading wallets only (child/buyer wallets)                 
+            5. Approve all MM (child/buyer) wallets (these are the wallets we are trading with)
+            6. After profile settings confirmed, save/create profile                
+            7. Add all tertiary/external wallets to profile, then add them to the exclusion list (DO
+                                                                                    
+               NOT APPROVE)                                                         
+            8. Duplicate template strategies to profile                             
+            9. Go to profile settings and verify Pool ID is imported                
+            10. Start profile                                                       
+            11. Activate Counter-Trading Bots FIRST                                 
+            12. Then activate Target Based Strategies                               
+            13. Turn on trading bundle as needed                                    
+                                                                                    
+                                                                                    
+          Bot Activation Order                                                      
+                                                                                    
+            1. Counter-Trading Bots (activate FIRST)                                
+            2. Target Based Strategies                                              
+            3. Volume Bots (as needed)                                              
+                                                                                    
+                                                                                    
+          Wallet Import Rules                                                       
+                                                                                    
+          CRITICAL: Import ALL wallets EXCEPT the Deployer wallet.                  
+                                                                                    
+                                                                                    
+                                                                                    
+            •  Add all tertiary wallets to avoid us counter trading ourselves       
+            •  Track hop wallets used for cashout under treasury inactive in dashboard
+                                                                                    
+                                                                                    
+           → See: Section 3: Rules & Red Lines — deployer wallet exclusion is a RED LINE
+                                                                                    
+                                                                                    
+                                                                                    
+          Profile Management
+
+===== PAGE 25 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+            •  Don't activate profiles unless ready (peanuts charges on activation) and project is
+               live                                                                 
+            •  Keep template strategies updated                                     
+                                                                                    
+                                                                                    
+                                                                                    
+          12. Bot  Configuration    Reference                                       
+                                                                                    
+          This section is referenced from: Phase 3 (Launch Execution), Phase 4 (Active Trading) -
+          Bot Management                                                            
+                                                                                    
+                                                                                    
+                                                                                    
+          Counter Trade Bot                                                         
+                                                                                    
+           Setting                 Details                                          
+                                                                                    
+           Counter-Sell Range      Typically 15-50%, adjust with market cap and     
+                                   organic volume                                   
+           Counter-Buy             Typically 5-15%, can and should be turned off to 
+                                                                                    
+                                   preserve treasury                                
+           Slippage Tolerance      Depends on volatility, but base should be 5%     
+                                                                                    
+           Transaction Amount      Min: $25, Max: $15,000                           
+                                                                                    
+           Key Note                Counter trades must be tweaked INTENTIONALLY     
+                                                                                    
+                                                                                    
+          Volume Bot (Trading Bundle)                                               
+                                                                                    
+          IMPORTANT: Volume Bot is BUDGET-BASED. Set a budget and it runs until depleted.
+                                                                                    
+                                                                                    
+                                                                                    
+           Setting                 Details                                          
+                                                                                    
+           Type                    Recurring, BUDGET-BASED                          
+           Behavior                Randomizes buys/sells relatively neutral         
+                                                                                    
+           Target, 24H             Amount that gets added to volume over 24H period,
+                                   depending on how much volume we or client want to
+                                   run with                                         
+                                                                                    
+           Single trade Bundle Time Can be compressed over specific timeframes, 1   
+           Interval                minimum, usually 3-7 for maximum                 
+                                                                                    
+           Bundle Sum Randomization 50%                                             
+           Spread
+
+===== PAGE 26 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          Token Sell/Buy and Price Retention:                                       
+                                                                                    
+            •  Sell or Buy tokens in a necessary price range or time interval       
+            •  Can be used for protecting price floors or selling into highs        
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          Manual Trading                                                            
+            •  Use for creating ranging and market structure                        
+            •  Execute quickly: 15-30 min max                                       
+            •  Stay within defined price range                                      
+                                                                                    
+            •  Don't cause big chart impact when selling                            
+                                                                                    
+                                                                                    
+          Wallet SOL Management                                                     
+                                                                                    
+            •  Ensure wallets have sufficient SOL for gas                           
+            •  Turn off wallets that run out of SOL                                 
+            •  Clear alert shows when balance insufficient                          
+                                                                                    
+                                                                                    
+           → See: Section 5: Incident Response Protocol — if bots fail or wallets run out of
+           SOL                                                                      
+                                                                                    
+                                                                                    
+                                                                                    
+          13. Client  Communications      Templates                                 
+                                                                                    
+                                                                                    
+          This section is referenced from: All Phases - Client touchpoints throughout the lifecycle
+                                                                                    
+                                                                                    
+                                                                                    
+          Onboarding Message                                                        
+          Send after dashboard and notification channel are set up:                 
+                                                                                    
+                                                                                    
+                                                                                    
+          "Hi Team, Token dashboard and trade notification channel access below:    
+             Dashboard: https://app.sumo.trade/<project_name>                       
+                                                                                    
+             Password: <project_password>                                           
+            Organic Trade Notifications Channel: <telegram_channel_link>            
+          Let me know if you need any assistance."
+
+===== PAGE 27 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          Trading Update Format                                                     
+                                                                                    
+          Include relevant mix of:                                                  
+                                                                                    
+                                                                                    
+            •  Chart screenshot                                                     
+            •  Current state explanation                                            
+            •  Strategy/plan with time horizon                                      
+            •  Ideal outcome                                                        
+            •  Fallback plan                                                        
+                                                                                    
+                                                                                    
+          IMPORTANT: Address client's probable state of mind. Read the room. Custom comms
+          for each situation.                                                       
+                                                                                    
+                                                                                    
+                                                                                    
+          Strategy Update Examples                                                  
+                                                                                    
+           ✓ RIGHT  WAY:Clear strategy with chart + specific targets                
+                                                                                    
+           Scenario:Chart is dipping, client might be worried                       
+                                                                                    
+           [Chart screenshot attached]                                              
+                                                                                    
+           There is more sell pressure than buy pressure, so I am guiding this lower to help
+           establish a floor.                                                       
+                                                                                    
+           Ideally, that floor forms a double bottom around the $40k MC level.      
+                                                                                    
+           From there, we can work it higher and build a range between $47k and $53k MC.
+                                                                                    
+                                                                                    
+                                                                                    
+           🚫  WRONG   WAY:Vague  and unhelpful                                      
+                                                                                    
+           Scenario:Same situation as above                                         
+                                                                                    
+           Chart's fine, just watching it                                           
+                                                                                    
+                                                                                    
+                                                                                    
+          Fee Collection Examples                                                   
+                                                                                    
+           ✓ RIGHT  WAY:Clear breakdown with token + amount
+
+===== PAGE 28 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+           Just withdrew $1,000 worth of $LIFE from MM balance for the past 24h of trading
+                                                                                    
+                                                                                    
+                                                                                    
+           🚫  WRONG   WAY:Missing context                                           
+                                                                                    
+           Withdrew 7.5 SOL                                                         
+                                                                                    
+                                                                                    
+                                                                                    
+          Cashout Breakdown Examples                                                
+                                                                                    
+           ✓ RIGHT  WAY:Complete breakdown with all line items                      
+                                                                                    
+           Total Cashout: 408 SOL                                                   
+           10% MM + Dev Cut: 40.8 SOL                                               
+           Extra $500 for Dev Cut: 3.95 SOL                                         
+                                                                                    
+                                                                                    
+           Total Fee: 44.7 SOL                                                      
+                                                                                    
+           Total Post-Fee Cashout: 363.3 SOL                                        
+                                                                                    
+                                                                                    
+                                                                                    
+           🚫  WRONG   WAY:Missing breakdown                                         
+                                                                                    
+           Sending you 363 SOL                                                      
+                                                                                    
+                                                                                    
+          Example Trader Comms Scripts Here: https://t.me/+40Z0PIFtqmllMTUx         
+                                                                                    
+                                                                                    
+          Communication  Templates                                                  
+                                                                                    
+          Copy-paste scripts organized by scenario. Replace [brackets] with actual values. When
+          clients ask questions, answer DIRECTLY and SUCCINCTLY - don't add information
+          they didn't ask for.                                                      
+                                                                                    
+                                                                                    
+            Setting Budget Expectations                                             
+            For overnight bots we have a $2K budget for holding $300K MC. Setting a $1.5K
+                                                                                    
+            budget for holding $250K MC and then a $1K budget for $200K MC.
+
+===== PAGE 29 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          Daily Operations                                                          
+                                                                                    
+            Setup + First Day Fee                                                   
+            Just withdrew $3K worth of $[TOKEN] for MM setup and first 24h of trading. Moving
+            forward for day trading + overnight bots will be $1K/day                
+                                                                                    
+                                                                                    
+            Daily Fee Collection                                                    
+            Just withdrew $[AMOUNT] worth of $[TOKEN] from MM balance for the past 24h of
+            trading                                                                 
+                                                                                    
+                                                                                    
+            Limit Orders Set                                                        
+            I set some small limit orders below $[X]K so we can support or scoop some supply
+            cheap if it ever dips that low                                          
+                                                                                    
+                                                                                    
+          Strategy Updates (Always Attach Chart)                                    
+            Injection Play                                                          
+                                                                                    
+            I think we do a fast injection at [TIME], followed by a quick pull back. In case people
+            fomo in we just heavy collect. Just need the candle to close in that [X]M-[Y]M MC
+            range so we don't cook ourselves on the future breakout.                
+                                                                                    
+                                                                                    
+            Establishing Floor                                                      
+            There is more sell pressure than buy pressure, so I am guiding this lower to help
+            establish a floor. Ideally, that floor forms a double bottom around the $[X]K MC level.
+            From there, we can work it higher and build a range between $[X]K and $[Y]K MC.
+                                                                                    
+                                                                                    
+            Retracement                                                             
+            For now we are going to try to collect some back here. Down to [X]M MC and then
+            possibly [Y]M MC, which would be a 23.6% retracement on the previous run up.
+                                                                                    
+                                                                                    
+            Bounce Play                                                             
+                                                                                    
+            Let's light collect and paint back up from [X]M MC. See if any organic comes in from
+            a bounce at our previous top.                                           
+                                                                                    
+          Answering Client Questions                                                
+                                                                                    
+            Q: What mechanisms do we have to maintain a healthy chart and avoid bad 
+            sentiment?                                                              
+            A:How we protect the chart:                                             
+            - 24/7 trading coverage (bots + traders are never offline)
+
+===== PAGE 30 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+            - Custom limit-order and price protection mechanisms that adjust based on treasury
+            health (the bigger your treasury, the more buy walls we can set to protect specific
+            levels)                                                                 
+            - Budgeted counter-trades that eat directly into sells of a specific size so we show
+            support on meaningful dips                                              
+                                                                                    
+          End of Campaign / Cashout                                                 
+                                                                                    
+            Detailed Breakdown                                                      
+            Final MM Balance: $[X]K / [X] SOL                                       
+                                                                                    
+            10% MM Liq Fee: $[X]K / [X] SOL                                         
+            Launch Fee: $[X]K / [X] SOL                                             
+            Client Initials: $[X]K / [X] SOL                                        
+            Total Cashout After Initials + Fees: [X] SOL                            
+                                                                                    
+                                                                                    
+            Simple Version                                                          
+            Total Cashout: [X] SOL | 10% MM + Dev Cut: [X] SOL | Total Fee: [X] SOL | Total
+            Post-Fee Cashout: [X] SOL                                               
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          14. Trader   Shift Protocol                                               
+                                                                                    
+                                                                                    
+          This section is referenced from: Phase 4 (Active Trading) - Daily Operations and Shift
+          Handoff                                                                   
+                                                                                    
+          On-Shift Requirements                                                     
+                                                                                    
+          MANDATORY:  Chart open at ALL times. In VC at ALL times while on trader shift.
+                                                                                    
+                                                                                    
+                                                                                    
+            •  Constantly verify everything is 100% dialed in                       
+            •  Monitor for failed counter trades                                    
+            •  Check that bots are running continuously                             
+            •  Check wallet SOL balances                                            
+            •  Respond to client questions promptly                                 
+            •  Try things fast, ask for help when needed                            
+                                                                                    
+                                                                                    
+          Shift Handoff Checklist                                                   
+                                                                                    
+            1. Notify client about current chart state                              
+            2. Document current bot settings                                        
+            3. Note any issues or things to watch
+
+===== PAGE 31 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+            4. Provide info for the off period                                      
+            5. Confirm next trader is ready                                         
+                                                                                    
+                                                                                    
+           → See: Section 13: Client Communications Templates — for availability    
+           notification messages                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+          Common   Mistakes to Avoid                                                
+                                                                                    
+           Mistake                        Prevention                                
+                                                                                    
+           Bots stopped for extended periods Set alerts, check regularly            
+           Wallets run out of SOL         Check balances each shift                 
+                                                                                    
+           Counter trading own wallets    Add all tertiary wallets                  
+                                                                                    
+           Slow client communication      Prioritize client questions               
+           Trading without a strategy     Always have and communicate strategy      
+                                                                                    
+                                                                                    
+                                                                                    
+           → See: Section 5: Incident Response Protocol — when mistakes happen, follow
+           the protocol                                                             
+                                                                                    
+          15. TG  Bot  Commands      Quick   Reference                              
+                                                                                    
+                                                                                    
+           Command                 Description                                      
+                                                                                    
+           /setup <project_id>     Link chat to project                             
+           /link_notifications     Set up notification channel                      
+                                                                                    
+           /balance                Show treasury balance                            
+                                                                                    
+           /volume                 Organic vs MM volume breakdown                   
+           /categories             Wallet categories and stats                      
+                                                                                    
+           /label                  Add/edit wallet label                            
+                                                                                    
+           /health                 Treasury health check
+
+===== PAGE 32 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                           PART  IV: QUICK  REFERENCE                               
+                                                                                    
+                                                                                    
+          16. Checklists                                                            
+                                                                                    
+          Launch Day Checklist                                                      
+                                                                                    
+                                                                                    
+                                                                                    
+          PRE-LAUNCH (30 min before)                                                
+                                                                                    
+            •  ☐ Team launch call with client                                       
+            •  ☐ Confirm deploy timing                                              
+            •  ☐ Get CA ready, Pool ID (if pumpfun can derive it before launch, meteora will
+               have it when LP is added )                                           
+            •  ☐ Load seller wallets into Phantom (use higher-numbered sellers)     
+                                                                                    
+            •  ☐ Pre-launch Peanuts setup complete                                  
+                                                                                    
+                                                                                    
+          LAUNCH                                                                    
+            •  ☐ Deploy token + execute bundle                                      
+            •  ☐ Trading software profile started                                   
+                                                                                    
+            •  ☐ Begin wash, communicate ETA                                        
+            •  ☐ Clip supply into launch volume (never below bundle price)          
+            •  ☐ All tertiary wallets added to exclusion list                       
+            •  ☐ Counter-trading bots activated                                     
+            •  ☐ Target strategies activated                                        
+                                                                                    
+            •  ☐ Dashboard setup complete                                           
+            •  ☐ Notification channel linked                                        
+            •  ☐ All wallets labeled                                                
+            •  ☐ Balance check script run                                           
+                                                                                    
+            •  ☐ Starting balance pinned in chat                                    
+            •  ☐ Comms with client that everything is active                        
+                                                                                    
+                                                                                    
+           → See: Section 8: Phase 3: Launch Execution — for detailed step-by-step launch
+           procedures                                                               
+                                                                                    
+                                                                                    
+                                                                                    
+          Daily Operations Checklist (TRADER)                                       
+                                                                                    
+                                                                                    
+          START OF SHIFT
+
+===== PAGE 33 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+            •  ☐ Chart open                                                         
+            •  ☐ Join VC                                                            
+            •  ☐ Notify client you're online                                        
+            •  ☐ Check all bots running                                             
+                                                                                    
+            •  ☐ Check wallet SOL balances                                          
+            •  ☐ Review and communicate current strategy                            
+                                                                                    
+                                                                                    
+          DURING SHIFT                                                              
+            •  ☐ Monitor chart continuously                                         
+                                                                                    
+            •  ☐ Respond to client messages (<5 min during active trading)          
+            •  ☐ Adjust bots as needed                                              
+            •  ☐ Document any strategy changes                                      
+                                                                                    
+                                                                                    
+          8PM EST DAILY                                                             
+                                                                                    
+            •  ☐ Collect daily minimum fees                                         
+            •  ☐ Process pending cashouts                                           
+            •  ☐ Update spreadsheet with all transactions                           
+            •  ☐ Process team payroll                                               
+                                                                                    
+                                                                                    
+          END OF SHIFT                                                              
+                                                                                    
+            •  ☐ Notify client of chart state                                       
+            •  ☐ Document bot settings                                              
+            •  ☐ Note any issues                                                    
+                                                                                    
+            •  ☐ Handoff to next trader                                             
+                                                                                    
+           → See: Section 9: Phase 4: Active Trading — for trading strategy guidelines
+                                                                                    
+           → See: Section 14: Trader Shift Protocol — for detailed shift requirements
+                                                                                    
+                                                                                    
+                                                                                    
+          Cashout Checklist (TRADER)                                                
+                                                                                    
+                                                                                    
+                                                                                    
+            •  ☐ Balance check                                                      
+            •  ☐ Sell down supply (if final)                                        
+                                                                                    
+            •  ☐ Claim creator fees (if PumpSwap)                                   
+            •  ☐ Calculate fee (subtract starting balance first!)                   
+            •  ☐ Send breakdown to client
+
+===== PAGE 34 =====
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+            •  ☐ Get client wallet address                                          
+            •  ☐ Create intermediary wallet                                         
+            •  ☐ Test TX to intermediary                                            
+            •  ☐ Send full amount to intermediary                                   
+                                                                                    
+            •  ☐ Verify all numbers                                                 
+            •  ☐ Test TX to client                                                  
+            •  ☐ Client confirms test TX                                            
+            •  ☐ Send final payment                                                 
+                                                                                    
+            •  ☐ Confirm with client                                                
+            •  ☐ Send fee to Sumo treasury                                          
+            •  ☐ Update spreadsheet                                                 
+                                                                                    
+                                                                                    
+           → See: Section 10: Phase 5: Cashout & Offboarding — for detailed cashout 
+           procedures                                                               
+                                                                                    
+           → See: Section 4: Fee Structure & Revenue Model — for Fee Decision Flow

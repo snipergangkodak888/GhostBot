@@ -1,0 +1,112 @@
+/* MUI DateTimePicker Mobile Dark Theme - Force dark theme on mobile */
+@media (max-width: 768px) {
+  /* Dialog backdrop - ensure it blocks clicks */
+  .MuiDialog-root .MuiBackdrop-root {
+    background-color: rgba(0, 0, 0, 0.8) !important;
+    z-index: 1300 !important;
+  }
+  
+  /* Dialog container - ensure it's above everything */
+  .MuiDialog-root {
+    z-index: 1400 !important;
+  }
+  
+  .MuiDialog-root .MuiDialog-container {
+    z-index: 1400 !important;
+  }
+  
+  .MuiDialog-root .MuiPaper-root {
+    background-color: #1a1a1a !important;
+    color: #ffffff !important;
+    z-index: 1400 !important;
+  }
+  
+  /* Popper container for desktop */
+  .MuiPickersPopper-root {
+    z-index: 1400 !important;
+  }
+  
+  /* Calendar and clock text */
+  .MuiDialog-root .MuiPickersCalendarHeader-root,
+  .MuiDialog-root .MuiDayCalendar-weekDayLabel,
+  .MuiDialog-root .MuiPickersDay-root,
+  .MuiDialog-root .MuiClockNumber-root,
+  .MuiDialog-root .MuiPickersYear-yearButton,
+  .MuiDialog-root .MuiClock-amButton,
+  .MuiDialog-root .MuiClock-pmButton {
+    color: #ffffff !important;
+  }
+  
+  /* Selected states - green */
+  .MuiDialog-root .MuiPickersDay-root.Mui-selected,
+  .MuiDialog-root .MuiPickersYear-yearButton.Mui-selected {
+    background-color: rgba(34, 197, 94, 0.5) !important;
+  }
+  
+  /* Clock center pin - green circle */
+  .MuiDialog-root .MuiClock-pin {
+    background-color: rgba(34, 197, 94, 1) !important;
+    border-radius: 50% !important;
+  }
+  
+  /* Clock square mask - hide it or make transparent to show circle */
+  .MuiDialog-root .MuiClock-squareMask {
+    display: none !important;
+  }
+  
+  /* Clock container - ensure circular and dark background */
+  .MuiDialog-root .MuiClock-root {
+    background-color: #1a1a1a !important;
+  }
+  
+  .MuiDialog-root .MuiClock-clock {
+    background-color: rgba(255, 255, 255, 0.05) !important;
+    border-radius: 50% !important;
+  }
+  
+  /* Remove the dark square wrapper around clock */
+  .MuiDialog-root .MuiPickersLayout-root {
+    background-color: #1a1a1a !important;
+  }
+  
+  .MuiDialog-root .MuiPickersLayout-contentWrapper {
+    background-color: #1a1a1a !important;
+  }
+  
+  .MuiDialog-root .MuiDialogContent-root {
+    background-color: #1a1a1a !important;
+  }
+  
+  /* Time clock wrapper */
+  .MuiDialog-root .MuiTimeClock-root {
+    background-color: #1a1a1a !important;
+  }
+  
+  /* AM/PM buttons when selected - green */
+  .MuiDialog-root .MuiClock-amButton.Mui-selected,
+  .MuiDialog-root .MuiClock-pmButton.Mui-selected {
+    background-color: rgba(34, 197, 94, 0.5) !important;
+    color: #ffffff !important;
+  }
+  
+  /* Clock pointer - green */
+  .MuiDialog-root .MuiClockPointer-root {
+    background-color: rgba(34, 197, 94, 0.8) !important;
+  }
+  
+  .MuiDialog-root .MuiClockPointer-thumb {
+    background-color: rgba(34, 197, 94, 1) !important;
+    border-color: rgba(34, 197, 94, 1) !important;
+    border-radius: 50% !important;
+  }
+  
+  /* Action buttons - green */
+  .MuiDialog-root .MuiButton-root {
+    color: rgba(34, 197, 94, 1) !important;
+  }
+  
+  /* Icon buttons */
+  .MuiDialog-root .MuiIconButton-root {
+    color: #ffffff !important;
+  }
+}

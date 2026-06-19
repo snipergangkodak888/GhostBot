@@ -1,0 +1,19 @@
+{
+  "framework": "nextjs",
+  "buildCommand": "next build",
+  "outputDirectory": ".next",
+  "crons": [
+    {
+      "path": "/api/cron/notifications?type=daily-energy",
+      "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/cron/notifications?type=inactivity",
+      "schedule": "0 10 * * *"
+    },
+    {
+      "path": "/api/cron/notifications?type=pending-reward",
+      "schedule": "0 12 * * *"
+    }
+  ]
+}
