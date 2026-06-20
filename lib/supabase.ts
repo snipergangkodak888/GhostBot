@@ -1,6 +1,9 @@
+import dns from "node:dns"
 import fs from "fs"
 import path from "path"
 import postgres from "postgres"
+
+dns.setDefaultResultOrder("ipv4first")
 
 type SupabaseRequestOptions = {
   method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE"
@@ -13,7 +16,11 @@ type SupabaseRequestOptions = {
 const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || ""
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || ""
 const anonKey = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
-const databaseUrl = process.env.SUPABASE_DATABASE_URL || process.env.DATABASE_URL || ""
+const databaseUrl =
+  process.env.SUPABASE_POOLER_DATABASE_URL ||
+  process.env.SUPABASE_DATABASE_URL ||
+  process.env.DATABASE_URL ||
+  ""
 
 export const supabaseConfig = {
   url: supabaseUrl,
@@ -61,7 +68,7 @@ function isMissingDocumentsTable(status: number, message: string) {
 async function ensureSupabaseSchema() {
   if (!databaseUrl) {
     throw new Error(
-      "Supabase documents table is missing. Add SUPABASE_DATABASE_URL so the app can create it automatically."
+      "Supabase documents table is missing. Set SUPABASE_POOLER_DATABASE_URL to the Session pooler URI shown by Supabase Connect."
     )
   }
 
@@ -99,7 +106,12 @@ async function ensureSupabaseSchema() {
 }
 
 function isConnectionHostError(error: any) {
-  return error?.code === "ENOTFOUND" || error?.code === "EAI_AGAIN"
+  return [
+    "ENOTFOUND",
+    "EAI_AGAIN",
+    "ENETUNREACH",
+    "EHOSTUNREACH",
+  ].includes(error?.code)
 }
 
 function isWrongPoolerRoute(error: any) {
@@ -181,7 +193,9 @@ export async function supabaseRest<T = unknown>(
 
 export function getSupabasePoolConnectionString() {
   if (!databaseUrl) {
-    throw new Error("SUPABASE_DATABASE_URL or DATABASE_URL is not set")
+    throw new Error(
+      "SUPABASE_POOLER_DATABASE_URL, SUPABASE_DATABASE_URL, or DATABASE_URL is not set"
+    )
   }
   return databaseUrl
 }

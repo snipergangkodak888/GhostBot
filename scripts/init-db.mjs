@@ -14,7 +14,10 @@ dotenv.config(fs.existsSync(localEnv) ? { path: localEnv } : undefined)
 
 const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-const databaseUrl = process.env.SUPABASE_DATABASE_URL || process.env.DATABASE_URL
+const databaseUrl =
+  process.env.SUPABASE_POOLER_DATABASE_URL ||
+  process.env.SUPABASE_DATABASE_URL ||
+  process.env.DATABASE_URL
 
 const SUPABASE_POOLER_REGIONS = [
   "aws-0-us-east-1",
@@ -77,8 +80,9 @@ async function supabaseRest(pathname, options = {}) {
 
 async function ensureSchema() {
   if (!databaseUrl) {
-    console.log("[init-db] SUPABASE_DATABASE_URL is not set; skipping automatic schema creation")
-    return
+    throw new Error(
+      "[init-db] Set SUPABASE_POOLER_DATABASE_URL to the Session pooler URI shown by Supabase Connect."
+    )
   }
 
   const schemaPath = path.join(cwd, "supabase", "schema.sql")
