@@ -14,10 +14,14 @@ dotenv.config(fs.existsSync(localEnv) ? { path: localEnv } : undefined)
 
 const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-const databaseUrl =
-  process.env.SUPABASE_POOLER_DATABASE_URL ||
-  process.env.SUPABASE_DATABASE_URL ||
-  process.env.DATABASE_URL
+const databaseUrlSource = process.env.SUPABASE_POOLER_DATABASE_URL
+  ? "SUPABASE_POOLER_DATABASE_URL"
+  : process.env.SUPABASE_DATABASE_URL
+    ? "SUPABASE_DATABASE_URL"
+    : process.env.DATABASE_URL
+      ? "DATABASE_URL"
+      : null
+const databaseUrl = databaseUrlSource ? process.env[databaseUrlSource]?.trim() : undefined
 
 const SUPABASE_POOLER_REGIONS = [
   "aws-0-us-east-1",
@@ -87,6 +91,19 @@ async function ensureSchema() {
 
   const schemaPath = path.join(cwd, "supabase", "schema.sql")
   const schemaSql = fs.readFileSync(schemaPath, "utf8")
+  const configuredUrl = new URL(databaseUrl)
+  const projectRef = getProjectRef(supabaseUrl || "")
+  const poolerUserIsValid = !configuredUrl.hostname.endsWith(".pooler.supabase.com") ||
+    configuredUrl.username === `postgres.${projectRef}`
+
+  console.log(
+    `[init-db] Connecting with ${databaseUrlSource}: host=${configuredUrl.hostname} port=${configuredUrl.port || "5432"} user=${configuredUrl.username.startsWith("postgres.") ? "postgres.<project-ref>" : configuredUrl.username}`
+  )
+  if (!poolerUserIsValid) {
+    throw new Error(
+      `[init-db] Pooler username must be postgres.${projectRef}. Copy the complete Session pooler URI from Supabase Connect.`
+    )
+  }
 
   let lastError
   for (const connectionUrl of getSchemaConnectionUrls(databaseUrl, supabaseUrl || "")) {
@@ -105,7 +122,7 @@ async function ensureSchema() {
     } catch (error) {
       lastError = error
       if (!isRetryableConnectionRouteError(error)) throw error
-      console.warn(`[init-db] Supabase connection route did not match this project, trying next route...`)
+      console.warn(`[init-db] Connection failed (${error?.code || "unknown"}); trying fallback route...`)
     } finally {
       await sql.end({ timeout: 5 }).catch(() => {})
     }
@@ -137,8 +154,10 @@ function getSchemaConnectionUrls(rawDatabaseUrl, rawSupabaseUrl) {
 
   try {
     const parsed = new URL(rawDatabaseUrl)
+    if (parsed.hostname.endsWith(".pooler.supabase.com")) return urls
+
     const hostMatch = parsed.hostname.match(/^db\.([a-z0-9]+)\.supabase\.co$/i)
-    const projectRef = hostMatch?.[1] || new URL(rawSupabaseUrl).hostname.split(".")[0]
+    const projectRef = hostMatch?.[1] || getProjectRef(rawSupabaseUrl)
     if (!projectRef) return urls
 
     const pathname = parsed.pathname || "/postgres"
@@ -155,6 +174,14 @@ function getSchemaConnectionUrls(rawDatabaseUrl, rawSupabaseUrl) {
   } catch {}
 
   return Array.from(new Set(urls))
+}
+
+function getProjectRef(rawSupabaseUrl) {
+  try {
+    return new URL(rawSupabaseUrl).hostname.split(".")[0]
+  } catch {
+    return ""
+  }
 }
 
 async function upsertDocument(collection, id, data) {

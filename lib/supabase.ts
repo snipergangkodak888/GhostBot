@@ -128,6 +128,8 @@ function getSchemaConnectionUrls(rawDatabaseUrl: string, rawSupabaseUrl: string)
 
   try {
     const parsed = new URL(rawDatabaseUrl)
+    if (parsed.hostname.endsWith(".pooler.supabase.com")) return urls
+
     const hostMatch = parsed.hostname.match(/^db\.([a-z0-9]+)\.supabase\.co$/i)
     const projectRef = hostMatch?.[1] || new URL(rawSupabaseUrl).hostname.split(".")[0]
     if (!projectRef) return urls
