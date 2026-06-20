@@ -1,9 +1,12 @@
 #!/usr/bin/env node
+import dns from "node:dns"
 import fs from "fs"
 import path from "path"
 import dotenv from "dotenv"
 import bcrypt from "bcryptjs"
 import postgres from "postgres"
+
+dns.setDefaultResultOrder("ipv4first")
 
 const cwd = process.cwd()
 const localEnv = path.join(cwd, ".env.local")
