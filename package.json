@@ -4,7 +4,6 @@
   "private": true,
   "scripts": {
     "build": "next build",
-    "postbuild": "node ./scripts/init-db.mjs",
     "dev": "next dev",
     "db:init": "node ./scripts/init-db.mjs",
     "db:seed-tasks": "node ./scripts/seed-tasks.mjs",

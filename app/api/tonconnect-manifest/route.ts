@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
 
+export const dynamic = 'force-dynamic'
+
 // Serve dynamic TON Connect manifest based on admin settings
 export async function GET() {
   try {

@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { withDb } from '@/lib/db'
 import { GiftCategory } from '@/types/category'
 
+export const dynamic = 'force-dynamic'
+
 // Public endpoint to get active categories for users
 export async function GET(req: NextRequest) {
   try {

@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { withDb } from '@/lib/db'
 
+export const dynamic = 'force-dynamic'
+
 // Public endpoint: returns active payment methods for user-facing clients (no secrets)
 export async function GET() {
   try {
