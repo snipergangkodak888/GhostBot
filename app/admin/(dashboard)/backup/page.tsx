@@ -1,11 +1,12 @@
 "use client"
 
 import { useState } from "react"
-import { Database, Download, Upload, AlertTriangle, CheckCircle2 } from "lucide-react"
+import { Download, Upload, AlertTriangle, CheckCircle2, Trash2 } from "lucide-react"
 
 export default function BackupPage() {
   const [isExporting, setIsExporting] = useState(false)
   const [isImporting, setIsImporting] = useState(false)
+  const [isResetting, setIsResetting] = useState(false)
   const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null)
 
   const handleExport = async () => {
@@ -21,7 +22,7 @@ export default function BackupPage() {
       const url = window.URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `database_backup_${new Date().toISOString().replace(/[:.]/g, '-')}.json`
+      a.download = `ghost_platform_backup_${new Date().toISOString().replace(/[:.]/g, '-')}.json`
       document.body.appendChild(a)
       a.click()
       window.URL.revokeObjectURL(url)
@@ -32,6 +33,33 @@ export default function BackupPage() {
       setMessage({ type: 'error', text: e.message || 'Export failed.' })
     } finally {
       setIsExporting(false)
+    }
+  }
+
+  const handleReset = async () => {
+    const confirmation = prompt(
+      'This deletes all projects, sheets, notes, payroll, users, transactions, and other platform data. Admin accounts and settings are preserved.\n\nType RESET PLATFORM DATA to continue:'
+    )
+    if (confirmation !== 'RESET PLATFORM DATA') {
+      if (confirmation !== null) setMessage({ type: 'error', text: 'Reset cancelled: confirmation phrase did not match.' })
+      return
+    }
+
+    setIsResetting(true)
+    setMessage(null)
+    try {
+      const res = await fetch('/api/admin/backup', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmation })
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || 'Failed to reset platform data')
+      setMessage({ type: 'success', text: `Platform reset completed. ${data.deleted || 0} records removed; admin accounts and settings preserved.` })
+    } catch (e: any) {
+      setMessage({ type: 'error', text: e.message || 'Reset failed.' })
+    } finally {
+      setIsResetting(false)
     }
   }
 
@@ -102,7 +130,7 @@ export default function BackupPage() {
           </p>
           <button
             onClick={handleExport}
-            disabled={isExporting || isImporting}
+            disabled={isExporting || isImporting || isResetting}
             className="w-full py-3 bg-[#146efc] text-black font-semibold rounded-xl hover:bg-[#146efc]/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2"
           >
             {isExporting ? (
@@ -131,11 +159,11 @@ export default function BackupPage() {
               type="file"
               accept=".json"
               onChange={handleImport}
-              disabled={isExporting || isImporting}
+              disabled={isExporting || isImporting || isResetting}
               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed"
             />
             <button
-              disabled={isExporting || isImporting}
+              disabled={isExporting || isImporting || isResetting}
               className="w-full py-3 border-2 border-red-500/30 text-red-400 font-semibold rounded-xl hover:bg-red-500/10 transition-colors disabled:opacity-50 flex justify-center items-center gap-2"
             >
               {isImporting ? (
@@ -148,6 +176,32 @@ export default function BackupPage() {
               )}
             </button>
           </div>
+        </div>
+
+        <div className="bg-[#111] border border-red-500/20 rounded-2xl p-6 md:col-span-2">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="p-2 bg-red-500/10 rounded-lg">
+              <Trash2 className="h-5 w-5 text-red-400" />
+            </div>
+            <h2 className="text-lg font-semibold text-white">Reset Platform Data</h2>
+          </div>
+          <p className="text-sm text-gray-400 mb-6">
+            Permanently remove all projects—including orphaned data from deleted projects—plus sheets, notes, payroll, users, transactions, and operational records. Admin accounts and platform settings are preserved.
+          </p>
+          <button
+            onClick={handleReset}
+            disabled={isExporting || isImporting || isResetting}
+            className="w-full py-3 bg-red-500/15 border border-red-500/30 text-red-300 font-semibold rounded-xl hover:bg-red-500/25 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2"
+          >
+            {isResetting ? (
+              <>
+                <div className="h-4 w-4 border-2 border-red-300/30 border-t-red-300 rounded-full animate-spin" />
+                Resetting Platform...
+              </>
+            ) : (
+              'Reset All Platform Data'
+            )}
+          </button>
         </div>
       </div>
     </div>

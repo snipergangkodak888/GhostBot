@@ -1,4 +1,5 @@
 import { getDb } from "@/lib/db"
+import { deleteProjectCascade } from "@/lib/platform-data"
 import { calculateSheetFinancials, createDefaultSheetsForProject, inferSheetKind } from "@/lib/ops-sheets"
 import { getOpsSourceDocs } from "@/lib/ops-source-docs"
 import { savePayrollDay } from "@/lib/payroll-day"
@@ -1039,9 +1040,8 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
       : projects.filter((item: any) => sameName(item.name, payload.projectName) || includesText(item.name, payload.projectName))
     if (matches.length !== 1) return `⚠️ I found ${matches.length} matching projects. I did not remove anything.`
     const project = matches[0]
-    await db.collection("opsProjects").deleteOne({ _id: project._id })
-    await db.collection("opsSheets").deleteMany({ projectId: String(project._id) })
-    done = `🗑️ Project removed: ${project.name}`
+    const deleted = await deleteProjectCascade(String(project._id), project.name)
+    done = `🗑️ Project removed: ${project.name} (${deleted.deleted} related records)`
   }
 
   if (action.actionType === "delete_reminder") {

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { answerOpsAi, answerOpsBot, chooseOpsAiActionCandidate, executeOpsAiAction, formatOpsProjectDetails, proposeOpsAiAction, rejectOpsAiAction } from "@/lib/ops-bot"
 import { getTeamAccess, redeemGuardInviteCode } from "@/lib/team-access"
 import { getDb } from "@/lib/db"
+import { deleteProjectCascade } from "@/lib/platform-data"
 import { getSheetSchema, SHEET_KIND_ORDER, valuesForKind, type SheetKind } from "@/lib/sheet-schemas"
 import { getTelegramBotToken, telegramApi } from "@/lib/telegram-bot"
 import { savePayrollDay } from "@/lib/payroll-day"
@@ -520,12 +521,8 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     return sendProjectDetail(token, chatId, id)
   }
   if (area === "project" && action === "delete") {
-    await db.collection("opsProjects").deleteOne({ _id: id })
-    await Promise.all([
-      db.collection("opsSheets").deleteMany({ projectId: id }),
-      db.collection("opsProjectNotes").deleteMany({ projectId: id }),
-    ])
-    await sendMessage(token, chatId, "🗑 Project, notes, and data files removed.")
+    const result = await deleteProjectCascade(id)
+    await sendMessage(token, chatId, `🗑 Project and ${result.deleted} related records removed.`)
     return sendProjects(token, chatId)
   }
 

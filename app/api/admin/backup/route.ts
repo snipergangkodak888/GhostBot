@@ -1,92 +1,151 @@
-import { NextResponse } from 'next/server'
-import { getDb } from '@/lib/db'
-import { ObjectId } from '@/lib/object-id'
-import { verifyAdminToken } from '@/lib/auth'
-import { cookies } from 'next/headers'
+import { NextResponse } from "next/server"
+import { cookies } from "next/headers"
+import { verifyAdminToken } from "@/lib/auth"
+import { getDb } from "@/lib/db"
+import { resetPlatformData } from "@/lib/platform-data"
 
-export async function GET(req: Request) {
+export const dynamic = "force-dynamic"
+
+type BackupCollections = Record<string, any[]>
+
+async function requireAdmin() {
+  const token = cookies().get("admin_token")?.value
+  if (!token) return null
   try {
-    const admin = await verifyAdminToken(cookies().get('admin_token')?.value || '')
-    if (!admin) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
+    return await verifyAdminToken(token)
+  } catch {
+    return null
+  }
+}
 
-    const db = await getDb()
+function validCollectionName(value: string) {
+  return /^[A-Za-z0-9_-]{1,100}$/.test(value)
+}
 
-    const collections = await db.collections()
-    const backupData: Record<string, any[]> = {}
+function parseBackupPayload(body: any): BackupCollections {
+  const source = body?.format === "ghost-platform-backup"
+    ? body.collections
+    : body
 
-    for (const collection of collections) {
-      const name = collection.collectionName
-      const docs = await collection.find({}).toArray()
-      backupData[name] = docs
-    }
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    throw new Error("Invalid backup payload.")
+  }
 
-    return new NextResponse(JSON.stringify(backupData), {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Disposition': `attachment; filename="database_backup_${new Date().toISOString().replace(/[:.]/g, '-')}.json"`
+  const collections: BackupCollections = {}
+  for (const [name, docs] of Object.entries(source)) {
+    if (!validCollectionName(name)) throw new Error(`Invalid collection name: ${name}`)
+    if (!Array.isArray(docs)) throw new Error(`Collection ${name} must contain an array.`)
+    collections[name] = docs.map((doc) => {
+      if (!doc || typeof doc !== "object" || Array.isArray(doc)) {
+        throw new Error(`Collection ${name} contains an invalid document.`)
       }
+      return JSON.parse(JSON.stringify(doc))
+    })
+  }
+  return collections
+}
+
+async function readAllCollections(): Promise<BackupCollections> {
+  const db = await getDb()
+  const collections = await db.collections()
+  const result: BackupCollections = {}
+  for (const collection of collections) {
+    result[collection.collectionName] = await collection.find({}).toArray()
+  }
+  return result
+}
+
+async function replaceAllCollections(collections: BackupCollections) {
+  const db = await getDb()
+  const existing = await db.collections()
+
+  for (const collection of existing) {
+    await db.collection(collection.collectionName).deleteMany({})
+  }
+
+  for (const [name, docs] of Object.entries(collections)) {
+    if (docs.length) await db.collection(name).insertMany(docs)
+  }
+}
+
+export async function GET() {
+  const admin = await requireAdmin()
+  if (!admin) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+
+  try {
+    const collections = await readAllCollections()
+    const documentCount = Object.values(collections).reduce((sum, docs) => sum + docs.length, 0)
+    const payload = {
+      format: "ghost-platform-backup",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      summary: {
+        collections: Object.keys(collections).length,
+        documents: documentCount,
+      },
+      collections,
+    }
+
+    return new NextResponse(JSON.stringify(payload, null, 2), {
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Disposition": `attachment; filename="ghost_platform_backup_${new Date().toISOString().replace(/[:.]/g, "-")}.json"`,
+      },
     })
   } catch (error: any) {
-    console.error('Backup Error:', error)
-    return NextResponse.json({ error: error.message || 'Failed to export backup' }, { status: 500 })
+    console.error("Backup export error:", error)
+    return NextResponse.json({ error: error?.message || "Failed to export backup" }, { status: 500 })
   }
 }
 
 export async function POST(req: Request) {
+  const admin = await requireAdmin()
+  if (!admin) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+
   try {
-    const admin = await verifyAdminToken(cookies().get('admin_token')?.value || '')
-    if (!admin) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    const imported = parseBackupPayload(await req.json())
+    const previous = await readAllCollections()
+
+    try {
+      await replaceAllCollections(imported)
+    } catch (restoreError) {
+      await replaceAllCollections(previous).catch((rollbackError) => {
+        console.error("Backup rollback failed:", rollbackError)
+      })
+      throw restoreError
     }
 
-    const body = await req.json()
-    if (!body || typeof body !== 'object') {
-      return NextResponse.json({ error: 'Invalid backup payload format.' }, { status: 400 })
-    }
-
-    const db = await getDb()
-    const currentCollections = await db.collections()
-    const collectionNames = currentCollections.map((c: any) => c.collectionName)
-
-    // Optional: We can drop all current data first?
-    // It's safer to drop collections that are present in the backup, then insert.
-    for (const [colName, docs] of Object.entries(body)) {
-      if (!Array.isArray(docs)) continue; // skip invalid formats
-
-      if (!collectionNames.includes(colName)) {
-        await db.createCollection(colName);
-      } else {
-        await db.collection(colName).deleteMany({});
-      }
-
-      if (docs.length > 0) {
-        const processedDocs = docs.map((doc: any) => {
-          if (doc._id && typeof doc._id === 'string' && doc._id.length === 24) {
-            try {
-              doc._id = new ObjectId(doc._id);
-            } catch(e) {}
-          }
-          // Note: fields like dates won't be proper Date objects anymore, just ISO strings. 
-          // For generic backup/restores, this is a known limitation of JSON parsing unless we parse them recursively.
-          // Since we might need dates:
-          for (const key of Object.keys(doc)) {
-              if (typeof doc[key] === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.\d{3}Z$/.test(doc[key])) {
-                  doc[key] = new Date(doc[key]);
-              }
-          }
-          return doc;
-        });
-
-        await db.collection(colName).insertMany(processedDocs);
-      }
-    }
-
-    return NextResponse.json({ success: true, message: 'Database imported successfully.' })
+    const documentCount = Object.values(imported).reduce((sum, docs) => sum + docs.length, 0)
+    return NextResponse.json({
+      success: true,
+      message: "Full platform backup restored.",
+      collections: Object.keys(imported).length,
+      documents: documentCount,
+    })
   } catch (error: any) {
-    console.error('Import Error:', error)
-    return NextResponse.json({ error: error.message || 'Failed to import backup' }, { status: 500 })
+    console.error("Backup import error:", error)
+    return NextResponse.json({ error: error?.message || "Failed to import backup" }, { status: 500 })
+  }
+}
+
+export async function DELETE(req: Request) {
+  const admin = await requireAdmin()
+  if (!admin) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+
+  const body = await req.json().catch(() => ({}))
+  if (body?.confirmation !== "RESET PLATFORM DATA") {
+    return NextResponse.json({ error: "Confirmation phrase did not match." }, { status: 400 })
+  }
+
+  try {
+    const result = await resetPlatformData()
+    return NextResponse.json({
+      success: true,
+      message: "Platform data reset completed. Admin accounts and settings were preserved.",
+      ...result,
+    })
+  } catch (error: any) {
+    console.error("Platform reset error:", error)
+    return NextResponse.json({ error: error?.message || "Failed to reset platform data" }, { status: 500 })
   }
 }

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
 import { ObjectId } from '@/lib/object-id'
+import { deleteProjectCascade } from '@/lib/platform-data'
 
 export const dynamic = 'force-dynamic'
 
@@ -40,10 +41,6 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 }
 
 export async function DELETE(_req: Request, { params }: { params: { id: string } }) {
-  const db = await getDb()
-  await Promise.all([
-    db.collection('opsProjects').deleteOne(idFilter(params.id)),
-    db.collection('opsProjectNotes').deleteMany({ projectId: params.id }),
-  ])
-  return NextResponse.json({ ok: true })
+  const result = await deleteProjectCascade(params.id)
+  return NextResponse.json({ ok: true, ...result })
 }
