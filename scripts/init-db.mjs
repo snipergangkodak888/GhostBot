@@ -111,7 +111,12 @@ async function ensureSchema() {
 }
 
 function isConnectionHostError(error) {
-  return error?.code === "ENOTFOUND" || error?.code === "EAI_AGAIN"
+  return [
+    "ENOTFOUND",
+    "EAI_AGAIN",
+    "ENETUNREACH",
+    "EHOSTUNREACH",
+  ].includes(error?.code)
 }
 
 function isWrongPoolerRoute(error) {
