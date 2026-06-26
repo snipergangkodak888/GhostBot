@@ -72,7 +72,7 @@ async function supabaseRest(pathname, options = {}) {
     const message = await res.text().catch(() => res.statusText)
     if (res.status === 404 && message.includes("public.documents")) {
       throw new Error(
-        "[init-db] Supabase documents table is missing. Add SUPABASE_DATABASE_URL so deploy can create it automatically."
+        "[init-db] Supabase documents table is missing. Add SUPABASE_POOLER_DATABASE_URL so deploy can create it automatically."
       )
     }
     throw new Error(`[init-db] Supabase request failed: ${res.status} ${message}`)

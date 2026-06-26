@@ -1,27 +1,9 @@
 "use client"
 
 import { useEffect, useCallback, useRef } from 'react'
+import { MAIN_LOGO_URL } from '@/lib/branding'
 
-// List of commonly used stickers to preload
-const PRELOAD_IMAGES = [
-  '/images/Stickers/brand.webp',
-  '/images/Stickers/crown.gif',
-  '/images/Stickers/trophy.webp',
-  '/images/Stickers/gem-stone.webp',
-  '/images/Stickers/confetti-ball.webp',
-  '/images/Stickers/money-bag.webp',
-  '/images/Stickers/fire.webp',
-  '/images/Stickers/crystal-ball.webp',
-  '/images/Stickers/task.webp',
-  '/images/Stickers/friends.webp',
-  '/images/Stickers/collection.webp',
-  '/images/Stickers/button.webp',
-  '/images/Stickers/megaphone.webp',
-  '/images/Stickers/1st-place-medal.webp',
-  '/images/Stickers/2nd-place-medal.webp',
-  '/images/Stickers/3rd-place-medal.webp',
-  '/images/Stickers/dashboard.gif',
-]
+const PRELOAD_IMAGES = [MAIN_LOGO_URL]
 
 // Cache for loaded images
 const imageCache = new Map<string, HTMLImageElement>()
@@ -72,10 +54,6 @@ export function useImagePreloader(additionalImages?: string[]) {
  * This helps with browser caching by ensuring consistent URLs
  */
 export function getCachedImageUrl(src: string): string {
-  // Add cache-busting version for consistency
-  if (src.startsWith('/images/Stickers/')) {
-    return src // Let browser handle caching with Cache-Control headers
-  }
   return src
 }
 
@@ -85,15 +63,7 @@ export function getCachedImageUrl(src: string): string {
 export function preloadLandingImages() {
   if (typeof window === 'undefined') return
 
-  const criticalImages = [
-    '/images/Stickers/brand.webp',
-    '/images/Stickers/crown.gif',
-    '/images/Stickers/trophy.webp',
-    '/images/Stickers/confetti-ball.webp',
-    '/images/Stickers/gem-stone.webp',
-  ]
-
-  criticalImages.forEach(src => {
+  ;[MAIN_LOGO_URL].forEach(src => {
     const link = document.createElement('link')
     link.rel = 'preload'
     link.as = 'image'
@@ -108,12 +78,7 @@ export function preloadLandingImages() {
 export function preloadAdminImages() {
   if (typeof window === 'undefined') return
 
-  const adminImages = [
-    '/images/Stickers/brand.webp',
-    '/images/Stickers/dashboard.gif',
-  ]
-
-  adminImages.forEach(src => {
+  ;[MAIN_LOGO_URL].forEach(src => {
     const link = document.createElement('link')
     link.rel = 'preload'
     link.as = 'image'

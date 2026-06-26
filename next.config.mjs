@@ -32,69 +32,8 @@ const nextConfig = {
   async headers() {
     return [
       {
-        // Splash screen: cached for 1 hour, but busted by ?v=<cacheVersion> query param from admin panel
-        source: '/images/Splash/:path*',
-        headers: [
-          {
-            key: 'Cache-Control',
-            value: 'public, max-age=3600, stale-while-revalidate=86400',
-          },
-        ],
-      },
-      {
-        // Cache all images in Stickers folder (webp, gif, png)
-        source: '/images/Stickers/:path*',
-        headers: [
-          {
-            key: 'Cache-Control',
-            value: 'public, max-age=31536000, immutable',
-          },
-        ],
-      },
-      {
         // Cache logos
         source: '/logos/:path*',
-        headers: [
-          {
-            key: 'Cache-Control',
-            value: 'public, max-age=31536000, immutable',
-          },
-        ],
-      },
-      {
-        // Icons cached (but not Splash)
-        source: '/images/Icons/:path*',
-        headers: [
-          {
-            key: 'Cache-Control',
-            value: 'public, max-age=31536000, immutable',
-          },
-        ],
-      },
-      {
-        // intro gifs cached
-        source: '/images/intro/:path*',
-        headers: [
-          {
-            key: 'Cache-Control',
-            value: 'public, max-age=31536000, immutable',
-          },
-        ],
-      },
-      {
-        // Token images
-        source: '/images/Token/:path*',
-        headers: [
-          {
-            key: 'Cache-Control',
-            value: 'public, max-age=31536000, immutable',
-          },
-        ],
-      },
-      // REMOVED broad /:path*.webp rule — too aggressive, caused splash to never update
-      {
-        // Cache all .gif files
-        source: '/:path*.gif',
         headers: [
           {
             key: 'Cache-Control',
@@ -111,47 +50,6 @@ const nextConfig = {
             value: 'public, max-age=31536000, immutable',
           },
         ],
-      },
-      {
-        // Cache .tgs files (Telegram stickers)
-        source: '/:path*.tgs',
-        headers: [
-          {
-            key: 'Cache-Control',
-            value: 'public, max-age=31536000, immutable',
-          },
-        ],
-      },
-      {
-        // Cache 8ball game assets (images, audio, data)
-        source: '/8ball/assets/:path*',
-        headers: [
-          {
-            key: 'Cache-Control',
-            value: 'public, max-age=31536000, immutable',
-          },
-        ],
-      },
-      {
-        // Cache 8ball JS files
-        source: '/8ball/:path*.js',
-        headers: [
-          {
-            key: 'Cache-Control',
-            value: 'public, max-age=31536000, immutable',
-          },
-        ],
-      },
-    ]
-  },
-  
-  // Rewrites for dynamic manifest
-  async rewrites() {
-    return [
-      {
-        // Serve dynamic TON Connect manifest
-        source: '/tonconnect-manifest.json',
-        destination: '/api/tonconnect-manifest',
       },
     ]
   },

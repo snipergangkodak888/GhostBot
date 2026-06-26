@@ -389,58 +389,6 @@ select.ledger-input {
   padding-left: 2rem;
 }
 
-@keyframes scroll-infinite {
-  0% {
-    transform: translateX(0);
-  }
-  100% {
-    transform: translateX(-50%);
-  }
-}
-
-.animate-scroll-infinite {
-  animation: scroll-infinite 8s linear infinite;
-}
-
-@keyframes carousel-scroll {
-  0% {
-    transform: translateX(0%);
-  }
-  100% {
-    transform: translateX(-33.333%);
-  }
-}
-
-/* Continuous Swiper - smooth linear scrolling without gaps */
-.continuous-swiper .swiper-wrapper,
-.continuous-scroll-swiper .swiper-wrapper {
-  transition-timing-function: linear !important;
-}
-
-.continuous-swiper .swiper-slide,
-.continuous-scroll-swiper .swiper-slide {
-  flex-shrink: 0;
-}
-
-/* Hide scrollbar for carousel */
-.carousel-no-scrollbar::-webkit-scrollbar {
-  display: none;
-}
-.carousel-no-scrollbar {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
-  /* Enable hardware acceleration for smooth scrolling */
-  will-change: scroll-position;
-  -webkit-overflow-scrolling: touch;
-}
-
-/* Smooth carousel items */
-.carousel-no-scrollbar > * {
-  will-change: transform;
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
-}
-
 /* Shimmer animation for podium */
 @keyframes shimmer {
   0% {
@@ -494,15 +442,4 @@ select.ledger-input {
 /* Radial gradient background */
 .bg-gradient-radial {
   background: radial-gradient(circle, var(--tw-gradient-stops));
-}
-
-/* Wallet chart tooltip */
-.wallet-chart-tooltip {
-  background-color: rgba(0, 0, 0, 0.8);
-  backdrop-filter: blur(12px);
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  padding: 8px 12px;
-  font-size: 12px;
-  color: white;
 }
