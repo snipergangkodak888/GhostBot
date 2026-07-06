@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server"
-import { answerOpsAi, answerOpsBot, chooseOpsAiActionCandidate, executeOpsAiAction, formatOpsProjectDetails, proposeOpsAiAction, rejectOpsAiAction } from "@/lib/ops-bot"
+import { answerOpsAi, answerOpsBot, buildConversationContext, chooseOpsAiActionCandidate, executeOpsAiAction, formatOpsProjectDetails, isFollowUpMessage, proposeOpsAiAction, rejectOpsAiAction, type OpsAiOptions } from "@/lib/ops-bot"
 import { getTeamAccess, redeemGuardInviteCode } from "@/lib/team-access"
 import { getDb } from "@/lib/db"
 import { deleteProjectCascade } from "@/lib/platform-data"
 import { getSheetSchema, SHEET_KIND_ORDER, valuesForKind, type SheetKind } from "@/lib/sheet-schemas"
-import { getTelegramBotToken, telegramApi } from "@/lib/telegram-bot"
+import { formatTeamDateTime, parseTeamDateTime, TEAM_TIME_ZONE } from "@/lib/team-timezone"
+import { getTelegramBotToken, getTelegramBotUsername, telegramApi, telegramApiJson, withTelegramLoading } from "@/lib/telegram-bot"
 import { savePayrollDay } from "@/lib/payroll-day"
 
 type InlineButton = { text: string; callback_data?: string; url?: string; web_app?: { url: string } }
@@ -26,13 +27,54 @@ function replyKeyboard() {
   }
 }
 
+function removeGroupKeyboard() {
+  return { remove_keyboard: true }
+}
+
 async function sendMessage(token: string, chatId: number | string, text: string, inline?: InlineButton[][]) {
+  const inGroup = isGroupChatId(chatId)
   await telegramApi(token, "sendMessage", {
     chat_id: chatId,
     text,
     ...(hasTelegramHtml(text) ? { parse_mode: "HTML" } : {}),
     disable_web_page_preview: true,
-    reply_markup: inline ? { inline_keyboard: inline } : replyKeyboard(),
+    ...(inline
+      ? { reply_markup: { inline_keyboard: inline } }
+      : inGroup
+        ? { reply_markup: removeGroupKeyboard() }
+        : { reply_markup: replyKeyboard() }),
+  })
+}
+
+function botReplyMarkup(chatId: number | string, inline?: InlineButton[][]) {
+  if (inline) return { inline_keyboard: inline }
+  if (isGroupChatId(chatId)) return removeGroupKeyboard()
+  return replyKeyboard()
+}
+
+function botReplyOptions(chatId: number | string, text: string, inline?: InlineButton[][]) {
+  const replyMarkup = botReplyMarkup(chatId, inline)
+  return {
+    parseMode: hasTelegramHtml(text) ? "HTML" as const : undefined,
+    ...(replyMarkup ? { replyMarkup } : {}),
+  }
+}
+
+async function sendAsyncResponse(
+  token: string,
+  chatId: number | string,
+  work: () => Promise<{ text: string; inline?: InlineButton[][] }>,
+  loadingText = "⏳ One moment…",
+) {
+  await withTelegramLoading(token, chatId, {
+    loadingText,
+    work: async () => {
+      const result = await work()
+      return {
+        text: result.text,
+        ...botReplyOptions(chatId, result.text, result.inline),
+      }
+    },
   })
 }
 
@@ -66,6 +108,9 @@ function helpMessage() {
   return [
     "🛡️ Ghost Team bot is ready.",
     "",
+    "In groups, @mention me, reply to my message, or use a /command.",
+    "Menu buttons only work in DMs — groups use @mention or /commands.",
+    "",
     "Use the stable buttons below, or type:",
     "📈 /profit",
     "📁 /projects",
@@ -74,7 +119,7 @@ function helpMessage() {
     "💸 /payroll",
     "🧾 /log <project id> <trading|dev> <amount>",
     "📝 /notes",
-    "🧠 /ai your question",
+    "🧠 @me your question",
   ].join("\n")
 }
 
@@ -146,6 +191,109 @@ function isGroupChat(chat: any) {
   return chat?.type === "group" || chat?.type === "supergroup"
 }
 
+function isGroupChatId(chatId: number | string) {
+  return Number(chatId) < 0
+}
+
+const GROUP_MENU_TEXTS = new Set([
+  "🏠 Home",
+  "📁 Projects",
+  "🟡 Projects",
+  "📈 Profit",
+  "💸 Payroll",
+  "📅 Calendar",
+  "🟠 Calendar",
+  "🔔 Reminders",
+  "📝 Notes",
+  "🧠 AI",
+])
+
+function isGroupMenuButton(text: string) {
+  return GROUP_MENU_TEXTS.has(String(text || "").trim())
+}
+
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+function stripBotCommandSuffix(text: string) {
+  return String(text || "").trim().replace(/^(\/\w+)@[\w]+\b/i, "$1")
+}
+
+function botCommandName(text: string) {
+  const normalized = stripBotCommandSuffix(text)
+  const match = normalized.match(/^\/([a-z0-9_]+)(?:\s|$)/i)
+  return match?.[1]?.toLowerCase() || ""
+}
+
+function isBotCommand(text: string, ...names: string[]) {
+  const command = botCommandName(text)
+  return Boolean(command && names.includes(command))
+}
+
+function isSlashCommand(text: string, entities: any[] = []) {
+  const normalized = stripBotCommandSuffix(text)
+  if (!normalized.startsWith("/")) return false
+  if (entities.some((entity) => entity.type === "bot_command" && entity.offset === 0)) return true
+  return /^\/[a-z0-9_]+(?:@[\w]+)?(?:\s|$)/i.test(text)
+}
+
+function messageMentionsBot(text: string, entities: any[] = [], botUsername: string) {
+  if (!botUsername) return false
+  const lowerUsername = botUsername.toLowerCase()
+  for (const entity of entities) {
+    if (entity.type === "mention") {
+      const mention = text.slice(entity.offset, entity.offset + entity.length).replace(/^@/, "").toLowerCase()
+      if (mention === lowerUsername) return true
+    }
+    if (entity.type === "text_mention" && entity.user?.is_bot && String(entity.user.username || "").toLowerCase() === lowerUsername) {
+      return true
+    }
+  }
+  return new RegExp(`@${escapeRegex(botUsername)}(?:\\s|$)`, "i").test(text)
+}
+
+async function isReplyToBot(message: any, botUsername: string) {
+  const reply = message?.reply_to_message
+  if (!reply?.from?.is_bot) return false
+  const replyUsername = String(reply.from.username || "").toLowerCase()
+  if (botUsername && replyUsername === botUsername.toLowerCase()) return true
+  if (!botUsername) return true
+  const token = await getTelegramBotToken()
+  if (!token) return false
+  const payload = await telegramApiJson(token, "getMe", {})
+  const botId = Number(payload?.result?.id || 0)
+  return botId > 0 && Number(reply.from.id) === botId
+}
+
+function stripBotMention(text: string, entities: any[] = [], botUsername: string) {
+  if (!botUsername) return text.trim()
+  const lowerUsername = botUsername.toLowerCase()
+  const mentionEntity = entities.find((entity) => {
+    if (entity.type !== "mention") return false
+    const mention = text.slice(entity.offset, entity.offset + entity.length).replace(/^@/, "").toLowerCase()
+    return mention === lowerUsername
+  })
+  if (mentionEntity) {
+    return `${text.slice(0, mentionEntity.offset)}${text.slice(mentionEntity.offset + mentionEntity.length)}`.trim()
+  }
+  return text.replace(new RegExp(`^@${escapeRegex(botUsername)}\\s*`, "i"), "").trim()
+}
+
+async function resolveGroupMessage(text: string, entities: any[] = [], message?: any) {
+  const botUsername = await getTelegramBotUsername()
+  const command = isSlashCommand(text, entities)
+  const mention = messageMentionsBot(text, entities, botUsername)
+  const menu = isGroupMenuButton(text)
+  const reply = await isReplyToBot(message, botUsername)
+  if (!command && !mention && !menu && !reply) {
+    return { shouldRoute: false as const, routedText: "" }
+  }
+  const routedText = mention && !command ? stripBotMention(text, entities, botUsername) : text
+  if (!routedText) return { shouldRoute: false as const, routedText: "" }
+  return { shouldRoute: true as const, routedText }
+}
+
 async function hostGroupIfAllowed(chat: any, from: any) {
   if (!isGroupChat(chat) || !from?.id) return
   const access = await getTeamAccess(Number(from.id))
@@ -191,10 +339,12 @@ function money(value?: number) {
   return `$${Number(value || 0).toLocaleString()}`
 }
 
-function dateLabel(value?: string) {
+function dateLabel(value?: string, timeZone = TEAM_TIME_ZONE) {
   if (!value) return "No date"
+  const parsed = parseTeamDateTime(value, timeZone)
+  if (parsed) return formatTeamDateTime(parsed, timeZone)
   const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? "No date" : date.toLocaleDateString()
+  return Number.isNaN(date.getTime()) ? "No date" : formatTeamDateTime(date, timeZone)
 }
 
 function estDateKey() {
@@ -364,14 +514,33 @@ async function logProjectIncome(token: string, chatId: number | string, text: st
   ].filter(Boolean).join("\n"))
 }
 
-async function sendAiResponse(token: string, chatId: number | string, telegramId: number, text: string) {
-  const proposed = await proposeOpsAiAction(text, telegramId).catch(() => null)
-  if (proposed) {
-    return sendMessage(token, chatId, proposed.message, proposed.buttons || [
-      [{ text: "✅ Confirm", callback_data: `ai:confirm:${proposed.actionId}` }, { text: "❌ Refuse", callback_data: `ai:reject:${proposed.actionId}` }],
-    ])
+async function buildAiOptions(telegramId: number, chatId: number | string, message?: any): Promise<OpsAiOptions> {
+  return {
+    chatId,
+    conversation: await buildConversationContext(telegramId, chatId, message),
   }
-  return sendMessage(token, chatId, await answerOpsAi(text, telegramId))
+}
+
+async function maybeProposeAction(text: string, telegramId: number, aiOptions: OpsAiOptions) {
+  if (aiOptions.conversation?.replyToBotText) return null
+  if (isFollowUpMessage(text) && (aiOptions.conversation?.recentTurns.length || 0) > 0) return null
+  return proposeOpsAiAction(text, telegramId).catch(() => null)
+}
+
+async function sendAiResponse(token: string, chatId: number | string, telegramId: number, text: string, message?: any) {
+  const aiOptions = await buildAiOptions(telegramId, chatId, message)
+  await sendAsyncResponse(token, chatId, async () => {
+    const proposed = await maybeProposeAction(text, telegramId, aiOptions)
+    if (proposed) {
+      return {
+        text: proposed.message,
+        inline: proposed.buttons || [
+          [{ text: "✅ Confirm", callback_data: `ai:confirm:${proposed.actionId}` }, { text: "❌ Refuse", callback_data: `ai:reject:${proposed.actionId}` }],
+        ],
+      }
+    }
+    return { text: await answerOpsAi(text, telegramId, aiOptions) }
+  }, "🧠 Working on it…")
 }
 
 function aiCommandText(text: string) {
@@ -380,7 +549,7 @@ function aiCommandText(text: string) {
   return String(match[1] || "").trim()
 }
 
-async function processState(token: string, chatId: number | string, telegramId: number, text: string, messageDateMs: number) {
+async function processState(token: string, chatId: number | string, telegramId: number, text: string, messageDateMs: number, message?: any) {
   const state = await takeState(telegramId)
   if (!state) return false
   const db = await getDb()
@@ -413,7 +582,7 @@ async function processState(token: string, chatId: number | string, telegramId: 
       await sendMessage(token, chatId, "Send: Reminder title | YYYY-MM-DD HH:mm | message")
       return true
     }
-    await db.collection("opsReminders").insertOne({ title, message: message || title, dueAt: dueAt ? new Date(dueAt).toISOString() : new Date(Date.now() + 60 * 60 * 1000).toISOString(), recurrence: "none", audience: "team", status: "scheduled", createdFrom: "bot", telegramId, createdAt: now, updatedAt: now })
+    await db.collection("opsReminders").insertOne({ title, message: message || title, dueAt: dueAt ? (parseTeamDateTime(dueAt)?.toISOString() || new Date(dueAt).toISOString()) : new Date(Date.now() + 60 * 60 * 1000).toISOString(), timeZone: TEAM_TIME_ZONE, recurrence: "none", audience: "team", status: "scheduled", createdFrom: "bot", telegramId, createdAt: now, updatedAt: now })
     await clearState(telegramId)
     await sendMessage(token, chatId, "✅ Reminder added.")
     await sendReminders(token, chatId)
@@ -477,7 +646,7 @@ async function processState(token: string, chatId: number | string, telegramId: 
     const startedAt = Number(state.startedAt || 0)
     if (startedAt && messageDateMs && messageDateMs <= startedAt) return true
     await clearState(telegramId)
-    await sendAiResponse(token, chatId, telegramId, text)
+    await sendAiResponse(token, chatId, telegramId, text, message)
     return true
   }
 
@@ -494,16 +663,25 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   if (area === "notes" && action === "project") return sendProjectNotes(token, chatId, id)
 
   if (area === "ai" && action === "confirm") {
-    return sendMessage(token, chatId, await executeOpsAiAction(id, telegramId))
+    return sendAsyncResponse(token, chatId, async () => ({
+      text: await executeOpsAiAction(id, telegramId),
+    }), "✅ Applying…")
   }
   if (area === "ai" && action === "reject") {
-    return sendMessage(token, chatId, await rejectOpsAiAction(id, telegramId))
+    return sendAsyncResponse(token, chatId, async () => ({
+      text: await rejectOpsAiAction(id, telegramId),
+    }))
   }
   if (area === "ai" && (action === "newest" || action === "oldest")) {
-    const picked = await chooseOpsAiActionCandidate(id, action, telegramId)
-    return sendMessage(token, chatId, picked.message, picked.ok ? [
-      [{ text: "✅ Confirm", callback_data: `ai:confirm:${id}` }, { text: "❌ Refuse", callback_data: `ai:reject:${id}` }],
-    ] : undefined)
+    return sendAsyncResponse(token, chatId, async () => {
+      const picked = await chooseOpsAiActionCandidate(id, action, telegramId)
+      return {
+        text: picked.message,
+        inline: picked.ok ? [
+          [{ text: "✅ Confirm", callback_data: `ai:confirm:${id}` }, { text: "❌ Refuse", callback_data: `ai:reject:${id}` }],
+        ] : undefined,
+      }
+    }, "🧠 Working on it…")
   }
 
   if (area === "project" && action === "add") {
@@ -600,11 +778,12 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   return sendMessage(token, chatId, helpMessage())
 }
 
-async function routeText(token: string, chatId: number | string, telegramId: number, text: string, req: NextRequest, messageDateMs: number) {
-  const aiCommand = aiCommandText(text)
+async function routeText(token: string, chatId: number | string, telegramId: number, text: string, req: NextRequest, messageDateMs: number, message?: any) {
+  const commandText = stripBotCommandSuffix(text)
+  const aiCommand = aiCommandText(commandText)
   if (aiCommand !== null) {
     await clearState(telegramId)
-    if (aiCommand) return sendAiResponse(token, chatId, telegramId, aiCommand)
+    if (aiCommand) return sendAiResponse(token, chatId, telegramId, aiCommand, message)
     await setState(telegramId, { action: "ai", startedAt: messageDateMs || Date.now() })
     return sendMessage(token, chatId, "🧠 Send your AI question now.\n\nI will answer only the next message sent after this command.\n\nSend /cancel to stop.")
   }
@@ -615,23 +794,34 @@ async function routeText(token: string, chatId: number | string, telegramId: num
     return sendMessage(token, chatId, "🧠 Send your AI question now.\n\nI will answer only the next message sent after this command.\n\nSend /cancel to stop.")
   }
 
-  if (await processState(token, chatId, telegramId, text, messageDateMs)) return
+  if (await processState(token, chatId, telegramId, text, messageDateMs, message)) return
 
-  if (text === "🏠 Home" || text === "/menu" || text === "/help" || text === "/commands") return sendMessage(token, chatId, helpMessage())
+  if (text === "🏠 Home" || isBotCommand(text, "menu", "help", "commands")) return sendMessage(token, chatId, helpMessage())
   if (/^\/log(?:@\w+)?(?:\s|$)/i.test(text)) return logProjectIncome(token, chatId, text)
-  if (text === "📁 Projects" || text === "🟡 Projects" || text === "/projects") return sendProjects(token, chatId)
-  if (text === "📈 Profit" || text === "/profit") return sendMessage(token, chatId, await answerOpsBot("profit today", telegramId))
-  if (text === "💸 Payroll" || text === "/payroll") return sendPayroll(token, chatId)
-  if (text === "📅 Calendar" || text === "🟠 Calendar" || text === "/calendar") return sendCalendar(token, chatId)
-  if (text === "🔔 Reminders" || text === "/reminders") return sendReminders(token, chatId)
-  if (text === "📝 Notes" || text === "/notes") return sendProjectNotes(token, chatId, "all")
-  const proposed = await proposeOpsAiAction(text, telegramId).catch(() => null)
-  if (proposed) {
-    return sendMessage(token, chatId, proposed.message, proposed.buttons || [
-      [{ text: "✅ Confirm", callback_data: `ai:confirm:${proposed.actionId}` }, { text: "❌ Refuse", callback_data: `ai:reject:${proposed.actionId}` }],
-    ])
+  if (text === "📁 Projects" || text === "🟡 Projects" || isBotCommand(text, "projects")) return sendProjects(token, chatId)
+  if (text === "📈 Profit" || isBotCommand(text, "profit")) {
+    return sendAsyncResponse(token, chatId, async () => ({
+      text: await answerOpsBot("profit today", telegramId),
+    }), "📈 Checking…")
   }
-  return sendMessage(token, chatId, await answerOpsBot(text, telegramId))
+  if (text === "💸 Payroll" || isBotCommand(text, "payroll")) return sendPayroll(token, chatId)
+  if (text === "📅 Calendar" || text === "🟠 Calendar" || isBotCommand(text, "calendar")) return sendCalendar(token, chatId)
+  if (text === "🔔 Reminders" || isBotCommand(text, "reminders")) return sendReminders(token, chatId)
+  if (text === "📝 Notes" || isBotCommand(text, "notes")) return sendProjectNotes(token, chatId, "all")
+
+  const aiOptions = await buildAiOptions(telegramId, chatId, message)
+  return sendAsyncResponse(token, chatId, async () => {
+    const proposed = await maybeProposeAction(text, telegramId, aiOptions)
+    if (proposed) {
+      return {
+        text: proposed.message,
+        inline: proposed.buttons || [
+          [{ text: "✅ Confirm", callback_data: `ai:confirm:${proposed.actionId}` }, { text: "❌ Refuse", callback_data: `ai:reject:${proposed.actionId}` }],
+        ],
+      }
+    }
+    return { text: await answerOpsBot(text, telegramId, aiOptions) }
+  }, "🧠 Working on it…")
 }
 
 export async function POST(req: NextRequest) {
@@ -658,7 +848,7 @@ export async function POST(req: NextRequest) {
 
   if (!text) return NextResponse.json({ ok: true })
 
-  if (text === "/start" || text.startsWith("/start ")) {
+  if (/^\/start(?:@\w+)?(?:\s|$)/i.test(text)) {
     void setBotCommands(token)
     const ok = await ensureAccess({ token, chatId, telegramId, text, profile: from, req })
     if (ok) await hostGroupIfAllowed(message?.chat, from)
@@ -666,9 +856,25 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true })
   }
 
+  const chat = message?.chat
+  const entities = update.message?.entities || update.edited_message?.entities || []
+
+  if (isGroupChat(chat)) {
+    const groupMessage = await resolveGroupMessage(text, entities, message)
+    if (!groupMessage.shouldRoute) {
+      await hostGroupIfAllowed(chat, from)
+      return NextResponse.json({ ok: true })
+    }
+
+    const ok = await ensureAccess({ token, chatId, telegramId, text, profile: from, req })
+    if (ok) await hostGroupIfAllowed(chat, from)
+    if (ok && telegramId) await routeText(token, chatId, telegramId, groupMessage.routedText, req, messageDateMs, message)
+    return NextResponse.json({ ok: true })
+  }
+
   const ok = await ensureAccess({ token, chatId, telegramId, text, profile: from, req })
   if (ok) await hostGroupIfAllowed(message?.chat, from)
-  if (ok && telegramId) await routeText(token, chatId, telegramId, text, req, messageDateMs)
+  if (ok && telegramId) await routeText(token, chatId, telegramId, text, req, messageDateMs, message)
   return NextResponse.json({ ok: true })
 }
 

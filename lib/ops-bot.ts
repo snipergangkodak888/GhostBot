@@ -3,6 +3,7 @@ import { deleteProjectCascade } from "@/lib/platform-data"
 import { calculateSheetFinancials, createDefaultSheetsForProject, inferSheetKind } from "@/lib/ops-sheets"
 import { getOpsSourceDocs } from "@/lib/ops-source-docs"
 import { savePayrollDay } from "@/lib/payroll-day"
+import { formatTeamDateTime, normalizeReminderDueAt, parseTeamDateTime, teamNowParts, TEAM_TIME_ZONE } from "@/lib/team-timezone"
 import { getSheetSchema, normalizeSheetKind, valuesForKind, type SheetKind } from "@/lib/sheet-schemas"
 
 function includes(text: string, words: string[]) {
@@ -142,32 +143,6 @@ function formatAiText(value: string) {
   return formatBotText(value, { allowEmoji: true, autoEmoji: false, maxEmoji: 3 })
 }
 
-const OUT_OF_SCOPE_MESSAGE = "I can only answer project, data, payroll, calendar, reminder, and app-operation questions."
-
-function isOpsQuestion(text: string, projects: any[] = [], sheets: any[] = []) {
-  const lower = String(text || "").toLowerCase()
-  if (!lower.trim()) return false
-  const opsWords = [
-    "project", "projects", "data", "sheet", "sheets", "file", "files", "income", "revenue", "expense",
-    "profit", "loss", "payroll", "calendar", "launch", "reminder", "reminders", "note", "notes", "docs",
-    "document", "documents", "referrer", "wallet", "service", "status", "active", "inactive", "progress",
-    "performance", "performed", "report", "summary", "start date", "end date", "tge", "mm",
-    "sumo", "bible", "conduct", "communication", "communications", "policy", "policies", "market making",
-  ]
-  if (/\b(our|my|team)\s+performance\b/.test(lower)) return true
-  if (/\b(projects?|ops|operations)\s+performance\b/.test(lower)) return true
-  if (opsWords.some((word) => lower.includes(word))) return true
-  if (/^\/?(activate|deactivate|log|setreminder)\b/.test(lower)) return true
-  if (isActionRequest(lower) && opsWords.some((word) => lower.includes(word))) return true
-  if (projects.some((project: any) => searchable(project.name) && searchable(lower).includes(searchable(project.name)))) return true
-  return sheets.some((sheet: any) => {
-    const title = searchable(sheet.title)
-    const cleanTitle = searchable(cleanSheetTitle(sheet))
-    const request = searchable(lower)
-    return (title && request.includes(title)) || (cleanTitle && request.includes(cleanTitle))
-  })
-}
-
 function uniqueLines(lines: string[]) {
   const seen = new Set<string>()
   return lines.filter((line) => {
@@ -181,7 +156,81 @@ function uniqueLines(lines: string[]) {
 function isActionRequest(text: string) {
   const lower = text.toLowerCase()
   if (/^(show|list|what|how much|tell me|summarize|summary|calculate|check|view)\b/.test(lower)) return false
+  if (/^(yes|yeah|yep|yup|sure|ok|okay|please|thanks|thank you)\b/.test(lower)) return false
+  if (/^(yes|yeah|yep|sure|ok|okay)[,.!?\s-]*(go ahead|please|do it|sounds good|that works)\b/.test(lower)) return false
+  if (/^go ahead\b/.test(lower)) return false
   return /\b(add|create|insert|update|edit|change|set|schedule|remind|mark|pay|delete|remove)\b/.test(lower)
+}
+
+export function isFollowUpMessage(text: string) {
+  const lower = String(text || "").trim().toLowerCase()
+  if (!lower || lower.length > 120) return false
+  return /^(yes|yeah|yep|yup|sure|ok|okay|please|thanks|thank you|go ahead|do it|sounds good|that works|continue|keep going|more detail|expand that|rewrite that|make it client-friendly|client-friendly version)\b/.test(lower)
+    || /^(yes|yeah|yep|sure|ok|okay)[,.!?\s-]*(go ahead|please|do it|sounds good|that works)\b/.test(lower)
+}
+
+function stripTelegramHtml(text: string) {
+  return String(text || "")
+    .replace(/<\/?(b|strong|i|em|u|s|code|pre|a)\b[^>]*>/gi, "")
+    .replace(/\s+\n/g, "\n")
+    .trim()
+}
+
+export type OpsConversationContext = {
+  replyToBotText?: string
+  recentTurns: Array<{ user: string; assistant: string }>
+}
+
+export type OpsAiOptions = {
+  chatId?: number | string | null
+  conversation?: OpsConversationContext
+}
+
+export async function buildConversationContext(
+  telegramId?: number | null,
+  chatId?: number | string | null,
+  message?: any,
+): Promise<OpsConversationContext | undefined> {
+  if (!telegramId) return undefined
+
+  const reply = message?.reply_to_message
+  const replyToBotText = reply?.from?.is_bot ? stripTelegramHtml(String(reply.text || "")) : ""
+  const db = await getDb()
+  const since = new Date(Date.now() - 45 * 60 * 1000)
+  const filter: Record<string, unknown> = { telegramId, createdAt: { $gte: since } }
+  if (chatId) filter.chatId = String(chatId)
+
+  const logs = await db.collection("opsBotLogs").find(filter).sort({ createdAt: -1 }).limit(4).toArray()
+  const recentTurns = logs
+    .reverse()
+    .map((log: any) => ({
+      user: String(log.text || "").replace(/^\/ai\s+/, "").trim(),
+      assistant: stripTelegramHtml(String(log.answer || "")),
+    }))
+    .filter((turn) => turn.user && turn.assistant)
+    .slice(-3)
+
+  if (!replyToBotText && recentTurns.length === 0) return undefined
+  return {
+    replyToBotText: replyToBotText || undefined,
+    recentTurns,
+  }
+}
+
+async function logBotExchange(params: {
+  text: string
+  answer: string
+  telegramId?: number | null
+  chatId?: number | string | null
+}) {
+  const db = await getDb()
+  await db.collection("opsBotLogs").insertOne({
+    text: params.text,
+    answer: params.answer,
+    telegramId: params.telegramId || null,
+    chatId: params.chatId ? String(params.chatId) : null,
+    createdAt: new Date(),
+  })
 }
 
 function extractJson(text: string) {
@@ -636,7 +685,7 @@ async function resolveActionPreview(actionType: string, payload: any, context: {
       nextPayload.title = reminder.title || reminder.message
       nextPayload.dueAt = reminder.dueAt || nextPayload.dueAt
       preview.push(`🗑️ Will remove reminder: ${reminder.title || reminder.message}`)
-      if (reminder.dueAt) preview.push(`📅 Due: ${new Date(reminder.dueAt).toLocaleString()}`)
+      if (reminder.dueAt) preview.push(`📅 Due: ${formatTeamDateTime(reminder.dueAt)}`)
     } else warnings.push(`I found ${matches.length} matching reminders. I need one exact match before removing.`)
   }
 
@@ -681,13 +730,17 @@ async function resolveActionPreview(actionType: string, payload: any, context: {
 
   if (!isDelete) {
     if (actionType === "create_reminder" && nextPayload.title) preview.push(`🔔 Reminder: ${nextPayload.title}`)
+    if (actionType === "create_reminder" && nextPayload.dueAt) {
+      const parsed = parseTeamDateTime(nextPayload.dueAt, String(nextPayload.timeZone || nextPayload.timezone || TEAM_TIME_ZONE))
+      preview.push(`📅 Due: ${parsed ? formatTeamDateTime(parsed) : String(nextPayload.dueAt)}`)
+    }
     if (actionType === "create_payroll" && nextPayload.member) preview.push(`💸 Payroll member: ${nextPayload.member}`)
   }
 
   return { payload: nextPayload, preview, warnings, needsChoice }
 }
 
-async function aiChat(messages: Array<{ role: "system" | "user"; content: string }>, temperature = 0.2) {
+async function aiChat(messages: Array<{ role: "system" | "user" | "assistant"; content: string }>, temperature = 0.2) {
   const db = await getDb()
   const row = await db.collection("settings").findOne({ key: "openAi" })
   const openAi = row?.value && typeof row.value === "object" ? row.value : {}
@@ -725,8 +778,6 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
     db.collection("opsProjects").find({}).toArray(),
     db.collection("opsSheets").find({}).toArray(),
   ])
-  if (!isOpsQuestion(text, projects, sheets)) return null
-
   const projectNames = projects.slice(0, 40).map((project: any) => project.name).filter(Boolean)
   const sheetRefs = sheets.slice(0, 60).map((sheet: any) => ({
     title: cleanSheetTitle(sheet),
@@ -746,7 +797,7 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
         "Payload shapes:",
         "create_project: {name, referrer, referrerWallet, status, service, startDate, endDate, currentProfitLoss, notes, tags}",
         "update_project: {projectName, name, referrer, referrerWallet, status, service, startDate, endDate, currentProfitLoss, notes, tags}",
-        "create_reminder: {title, message, dueAt}",
+        "create_reminder: {title, message, dueAt, timeZone?}",
         "create_payroll: {member, amount, projectName, date, status, currency, notes}",
         "add_sheet_row: {projectName, sheetType, row}",
         "delete_project: {projectName}",
@@ -754,6 +805,9 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
         "delete_payroll: {member, projectName, date, amount}",
         "delete_sheet: {projectName, sheetType, title}",
         "delete_sheet_row: {projectName, sheetType, match}",
+        `Team default timezone is ${TEAM_TIME_ZONE} (ET). Interpret reminder times without an explicit timezone as ET.`,
+        "For create_reminder dueAt, return a local datetime string WITHOUT a Z suffix, e.g. 2026-07-07T23:00:00 for 11:00 PM ET on July 7.",
+        "If the user names another timezone (PT, UTC, London, etc.), include timeZone in the payload using an IANA name like America/Los_Angeles.",
         "Use exact existing project names when possible. Do not invent missing required values.",
         "For delete actions, identify the most specific target possible and add warnings if more than one item may match.",
         "Return: {actionType, summary, payload, warnings}.",
@@ -763,7 +817,10 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
       role: "user",
       content: JSON.stringify({
         request: text,
-        now: new Date().toISOString(),
+        nowUtc: new Date().toISOString(),
+        nowEt: formatTeamDateTime(new Date()),
+        teamTimeZone: TEAM_TIME_ZONE,
+        teamNow: teamNowParts(),
         projects: projectNames,
         sheets: sheetRefs,
       }),
@@ -782,6 +839,13 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
   if (!["create_project", "update_project", "create_reminder", "create_payroll", "add_sheet_row", "delete_project", "delete_reminder", "delete_payroll", "delete_sheet", "delete_sheet_row"].includes(actionType)) return null
 
   const payload = plan?.payload && typeof plan.payload === "object" ? plan.payload : {}
+  if (actionType === "create_reminder") {
+    const normalized = normalizeReminderDueAt(payload)
+    if (normalized) {
+      payload.dueAt = normalized.dueAt
+      payload.timeZone = normalized.timeZone
+    }
+  }
   const resolved = await resolveActionPreview(actionType, payload, { request: text, projects, sheets })
   const summary = String(plan?.summary || actionLabel(actionType)).trim()
   const warnings = [
@@ -964,10 +1028,13 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
   if (action.actionType === "create_reminder") {
     const title = String(payload.title || payload.message || "").trim()
     if (!title) return "⚠️ Missing reminder title. I did not change anything."
+    const normalized = normalizeReminderDueAt(payload)
+    const dueAt = normalized?.dueAt || new Date(Date.now() + 60 * 60 * 1000).toISOString()
     await db.collection("opsReminders").insertOne({
       title,
       message: String(payload.message || title).trim(),
-      dueAt: payload.dueAt ? new Date(payload.dueAt).toISOString() : new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      dueAt,
+      timeZone: normalized?.timeZone || TEAM_TIME_ZONE,
       recurrence: "none",
       audience: "team",
       status: "scheduled",
@@ -976,7 +1043,7 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
       createdAt: now,
       updatedAt: now,
     })
-    done = `✅ Reminder created: ${title}`
+    done = `✅ Reminder created: ${title}\n📅 Due: ${formatTeamDateTime(dueAt)}`
   }
 
   if (action.actionType === "create_payroll") {
@@ -1123,7 +1190,7 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
   return formatBotText(done, { allowEmoji: true })
 }
 
-export async function answerOpsBot(textInput: string, telegramId?: number | null) {
+export async function answerOpsBot(textInput: string, telegramId?: number | null, options: OpsAiOptions = {}) {
   const text = String(textInput || "").trim()
   const db = await getDb()
 
@@ -1137,9 +1204,7 @@ export async function answerOpsBot(textInput: string, telegramId?: number | null
   const allFinancials = calculateSheetFinancials(sheets)
   const scopeSuffix = scoped.hasScope ? ` for ${scoped.label}` : " across tracked projects"
 
-  if (!isOpsQuestion(text, projects, sheets)) {
-    answer = OUT_OF_SCOPE_MESSAGE
-  } else if (wantsAi(text)) {
+  if (wantsAi(text)) {
     const aiText = cleanAiQuestion(text)
     const aiScoped = scopeOpsQuestion(aiText, projects, sheets)
     answer = await answerWithAi(aiText, {
@@ -1148,6 +1213,7 @@ export async function answerOpsBot(textInput: string, telegramId?: number | null
       financials: calculateSheetFinancials(aiScoped.sheets),
       scopeLabel: aiScoped.hasScope ? aiScoped.label : "tracked projects",
       hasScope: aiScoped.hasScope,
+      conversation: options.conversation,
     }).catch(aiUnavailable)
   } else if (wantsProjectPerformance(text)) {
     answer = formatProjectPerformance(scoped.projects, scoped.sheets, text)
@@ -1187,7 +1253,7 @@ export async function answerOpsBot(textInput: string, telegramId?: number | null
     answer = scopedPayroll.length ? `💸 Pending payroll${scopeSuffix}:\n\n${scopedPayroll.map((row: any) => `• ${row.member}: ${money(row.amount)} ${row.project ? `- ${row.project}` : ""} (${row.status || "pending"})`).join("\n")}` : "💸 No pending payroll rows."
   } else if (includes(text, ["reminders", "next reminders", "scheduled reminders"])) {
     const reminders = await db.collection("opsReminders").find({ status: { $ne: "done" } }).sort({ dueAt: 1 }).limit(8).toArray()
-    answer = reminders.length ? `🔔 Upcoming reminders:\n\n${reminders.map((row: any) => `• ${row.title || row.message}${row.dueAt ? ` - ${new Date(row.dueAt).toLocaleString()}` : ""}`).join("\n")}` : "🔔 No upcoming reminders."
+    answer = reminders.length ? `🔔 Upcoming reminders:\n\n${reminders.map((row: any) => `• ${row.title || row.message}${row.dueAt ? ` - ${formatTeamDateTime(row.dueAt, String(row.timeZone || TEAM_TIME_ZONE))}` : ""}`).join("\n")}` : "🔔 No upcoming reminders."
   } else if (text.startsWith("/activate ") || text.startsWith("/deactivate ")) {
     const active = text.startsWith("/activate ")
     const name = text.replace(active ? "/activate " : "/deactivate ", "").trim()
@@ -1257,29 +1323,26 @@ export async function answerOpsBot(textInput: string, telegramId?: number | null
       financials: scoped.hasScope ? scopedFinancials : allFinancials,
       scopeLabel: scoped.hasScope ? scoped.label : "tracked projects",
       hasScope: scoped.hasScope,
+      conversation: options.conversation,
     }).catch(aiUnavailable)
   }
 
-  await db.collection("opsBotLogs").insertOne({ text, answer, telegramId: telegramId || null, createdAt: new Date() })
+  await logBotExchange({ text, answer, telegramId, chatId: options.chatId })
   return formatBotText(answer, { allowEmoji: true })
 }
 
-export async function answerOpsAi(textInput: string, telegramId?: number | null) {
+export async function answerOpsAi(textInput: string, telegramId?: number | null, options: OpsAiOptions = {}) {
   const text = String(textInput || "").trim()
   const db = await getDb()
   const [projects, sheets] = await Promise.all([
     db.collection("opsProjects").find({}).toArray(),
     db.collection("opsSheets").find({}).toArray(),
   ])
-  if (!isOpsQuestion(text, projects, sheets)) {
-    await db.collection("opsBotLogs").insertOne({ text: `/ai ${text}`, answer: OUT_OF_SCOPE_MESSAGE, telegramId: telegramId || null, createdAt: new Date() })
-    return formatBotText(OUT_OF_SCOPE_MESSAGE, { allowEmoji: true })
-  }
   const scoped = scopeOpsQuestion(text, projects, sheets)
   const financials = calculateSheetFinancials(scoped.sheets)
   if (wantsProjectPerformance(text)) {
     const answer = formatProjectPerformance(scoped.projects, scoped.sheets, text)
-    await db.collection("opsBotLogs").insertOne({ text: `/ai ${text}`, answer, telegramId: telegramId || null, createdAt: new Date() })
+    await logBotExchange({ text: `/ai ${text}`, answer, telegramId, chatId: options.chatId })
     return formatBotText(answer, { allowEmoji: true })
   }
   const answer = await answerWithAi(text, {
@@ -1288,12 +1351,23 @@ export async function answerOpsAi(textInput: string, telegramId?: number | null)
     financials,
     scopeLabel: scoped.hasScope ? scoped.label : "tracked projects",
     hasScope: scoped.hasScope,
+    conversation: options.conversation,
   }).catch(aiUnavailable)
-  await db.collection("opsBotLogs").insertOne({ text: `/ai ${text}`, answer, telegramId: telegramId || null, createdAt: new Date() })
+  await logBotExchange({ text: `/ai ${text}`, answer, telegramId, chatId: options.chatId })
   return formatAiText(answer)
 }
 
-async function answerWithAi(text: string, context: { projects: any[]; sheets: any[]; financials: ReturnType<typeof calculateSheetFinancials>; scopeLabel?: string; hasScope?: boolean }) {
+async function answerWithAi(
+  text: string,
+  context: {
+    projects: any[]
+    sheets: any[]
+    financials: ReturnType<typeof calculateSheetFinancials>
+    scopeLabel?: string
+    hasScope?: boolean
+    conversation?: OpsConversationContext
+  },
+) {
   const sourceDocs = await getOpsSourceDocs()
   const compactSheets = context.sheets.slice(0, 12).map((sheet: any) => ({
     title: cleanSheetTitle(sheet),
@@ -1305,14 +1379,14 @@ async function answerWithAi(text: string, context: { projects: any[]; sheets: an
   }))
 
   const systemPrompt = [
-    "You are Ghost Team System's operations analyst inside Telegram.",
-    "Only answer questions about Ghost Team projects, project data, payroll, reminders, calendar, documents, or app operations.",
-    "Questions about project performance, our performance, team performance, or yesterday's performance are in scope.",
-    `For anything outside that scope, answer exactly: ${OUT_OF_SCOPE_MESSAGE}`,
-    "Answer only from the provided projects, financial summaries, sheet previews, and source documents.",
-    "The provided Sumo source documents are mandatory operating source material. Follow them exactly for team conduct, communication, market-making procedure, client language, rules, and internal process questions.",
-    "When the user asks about Sumo, MM procedures, communications, conduct, policy, client wording, rules, or operations manual details, answer from sourceDocuments first.",
-    "Do not contradict sourceDocuments. If sourceDocuments do not contain the requested detail, say that the source docs do not specify it.",
+    "You are Ghost Team System's operations assistant inside Telegram.",
+    "Answer questions using the provided project data, financial summaries, sheet previews, and source documents.",
+    "The Sumo source documents are authoritative for conduct, communication, market-making procedure, client language, and internal process. Answer those from sourceDocuments.",
+    "Do not contradict sourceDocuments. If they do not contain a detail, say the source docs do not specify it.",
+    "If the question is unrelated to team ops or data (e.g. general trivia), say briefly that you only help with Ghost Team data and operations.",
+    "If the user wants to create, update, or delete app data, say they can ask you to do it and the bot will offer Confirm/Refuse.",
+    "Confirm/Refuse is only for database mutations with an action preview — never for follow-up questions, drafting client copy, clarifying your prior answer, or continuing a conversation.",
+    "When conversation history or a reply to your prior message is provided, treat short follow-ups like 'yeah go ahead', 'yes please', or 'rewrite that' as acceptance of your prior offer. Complete that follow-up directly.",
     "The provided context is already scoped to the user's mentioned project or file when they mention one.",
     "Never include projects, files, or totals outside the provided context.",
     "If multiple provided projects share the requested name, show each matching project separately with its project name and ask the user to choose newest or oldest if they need an exact target.",
@@ -1330,7 +1404,6 @@ async function answerWithAi(text: string, context: { projects: any[]; sheets: an
     "<u>INCOME</u> Rows\n\n• Casper: <b>$500</b> paid\n\n• Virl: <b>$2.1K</b> pending",
     "<u>PAYROLL</u> Snapshot\n\n💸 Pending: <b>$950</b>\nPaid rows: <b>12</b>\n\nNext: LOTUS <b>$150</b>",
     "<u>ACTION</u> Preview\n\nAdd income row to <b>Solana</b>\nAmount: <b>$500</b>\nStatus: <b>paid</b>\n\nConfirm before changing data.",
-    "If the user asks to create, update, insert, delete, or schedule something, do not explain manual steps. Say the action needs confirmation in the bot.",
   ].join("\n")
   const userContent = JSON.stringify({
     question: text,
@@ -1361,8 +1434,23 @@ async function answerWithAi(text: string, context: { projects: any[]; sheets: an
     })),
   })
 
+  const historyMessages: Array<{ role: "user" | "assistant"; content: string }> = []
+  for (const turn of context.conversation?.recentTurns || []) {
+    historyMessages.push({ role: "user", content: turn.user.slice(0, 1200) })
+    historyMessages.push({ role: "assistant", content: turn.assistant.slice(0, 1800) })
+  }
+
+  if (context.conversation?.replyToBotText) {
+    const replyText = context.conversation.replyToBotText.slice(0, 1800)
+    const alreadyIncluded = historyMessages.some((entry) => entry.role === "assistant" && entry.content === replyText)
+    if (!alreadyIncluded) {
+      historyMessages.push({ role: "assistant", content: replyText })
+    }
+  }
+
   return formatAiText(await aiChat([
     { role: "system", content: systemPrompt },
+    ...historyMessages,
     { role: "user", content: userContent },
-  ], 0.2))
+  ], isFollowUpMessage(text) ? 0.35 : 0.2))
 }
