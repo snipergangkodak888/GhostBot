@@ -53,6 +53,15 @@ export function teamNowParts(timeZone = TEAM_TIME_ZONE) {
   return partsInTimeZone(new Date(), timeZone)
 }
 
+export function teamDateKey(offsetDays = 0, timeZone = TEAM_TIME_ZONE) {
+  const now = teamNowParts(timeZone)
+  const anchor = zonedDateTimeToUtc(now.year, now.month, now.day, 12, 0, 0, timeZone)
+  anchor.setUTCDate(anchor.getUTCDate() + offsetDays)
+  const parts = partsInTimeZone(anchor, timeZone)
+  const pad = (value: number) => String(value).padStart(2, "0")
+  return `${parts.year}-${pad(parts.month)}-${pad(parts.day)}`
+}
+
 export function zonedDateTimeToUtc(
   year: number,
   month: number,

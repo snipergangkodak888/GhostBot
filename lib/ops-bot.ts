@@ -3,6 +3,19 @@ import { deleteProjectCascade } from "@/lib/platform-data"
 import { calculateSheetFinancials, createDefaultSheetsForProject, inferSheetKind } from "@/lib/ops-sheets"
 import { getOpsSourceDocs } from "@/lib/ops-source-docs"
 import { savePayrollDay } from "@/lib/payroll-day"
+import {
+  aggregateLedgerPeriod,
+  buildLedgerAiSnapshot,
+  formatLedgerPeriodSummary,
+  formatMoney as ledgerFormatMoney,
+  monthStartKey,
+  parseFinancialPeriod,
+  resolveFinancialTotals,
+  teamEstDateKey,
+  wantsLedgerFinancialQuestion,
+  weekStartKey,
+} from "@/lib/payroll-financials"
+import { miscIncomeCategoryLabel, parseIncomeLogCommand } from "@/lib/payroll-misc"
 import { formatTeamDateTime, normalizeReminderDueAt, parseTeamDateTime, teamNowParts, TEAM_TIME_ZONE } from "@/lib/team-timezone"
 import { getSheetSchema, normalizeSheetKind, valuesForKind, type SheetKind } from "@/lib/sheet-schemas"
 
@@ -12,18 +25,49 @@ function includes(text: string, words: string[]) {
 }
 
 function money(value: number) {
-  return `$${Number(value || 0).toLocaleString()}`
+  return ledgerFormatMoney(value)
 }
 
 function estDateKey() {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date())
-  const value = (type: string) => parts.find((part) => part.type === type)?.value || ""
-  return `${value("year")}-${value("month")}-${value("day")}`
+  return teamEstDateKey()
+}
+
+function sheetPeriodTotals(
+  financials: ReturnType<typeof calculateSheetFinancials>,
+  period: "today" | "week" | "month",
+) {
+  if (period === "today") {
+    return { income: financials.incomeToday, expense: financials.expenseToday + financials.payrollToday, payroll: financials.payrollToday, profit: financials.profitToday }
+  }
+  if (period === "week") {
+    return {
+      income: financials.incomeThisWeek,
+      expense: financials.expenseThisWeek + financials.payrollThisWeek,
+      payroll: financials.payrollThisWeek,
+      profit: financials.profitThisWeek,
+    }
+  }
+  return {
+    income: financials.incomeThisMonth,
+    expense: financials.expenseThisMonth + financials.payrollThisMonth,
+    payroll: financials.payrollThisMonth,
+    profit: financials.profitThisMonth,
+  }
+}
+
+function formatResolvedFinancialAnswer(label: string, resolved: ReturnType<typeof resolveFinancialTotals>, suffix: string) {
+  if (resolved.source === "payrollLedger") {
+    return [
+      `📈 ${label} profit${suffix}`,
+      "",
+      `💚 Trading income: ${money(resolved.income)}`,
+      `🔵 Misc income: ${money(resolved.miscIncome)}`,
+      `🔴 Team payroll: ${money(resolved.payroll)}`,
+      `💰 Net trading profit: ${money(resolved.profit)}`,
+      `📦 Total profit pool: ${money(resolved.totalProfitPool)}`,
+    ].join("\n")
+  }
+  return `📈 ${label} profit${suffix} is ${money(resolved.profit)}.\n\n💚 Income: ${money(resolved.income)}\n🔴 Expense: ${money(resolved.expense)}\n💸 Payroll: ${money(resolved.payroll)}`
 }
 
 function wantsAi(text: string) {
@@ -1195,10 +1239,13 @@ export async function answerOpsBot(textInput: string, telegramId?: number | null
   const db = await getDb()
 
   let answer = "🤖 I can answer revenue, profit, launches, active projects, payroll, reminders, notes, docs, and data questions."
-  const [projects, sheets] = await Promise.all([
+  const [projects, sheets, dailyPayrollEntries] = await Promise.all([
     db.collection("opsProjects").find({}).toArray(),
     db.collection("opsSheets").find({}).toArray(),
+    db.collection("dailyPayrollEntries").find({}).toArray(),
   ])
+  const todayKey = teamEstDateKey()
+  const ledgerSnapshot = buildLedgerAiSnapshot(dailyPayrollEntries, todayKey)
   const scoped = scopeOpsQuestion(text, projects, sheets)
   const scopedFinancials = calculateSheetFinancials(scoped.sheets)
   const allFinancials = calculateSheetFinancials(sheets)
@@ -1211,31 +1258,51 @@ export async function answerOpsBot(textInput: string, telegramId?: number | null
       projects: aiScoped.projects,
       sheets: aiScoped.sheets,
       financials: calculateSheetFinancials(aiScoped.sheets),
+      ledgerSnapshot,
       scopeLabel: aiScoped.hasScope ? aiScoped.label : "tracked projects",
       hasScope: aiScoped.hasScope,
       conversation: options.conversation,
     }).catch(aiUnavailable)
+  } else if (!scoped.hasScope && wantsLedgerFinancialQuestion(text)) {
+    const period = parseFinancialPeriod(text, todayKey)
+    if (period) {
+      const totals = aggregateLedgerPeriod(dailyPayrollEntries, period.from, period.to)
+      answer = formatLedgerPeriodSummary(totals, period.label)
+    }
   } else if (wantsProjectPerformance(text)) {
     answer = formatProjectPerformance(scoped.projects, scoped.sheets, text)
   } else if (includes(text, ["made today", "revenue today"])) {
-    const revenue = scopedFinancials.incomeToday || scoped.projects.reduce((sum: number, p: any) => sum + Number(p.revenueToday || 0), 0)
+    const ledger = aggregateLedgerPeriod(dailyPayrollEntries, todayKey, todayKey)
+    const resolved = resolveFinancialTotals(ledger, sheetPeriodTotals(scopedFinancials, "today"))
+    const revenue = resolved.income || scoped.projects.reduce((sum: number, p: any) => sum + Number(p.revenueToday || 0), 0)
     answer = duplicateNamedScope(scoped.projects)
       ? `💵 I found ${scoped.projects.length} matching projects named ${scoped.label}.\n\n${projectFinancialLines(scoped.projects, scoped.sheets, (financials, project) => financials.incomeToday || Number(project.revenueToday || 0)).join("\n")}\n\n🆕 Ask for newest or 🕰️ oldest if you want one exact project.`
       : `💵 Today revenue${scopeSuffix} is ${money(revenue)}.`
   } else if (includes(text, ["profit today", "today profit"])) {
     answer = duplicateNamedScope(scoped.projects)
       ? `📈 I found ${scoped.projects.length} matching projects named ${scoped.label}.\n\n${projectFinancialLines(scoped.projects, scoped.sheets, (financials) => financials.profitToday).join("\n")}\n\n🆕 Ask for newest or 🕰️ oldest if you want one exact project.`
-      : `📈 Today profit${scopeSuffix} is ${money(scopedFinancials.profitToday)}.\n\n💚 Income: ${money(scopedFinancials.incomeToday)}\n🔴 Expense: ${money(scopedFinancials.expenseToday)}\n💸 Payroll: ${money(scopedFinancials.payrollToday)}`
+      : formatResolvedFinancialAnswer("Today", resolveFinancialTotals(
+        aggregateLedgerPeriod(dailyPayrollEntries, todayKey, todayKey),
+        sheetPeriodTotals(scopedFinancials, "today"),
+      ), scopeSuffix)
   } else if (includes(text, ["profit this week", "profit week"])) {
     const legacyProfit = scoped.projects.reduce((sum: number, p: any) => sum + Number(p.profitThisWeek || 0), 0)
-    const profit = scopedFinancials.profitThisWeek || legacyProfit
+    const ledger = aggregateLedgerPeriod(dailyPayrollEntries, weekStartKey(todayKey), todayKey)
+    const resolved = resolveFinancialTotals(ledger, {
+      ...sheetPeriodTotals(scopedFinancials, "week"),
+      profit: sheetPeriodTotals(scopedFinancials, "week").profit || legacyProfit,
+    })
     answer = duplicateNamedScope(scoped.projects)
       ? `📊 I found ${scoped.projects.length} matching projects named ${scoped.label}.\n\n${projectFinancialLines(scoped.projects, scoped.sheets, (financials, project) => financials.profitThisWeek || Number(project.profitThisWeek || 0)).join("\n")}\n\n🆕 Ask for newest or 🕰️ oldest if you want one exact project.`
-      : `📊 This week profit${scopeSuffix} is ${money(profit)}.`
+      : formatResolvedFinancialAnswer("This week", resolved, scopeSuffix)
   } else if (includes(text, ["profit this month", "monthly profit", "profit month"])) {
+    const ledger = aggregateLedgerPeriod(dailyPayrollEntries, monthStartKey(todayKey), todayKey)
     answer = duplicateNamedScope(scoped.projects)
       ? `🗓️ I found ${scoped.projects.length} matching projects named ${scoped.label}.\n\n${projectFinancialLines(scoped.projects, scoped.sheets, (financials) => financials.profitThisMonth).join("\n")}\n\n🆕 Ask for newest or 🕰️ oldest if you want one exact project.`
-      : `🗓️ This month profit${scopeSuffix} is ${money(scopedFinancials.profitThisMonth)}.\n\n💚 Income: ${money(scopedFinancials.incomeThisMonth)}\n🔴 Expense: ${money(scopedFinancials.expenseThisMonth)}\n💸 Payroll: ${money(scopedFinancials.payrollThisMonth)}`
+      : formatResolvedFinancialAnswer("This month", resolveFinancialTotals(
+        ledger,
+        sheetPeriodTotals(scopedFinancials, "month"),
+      ), scopeSuffix)
   } else if (includes(text, ["active projects", "active project", "what is active", "which projects active"])) {
     answer = formatOpsActiveProjects(scoped.projects, scoped.sheets)
   } else if (scoped.hasScope && includes(text, ["project", "details", "status", "service", "referrer", "wallet", "start date", "end date", "profit loss", "p/l"])) {
@@ -1264,20 +1331,14 @@ export async function answerOpsBot(textInput: string, telegramId?: number | null
     )
     answer = `✅ ${name} is now ${active ? "active" : "inactive"}.`
   } else if (text.startsWith("/log ")) {
-    const match = text.match(/^\/log\s+(\S+)\s+(\S+)\s+(\d+)$/i)
-    if (!match) {
-      answer = "Use: /log <project id> <trading|dev> <integer amount>"
+    const parsed = parseIncomeLogCommand(text)
+    if ("error" in parsed) {
+      answer = parsed.error || "Invalid log command."
     } else {
-      const [, projectId, rawType, rawAmount] = match
-      const type = rawType.toLowerCase()
-      const isTrading = ["trading", "trade", "trading_income"].includes(type)
-      const isDev = ["dev", "allocation", "dev_allocation"].includes(type)
-      const amount = Number(rawAmount)
-      const project = await db.collection("opsProjects").findOne({ _id: projectId })
-      if (!project) {
+      const { projectId, isTrading, miscCategory, amount } = parsed
+      const project = projectId ? await db.collection("opsProjects").findOne({ _id: projectId }) : null
+      if (projectId && !project) {
         answer = "Project ID was not found."
-      } else if ((!isTrading && !isDev) || !Number.isInteger(amount) || amount <= 0) {
-        answer = "Income type must be trading or dev, and amount must be a whole number above 0."
       } else {
         const date = estDateKey()
         const existing = await db.collection("dailyPayrollEntries").findOne({ date })
@@ -1285,7 +1346,7 @@ export async function answerOpsBot(textInput: string, telegramId?: number | null
         const clientIncome = Array.isArray(inputs.clientIncome) ? [...inputs.clientIncome] : []
         const devAllocations = Array.isArray(inputs.devAllocations) ? [...inputs.devAllocations] : []
         if (isTrading) clientIncome.push({ projectId, incomeType: "trading", income: amount })
-        else devAllocations.push({ projectId, income: amount })
+        else devAllocations.push({ projectId: projectId || undefined, category: miscCategory, income: amount })
         await savePayrollDay({
           date,
           notes: existing?.notes || "",
@@ -1294,7 +1355,10 @@ export async function answerOpsBot(textInput: string, telegramId?: number | null
           devAllocations,
           rules: inputs.rules || {},
         })
-        answer = `✅ Logged ${money(amount)} ${isTrading ? "trading income" : "dev allocation"} for ${project.name}.`
+        const typeLabel = isTrading ? "trading income" : miscIncomeCategoryLabel(miscCategory).toLowerCase()
+        answer = project
+          ? `✅ Logged ${money(amount)} ${typeLabel} for ${project.name}.`
+          : `✅ Logged ${money(amount)} ${typeLabel}.`
       }
     }
   } else if (text.startsWith("/setreminder ")) {
@@ -1321,6 +1385,7 @@ export async function answerOpsBot(textInput: string, telegramId?: number | null
       projects: scoped.projects,
       sheets: scoped.sheets,
       financials: scoped.hasScope ? scopedFinancials : allFinancials,
+      ledgerSnapshot,
       scopeLabel: scoped.hasScope ? scoped.label : "tracked projects",
       hasScope: scoped.hasScope,
       conversation: options.conversation,
@@ -1334,10 +1399,12 @@ export async function answerOpsBot(textInput: string, telegramId?: number | null
 export async function answerOpsAi(textInput: string, telegramId?: number | null, options: OpsAiOptions = {}) {
   const text = String(textInput || "").trim()
   const db = await getDb()
-  const [projects, sheets] = await Promise.all([
+  const [projects, sheets, dailyPayrollEntries] = await Promise.all([
     db.collection("opsProjects").find({}).toArray(),
     db.collection("opsSheets").find({}).toArray(),
+    db.collection("dailyPayrollEntries").find({}).toArray(),
   ])
+  const ledgerSnapshot = buildLedgerAiSnapshot(dailyPayrollEntries)
   const scoped = scopeOpsQuestion(text, projects, sheets)
   const financials = calculateSheetFinancials(scoped.sheets)
   if (wantsProjectPerformance(text)) {
@@ -1349,6 +1416,7 @@ export async function answerOpsAi(textInput: string, telegramId?: number | null,
     projects: scoped.projects,
     sheets: scoped.sheets,
     financials,
+    ledgerSnapshot,
     scopeLabel: scoped.hasScope ? scoped.label : "tracked projects",
     hasScope: scoped.hasScope,
     conversation: options.conversation,
@@ -1363,6 +1431,7 @@ async function answerWithAi(
     projects: any[]
     sheets: any[]
     financials: ReturnType<typeof calculateSheetFinancials>
+    ledgerSnapshot: ReturnType<typeof buildLedgerAiSnapshot>
     scopeLabel?: string
     hasScope?: boolean
     conversation?: OpsConversationContext
@@ -1380,9 +1449,12 @@ async function answerWithAi(
 
   const systemPrompt = [
     "You are Ghost Team System's operations assistant inside Telegram.",
-    "Answer questions using the provided project data, financial summaries, sheet previews, and source documents.",
-    "The Sumo source documents are authoritative for conduct, communication, market-making procedure, client language, and internal process. Answer those from sourceDocuments.",
-    "Do not contradict sourceDocuments. If they do not contain a detail, say the source docs do not specify it.",
+    "Answer questions using the provided project data, payrollLedger summaries, sheet previews, and source documents.",
+    "For revenue, profit, income, payroll, referrals, and misc income numbers, payrollLedger is authoritative.",
+    "Use payrollLedger.byMonth, payrollLedger.thisMonth, payrollLedger.recentDays, and payrollLedger.today for financial answers.",
+    "If payrollLedger.savedDayCount is 0 or a period has no entries, say no payroll days were saved for that period — do not invent zeros from other fields.",
+    "The financials field is legacy sheet-tab totals (fallback only). Ignore it when payrollLedger has data for the requested period.",
+    "The Sumo source documents are authoritative for conduct, communication, market-making procedure, client language, and internal process only — never for P&L numbers.",
     "If the question is unrelated to team ops or data (e.g. general trivia), say briefly that you only help with Ghost Team data and operations.",
     "If the user wants to create, update, or delete app data, say they can ask you to do it and the bot will offer Confirm/Refuse.",
     "Confirm/Refuse is only for database mutations with an action preview — never for follow-up questions, drafting client copy, clarifying your prior answer, or continuing a conversation.",
@@ -1411,6 +1483,7 @@ async function answerWithAi(
       label: context.scopeLabel || "tracked projects",
       scoped: Boolean(context.hasScope),
     },
+    payrollLedger: context.ledgerSnapshot,
     financials: context.financials,
     projects: context.projects.slice(0, 12).map((project: any) => ({
       name: project.name,

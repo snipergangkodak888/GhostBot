@@ -5,8 +5,11 @@ import { getDb } from "@/lib/db"
 import { deleteProjectCascade } from "@/lib/platform-data"
 import { getSheetSchema, SHEET_KIND_ORDER, valuesForKind, type SheetKind } from "@/lib/sheet-schemas"
 import { formatTeamDateTime, parseTeamDateTime, TEAM_TIME_ZONE } from "@/lib/team-timezone"
-import { getTelegramBotToken, getTelegramBotUsername, telegramApi, telegramApiJson, withTelegramLoading } from "@/lib/telegram-bot"
+import { getTelegramBotToken, getTelegramBotUsername, sendChatAction, sendTelegramDocument, sendTelegramMessage, sendTelegramPhoto, telegramApi, telegramApiJson, withTelegramLoading } from "@/lib/telegram-bot"
 import { savePayrollDay } from "@/lib/payroll-day"
+import { loadDailyPayrollReport, parseReportDateFromText } from "@/lib/payroll-daily-report"
+import { renderPayrollReportPng } from "@/lib/payroll-report-image"
+import { miscIncomeCategoryLabel, parseIncomeLogCommand } from "@/lib/payroll-misc"
 
 type InlineButton = { text: string; callback_data?: string; url?: string; web_app?: { url: string } }
 
@@ -91,6 +94,7 @@ async function setBotCommands(token: string) {
       { command: "calendar", description: "Show launches and reminders" },
       { command: "reminders", description: "Manage reminders" },
       { command: "payroll", description: "Manage payroll" },
+      { command: "report", description: "Spreadsheet-style payroll breakdown image" },
       { command: "log", description: "Log project trading or dev income" },
       { command: "notes", description: "Show project notes" },
       { command: "ai", description: "Ask AI about projects and data" },
@@ -98,10 +102,14 @@ async function setBotCommands(token: string) {
   })
 }
 
-function appUrl(req: NextRequest) {
+function appBaseUrl(req: NextRequest) {
   const host = req.headers.get("x-forwarded-host") || req.headers.get("host") || ""
   const proto = req.headers.get("x-forwarded-proto") || "https"
-  return host ? `${proto}://${host}/telegram` : "https://ghost-sys.vercel.app/telegram"
+  return host ? `${proto}://${host}` : "https://ghost-sys.vercel.app"
+}
+
+function appUrl(req: NextRequest) {
+  return `${appBaseUrl(req)}/telegram`
 }
 
 function helpMessage() {
@@ -117,6 +125,7 @@ function helpMessage() {
     "📅 /calendar",
     "🔔 /reminders",
     "💸 /payroll",
+    "📊 /report [today|yesterday|YYYY-MM-DD]",
     "🧾 /log <project id> <trading|dev> <amount>",
     "📝 /notes",
     "🧠 @me your question",
@@ -468,30 +477,87 @@ async function sendPayroll(token: string, chatId: number | string) {
   ])
 }
 
+async function sendPayrollReport(token: string, chatId: number | string, text: string, req: NextRequest) {
+  const date = parseReportDateFromText(text)
+  void sendChatAction(token, chatId, "upload_photo")
+  const loadingMessageId = await sendTelegramMessage(token, chatId, "📊 Rendering payroll sheet…")
+
+  try {
+    const report = await loadDailyPayrollReport(date)
+    if (!report) {
+      const message = `No payroll saved for ${date}.\n\nLog the day in the dashboard first, then try /report again.`
+      if (loadingMessageId) {
+        await telegramApi(token, "editMessageText", {
+          chat_id: chatId,
+          message_id: loadingMessageId,
+          text: message,
+        })
+      } else {
+        await sendMessage(token, chatId, message)
+      }
+      return
+    }
+
+    const png = await renderPayrollReportPng(report)
+    const caption = `GHOST DAILY INCOME + EXPENSES · ${report.displayDate}`
+
+    if (loadingMessageId) {
+      await telegramApi(token, "deleteMessage", { chat_id: chatId, message_id: loadingMessageId }).catch(() => null)
+    }
+    const sent = await sendTelegramPhoto(token, chatId, png, caption)
+      || await sendTelegramDocument(token, chatId, png, caption, `ghost-payroll-${date}.png`)
+    if (sent) return
+
+    const previewUrl = `${appBaseUrl(req)}/api/ops/payroll/report?date=${encodeURIComponent(date)}&format=html`
+    const fallback = [
+      `📊 Payroll breakdown for ${date}`,
+      "",
+      "Could not upload the image to Telegram.",
+      "",
+      `Open preview: ${previewUrl}`,
+    ].join("\n")
+
+    if (loadingMessageId) {
+      await telegramApi(token, "editMessageText", {
+        chat_id: chatId,
+        message_id: loadingMessageId,
+        text: fallback,
+        disable_web_page_preview: false,
+      })
+    } else {
+      await sendMessage(token, chatId, fallback)
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not render payroll report."
+    if (loadingMessageId) {
+      await telegramApi(token, "editMessageText", {
+        chat_id: chatId,
+        message_id: loadingMessageId,
+        text: `⚠️ ${message}`,
+      })
+    } else {
+      await sendMessage(token, chatId, `⚠️ ${message}`)
+    }
+  }
+}
+
 async function logProjectIncome(token: string, chatId: number | string, text: string) {
-  const match = text.match(/^\/log(?:@\w+)?\s+(\S+)\s+(\S+)\s+(-?\d+)$/i)
-  if (!match) {
-    return sendMessage(token, chatId, "Use: /log <project id> <trading|dev> <amount>")
+  const parsed = parseIncomeLogCommand(text)
+  if ("error" in parsed) {
+    return sendMessage(token, chatId, parsed.error)
   }
-  const [, projectId, rawType, rawAmount] = match
-  const incomeType = rawType.toLowerCase().replace(/[-\s]/g, "_")
-  const isTrading = ["trading", "trading_income", "trade"].includes(incomeType)
-  const isDev = ["dev", "dev_allocation", "allocation"].includes(incomeType)
-  const amount = Number(rawAmount)
-  if ((!isTrading && !isDev) || !Number.isInteger(amount) || amount <= 0) {
-    return sendMessage(token, chatId, "Income type must be trading or dev, and amount must be a whole number above 0.")
-  }
+  const { projectId, isTrading, miscCategory, amount } = parsed
 
   const db = await getDb()
-  const project = await db.collection("opsProjects").findOne({ _id: projectId })
-  if (!project) return sendMessage(token, chatId, "Project ID was not found.")
+  const project = projectId ? await db.collection("opsProjects").findOne({ _id: projectId }) : null
+  if (projectId && !project) return sendMessage(token, chatId, "Project ID was not found.")
   const date = estDateKey()
   const existing = await db.collection("dailyPayrollEntries").findOne({ date })
   const inputs = existing?.inputs || {}
   const clientIncome = Array.isArray(inputs.clientIncome) ? [...inputs.clientIncome] : []
   const devAllocations = Array.isArray(inputs.devAllocations) ? [...inputs.devAllocations] : []
   if (isTrading) clientIncome.push({ projectId, incomeType: "trading", income: amount })
-  else devAllocations.push({ projectId, income: amount })
+  else devAllocations.push({ projectId: projectId || undefined, category: miscCategory, income: amount })
 
   const result = await savePayrollDay({
     date,
@@ -504,11 +570,12 @@ async function logProjectIncome(token: string, chatId: number | string, text: st
   const referral = isTrading
     ? result.entry.calculation.referrals.filter((row: any) => row.clientAccountId === projectId).slice(-1)[0]
     : null
+  const typeLabel = isTrading ? "Trading Income" : miscIncomeCategoryLabel(miscCategory)
   await sendMessage(token, chatId, [
     "✅ Income logged",
     "",
-    `Project: ${project.name}`,
-    `Type: ${isTrading ? "Trading Income" : "Dev Allocation"}`,
+    project ? `Project: ${project.name}` : `Category: ${typeLabel}`,
+    `Type: ${typeLabel}`,
     `Amount: ${money(amount)}`,
     referral ? `Referrer: ${referral.referrerName} - ${money(referral.amount)}` : "",
   ].filter(Boolean).join("\n"))
@@ -805,6 +872,9 @@ async function routeText(token: string, chatId: number | string, telegramId: num
     }), "📈 Checking…")
   }
   if (text === "💸 Payroll" || isBotCommand(text, "payroll")) return sendPayroll(token, chatId)
+  if (isBotCommand(text, "report") || /^\/report(?:@\w+)?(?:\s|$)/i.test(text)) {
+    return sendPayrollReport(token, chatId, text, req)
+  }
   if (text === "📅 Calendar" || text === "🟠 Calendar" || isBotCommand(text, "calendar")) return sendCalendar(token, chatId)
   if (text === "🔔 Reminders" || isBotCommand(text, "reminders")) return sendReminders(token, chatId)
   if (text === "📝 Notes" || isBotCommand(text, "notes")) return sendProjectNotes(token, chatId, "all")

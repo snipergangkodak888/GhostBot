@@ -9,6 +9,7 @@ import {
   type PayrollProject,
   type TeamPayrollInput,
 } from "@/lib/payroll-ledger"
+import { normalizeDevAllocationRow, type MiscIncomeCategory } from "@/lib/payroll-misc"
 
 export type PayrollLedgerDraft = {
   teamPayroll?: TeamPayrollInput[]
@@ -56,19 +57,27 @@ export function usePayrollCalculator(accounts: PayrollAccount[], projects: Payro
   const loadTemplate = () => {
     setTeamPayroll(employees.map((account) => ({ accountId: String(account._id || account.id), status: "active", projectIds: [] })))
     setClientIncome(projects.length ? [{ projectId: firstProjectId(projects), incomeType: "trading", income: 0 }] : [])
-    setDevAllocations(projects.length ? [{ projectId: firstProjectId(projects), income: 0 }] : [])
+    setDevAllocations(projects.length ? [{ category: "dev_allocation", projectId: firstProjectId(projects), income: 0 }] : [{ category: "fee_rebate", income: 0 }])
   }
 
   const loadDraft = (draft?: PayrollLedgerDraft | null) => {
     setTeamPayroll(Array.isArray(draft?.teamPayroll) ? draft.teamPayroll : [])
     setClientIncome(Array.isArray(draft?.clientIncome) ? draft.clientIncome : [])
-    setDevAllocations(Array.isArray(draft?.devAllocations) ? draft.devAllocations : [])
+    setDevAllocations(Array.isArray(draft?.devAllocations) ? draft.devAllocations.map((row) => normalizeDevAllocationRow(row)) : [])
     setRules({ ...defaultRules, ...(draft?.rules || {}) })
   }
 
   const addTeamRow = () => setTeamPayroll((rows) => [...rows, { accountId: firstAccountId(accounts, "EMPLOYEE"), status: "active", projectIds: [] }])
   const addClientIncomeRow = () => setClientIncome((rows) => [...rows, { projectId: firstProjectId(projects), incomeType: "trading", income: 0 }])
-  const addDevAllocationRow = () => setDevAllocations((rows) => [...rows, { projectId: firstProjectId(projects), income: 0 }])
+  const addDevAllocationRow = () =>
+    setDevAllocations((rows) => [
+      ...rows,
+      {
+        category: "dev_allocation" as MiscIncomeCategory,
+        projectId: firstProjectId(projects) || undefined,
+        income: 0,
+      },
+    ])
 
   const updateTeamRow = (index: number, patch: Partial<TeamPayrollInput>) =>
     setTeamPayroll((rows) => rows.map((row, rowIndex) => rowIndex === index ? { ...row, ...patch } : row))
@@ -77,7 +86,11 @@ export function usePayrollCalculator(accounts: PayrollAccount[], projects: Payro
     setClientIncome((rows) => rows.map((row, rowIndex) => rowIndex === index ? { ...row, ...patch } : row))
 
   const updateDevAllocationRow = (index: number, patch: Partial<DevAllocationInput>) =>
-    setDevAllocations((rows) => rows.map((row, rowIndex) => rowIndex === index ? { ...row, ...patch } : row))
+    setDevAllocations((rows) => rows.map((row, rowIndex) => {
+      if (rowIndex !== index) return row
+      const next = normalizeDevAllocationRow({ ...row, ...patch })
+      return next
+    }))
 
   const removeTeamRow = (index: number) => setTeamPayroll((rows) => rows.filter((_, rowIndex) => rowIndex !== index))
   const removeClientIncomeRow = (index: number) => setClientIncome((rows) => rows.filter((_, rowIndex) => rowIndex !== index))

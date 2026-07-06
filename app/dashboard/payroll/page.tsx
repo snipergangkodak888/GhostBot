@@ -5,6 +5,11 @@ import { CalendarDays, ChevronLeft, ChevronRight, DollarSign, Download, Edit3, P
 import { toast } from "sonner"
 import { usePayrollCalculator } from "@/hooks/use-payroll-calculator"
 import type { PayrollAccount, PayrollAccountType } from "@/lib/payroll-ledger"
+import {
+  MISC_INCOME_CATEGORIES,
+  miscIncomeProjectRequired,
+  validateDevAllocations,
+} from "@/lib/payroll-misc"
 
 type Payroll = {
   _id?: string
@@ -33,9 +38,9 @@ type DailyPayrollEntry = {
   _id: string
   date: string
   inputs?: {
-    teamPayroll?: Array<{ accountId: string; status: "active" | "inactive"; projectIds?: string[]; charts?: number }>
-    clientIncome?: Array<{ accountId?: string; projectId?: string; incomeType?: string; income: number }>
-    devAllocations?: Array<{ accountId?: string; projectId?: string; income: number }>
+    teamPayroll?: Array<{ accountId: string; status: "active" | "inactive"; projectIds?: string[]; charts?: number; manualAmount?: number }>
+    clientIncome?: Array<{ accountId?: string; projectId?: string; incomeType?: string; income: number; skipReferral?: boolean }>
+    devAllocations?: Array<{ accountId?: string; projectId?: string; income: number; category?: string }>
     rules?: { dayType?: string; recipient?: string; basePay?: number; extraPay?: number }
   }
   notes?: string
@@ -129,8 +134,10 @@ function downloadCsv(filename: string, rows: unknown[][]) {
   URL.revokeObjectURL(url)
 }
 
-function teamExpense(row: { status: "active" | "inactive"; projectIds?: string[]; charts?: number }, basePay: number, extraPay: number) {
+function teamExpense(row: { status: "active" | "inactive"; projectIds?: string[]; charts?: number; manualAmount?: number }, basePay: number, extraPay: number) {
   if (row.status !== "active") return 0
+  const manualAmount = Number(row.manualAmount)
+  if (Number.isFinite(manualAmount) && manualAmount > 0) return manualAmount
   const projectCount = Array.isArray(row.projectIds) ? new Set(row.projectIds.filter(Boolean)).size : 0
   if (Array.isArray(row.projectIds) && projectCount === 0) return 0
   const extraProjects = projectCount > 0 ? projectCount - 1 : Math.max(0, Number(row.charts || 0))
@@ -327,6 +334,11 @@ export default function PayrollPage() {
     const hasInputs = payroll.teamPayroll.length || payroll.clientIncome.length || payroll.devAllocations.length
     if (!hasInputs) {
       toast.error("Add payroll or project income rows")
+      return false
+    }
+    const miscErrors = validateDevAllocations(payroll.devAllocations)
+    if (miscErrors.length) {
+      toast.error(miscErrors[0])
       return false
     }
     setSaving(true)
@@ -887,6 +899,34 @@ export default function PayrollPage() {
                     </div>
                     <RowActions onEdit={() => openEditAccount(accountById(row.accountId))} onRemove={() => payroll.removeTeamRow(index)} />
                   </div>
+                  <div className="mt-2 grid min-w-0 grid-cols-2 gap-1.5">
+                    <label className="min-w-0">
+                      <span className="mb-1 block text-[9px] font-bold uppercase text-white/38">Charts</span>
+                      <input
+                        type="number"
+                        min="0"
+                        value={row.charts ?? ""}
+                        onChange={(event) => payroll.updateTeamRow(index, { charts: Number(event.target.value || 0), manualAmount: undefined })}
+                        className="ledger-input w-full pr-2 text-right tabular-nums"
+                        placeholder="0"
+                        disabled={Boolean(row.manualAmount) || (row.projectIds || []).length > 0}
+                      />
+                    </label>
+                    <label className="min-w-0">
+                      <span className="mb-1 block text-[9px] font-bold uppercase text-white/38">Custom Pay</span>
+                      <input
+                        type="number"
+                        min="0"
+                        value={row.manualAmount ?? ""}
+                        onChange={(event) => {
+                          const manualAmount = Number(event.target.value || 0)
+                          payroll.updateTeamRow(index, manualAmount > 0 ? { manualAmount, charts: undefined, projectIds: [] } : { manualAmount: undefined })
+                        }}
+                        className="ledger-input w-full pr-2 text-right tabular-nums"
+                        placeholder="Optional"
+                      />
+                    </label>
+                  </div>
                   <div className="mt-2">
                     <p className="mb-1 text-[9px] font-bold uppercase text-white/38">Projects Worked</p>
                     <div className="flex flex-wrap gap-1">
@@ -935,25 +975,46 @@ export default function PayrollPage() {
               <WideAddButton onClick={payroll.addClientIncomeRow} label="Add Trading Income" />
             </LedgerPanel>
 
-            <LedgerPanel title="Dev Allocation" color="text-[#42e6a4]">
-              {payroll.devAllocations.map((row, index) => (
-                <div key={`dev-${index}`} className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(72px,88px)_34px] items-end gap-1.5">
-                  <label className="min-w-0">
-                    <span className="mb-1 block text-[9px] font-bold uppercase text-white/38">Project</span>
-                    <select value={row.projectId || ""} onChange={(event) => payroll.updateDevAllocationRow(index, { projectId: event.target.value })} className="ledger-input w-full">
-                      <option value="">Project</option>
-                      {projects.map((project) => <option key={project._id} value={project._id}>{project.name}</option>)}
-                    </select>
-                  </label>
-                  <label className="min-w-0">
-                    <span className="mb-1 block text-right text-[9px] font-bold uppercase text-white/38">Income</span>
-                    <input type="number" value={row.income || ""} onChange={(event) => payroll.updateDevAllocationRow(index, { income: Number(event.target.value || 0) })} className="ledger-input w-full pr-2 text-right tabular-nums" placeholder="$0" />
-                  </label>
-                  <IconDeleteButton onClick={() => payroll.removeDevAllocationRow(index)} />
-                </div>
-              ))}
-              {!payroll.devAllocations.length ? <EmptyLedgerText text="No dev allocation rows yet" /> : null}
-              <WideAddButton onClick={payroll.addDevAllocationRow} label="Add Allocation" />
+            <LedgerPanel title="Misc Income" color="text-[#42e6a4]">
+              {payroll.devAllocations.map((row, index) => {
+                const category = String(row.category || "dev_allocation")
+                const projectRequired = miscIncomeProjectRequired(category)
+                return (
+                  <div key={`dev-${index}`} className="grid min-w-0 grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)_minmax(72px,88px)_34px] items-end gap-1.5">
+                    <label className="min-w-0">
+                      <span className="mb-1 block text-[9px] font-bold uppercase text-white/38">Category</span>
+                      <select
+                        value={category}
+                        onChange={(event) => payroll.updateDevAllocationRow(index, { category: event.target.value, projectId: miscIncomeProjectRequired(event.target.value) ? row.projectId : undefined })}
+                        className="ledger-input w-full"
+                      >
+                        {MISC_INCOME_CATEGORIES.map((item) => (
+                          <option key={item.id} value={item.id}>{item.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="min-w-0">
+                      <span className="mb-1 block text-[9px] font-bold uppercase text-white/38">Project{projectRequired ? "" : " (optional)"}</span>
+                      <select
+                        value={row.projectId || ""}
+                        onChange={(event) => payroll.updateDevAllocationRow(index, { projectId: event.target.value || undefined })}
+                        className="ledger-input w-full"
+                        disabled={!projectRequired && category === "fee_rebate"}
+                      >
+                        <option value="">{projectRequired ? "Choose project" : "None"}</option>
+                        {projects.map((project) => <option key={project._id} value={project._id}>{project.name}</option>)}
+                      </select>
+                    </label>
+                    <label className="min-w-0">
+                      <span className="mb-1 block text-right text-[9px] font-bold uppercase text-white/38">Income</span>
+                      <input type="number" value={row.income || ""} onChange={(event) => payroll.updateDevAllocationRow(index, { income: Number(event.target.value || 0) })} className="ledger-input w-full pr-2 text-right tabular-nums" placeholder="$0" />
+                    </label>
+                    <IconDeleteButton onClick={() => payroll.removeDevAllocationRow(index)} />
+                  </div>
+                )
+              })}
+              {!payroll.devAllocations.length ? <EmptyLedgerText text="No misc income rows yet" /> : null}
+              <WideAddButton onClick={payroll.addDevAllocationRow} label="Add Misc Income" />
             </LedgerPanel>
 
             <LedgerPanel title="Referrer Income (Expense)" color="text-[#ff6b78]" action={<AddMiniButton onClick={() => openNewAccount("REFERRER")} label="New Referrer" />}>
@@ -1094,9 +1155,10 @@ export default function PayrollPage() {
             </LedgerPanel>
           </div>
 
-          <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 lg:grid-cols-6">
+          <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 lg:grid-cols-7">
             <TotalCard label="Total Expense" value={money(payroll.calculation.totalTeamPayroll)} color="text-[#ff6b78]" />
             <TotalCard label="Total Income" value={money(payroll.calculation.totalDailyIncome)} color="text-[#42e6a4]" />
+            <TotalCard label="Misc Income" value={money(payroll.calculation.totalDevAllo)} color="text-[#4aa3ff]" />
             <TotalCard label="Referrer Expense" value={money(payroll.calculation.totalReferrals)} color="text-[#ff6b78]" />
             <TotalCard label="Profit" value={money(payroll.calculation.netProfit)} color="text-[#ffd166]" />
             <TotalCard label="Distributed" value={money(payroll.calculation.totalDistributed)} color="text-[#b475ff]" />

@@ -11,6 +11,26 @@ function escapeHtml(value: unknown) {
     .replace(/>/g, "&gt;")
 }
 
+function miscIncomeBreakdown(entry: any) {
+  const rows = Array.isArray(entry?.inputs?.devAllocations) ? entry.inputs.devAllocations : []
+  if (!rows.length) return []
+  const totals = new Map<string, number>()
+  for (const row of rows) {
+    const category = String(row.category || "dev_allocation")
+    totals.set(category, (totals.get(category) || 0) + Number(row.income || 0))
+  }
+  const labels: Record<string, string> = {
+    dev_allocation: "Dev allocation",
+    private_liqs: "Private liquidations",
+    fee_rebate: "Fee rebate",
+    other: "Other",
+  }
+  return Array.from(totals.entries()).map(([category, amount]) => ({
+    label: labels[category] || category,
+    amount,
+  }))
+}
+
 export function formatPayrollSnapshot(entry: any) {
   const calculation = entry?.calculation || {}
   const distributions = Array.isArray(calculation.distributions) ? calculation.distributions : []
@@ -20,18 +40,26 @@ export function formatPayrollSnapshot(entry: any) {
   const referrerExpense = Number(calculation.totalReferrals ?? entry?.totalReferrals ?? 0)
   const totalExpense = teamPayroll + referrerExpense
   const netProfit = Number(calculation.netProfit ?? entry?.netProfit ?? 0)
+  const miscBreakdown = miscIncomeBreakdown(entry)
   const lines = [
     `💸 <b>Daily Payroll - ${escapeHtml(entry?.date || "Today")}</b>`,
     "",
     `🟢 Trading Income: <b>${money(tradingIncome)}</b>`,
-    `🔵 Dev Allocation: <b>${money(devAllocation)}</b>`,
+    `🔵 Misc Income: <b>${money(devAllocation)}</b>`,
+  ]
+  if (miscBreakdown.length) {
+    for (const row of miscBreakdown) {
+      lines.push(`   ▫️ ${escapeHtml(row.label)}: <b>${money(row.amount)}</b>`)
+    }
+  }
+  lines.push(
     "",
     `🔴 Team Payroll: <b>${money(teamPayroll)}</b>`,
     `🟣 Referrer Expense: <b>${money(referrerExpense)}</b>`,
     `🔴 Total Expense: <b>${money(totalExpense)}</b>`,
     "",
     `${netProfit >= 0 ? "🟢" : "🔴"} Net ${netProfit >= 0 ? "Profit" : "Loss"}: <b>${money(netProfit)}</b>`,
-  ]
+  )
   if (distributions.length) {
     lines.push("", "🟣 <b>Daily Distributions</b>")
     for (const row of distributions) {

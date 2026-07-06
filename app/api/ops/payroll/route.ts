@@ -47,15 +47,19 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}))
   if (body.mode === "ledger-day") {
-    const result = await savePayrollDay({
-      date: body.date,
-      notes: body.notes,
-      teamPayroll: Array.isArray(body.teamPayroll) ? body.teamPayroll : [],
-      clientIncome: Array.isArray(body.clientIncome) ? body.clientIncome : [],
-      devAllocations: Array.isArray(body.devAllocations) ? body.devAllocations : [],
-      rules: body.rules,
-    })
-    return NextResponse.json({ entry: result.entry, transactions: result.transactions })
+    try {
+      const result = await savePayrollDay({
+        date: body.date,
+        notes: body.notes,
+        teamPayroll: Array.isArray(body.teamPayroll) ? body.teamPayroll : [],
+        clientIncome: Array.isArray(body.clientIncome) ? body.clientIncome : [],
+        devAllocations: Array.isArray(body.devAllocations) ? body.devAllocations : [],
+        rules: body.rules,
+      })
+      return NextResponse.json({ entry: result.entry, transactions: result.transactions })
+    } catch (error: any) {
+      return NextResponse.json({ error: error?.message || "Payroll day was not saved" }, { status: 400 })
+    }
   }
 
   const member = String(body.member || '').trim()

@@ -28,6 +28,8 @@ export type TeamPayrollInput = {
   status: "active" | "inactive"
   projectIds?: string[]
   charts?: number
+  /** When set, overrides base + chart calculation (e.g. non-trader flat pay). */
+  manualAmount?: number
 }
 
 export type ClientIncomeInput = {
@@ -35,12 +37,17 @@ export type ClientIncomeInput = {
   projectId?: string
   incomeType?: string
   income: number
+  /** When true, this line does not generate referral commission even if the project has a referrer. */
+  skipReferral?: boolean
 }
+
+import type { MiscIncomeCategory } from "./payroll-misc"
 
 export type DevAllocationInput = {
   accountId?: string
   projectId?: string
   income: number
+  category?: MiscIncomeCategory | string
 }
 
 export type PayrollLedgerInput = {
@@ -145,10 +152,16 @@ export function calculatePayrollLedger(input: PayrollLedgerInput): PayrollLedger
     if (row.status !== "active") continue
     const account = accountsById.get(row.accountId)
     if (!account || account.type !== "EMPLOYEE") continue
-    const projectCount = Array.isArray(row.projectIds) ? new Set(row.projectIds.filter(Boolean)).size : 0
-    if (projectCount === 0 && Array.isArray(row.projectIds)) continue
-    const extraProjects = projectCount > 0 ? projectCount - 1 : Math.max(0, Number(row.charts || 0))
-    const amount = roundMoney(basePay + chartPay * extraProjects)
+    const manualAmount = Number(row.manualAmount)
+    let amount = 0
+    if (Number.isFinite(manualAmount) && manualAmount > 0) {
+      amount = roundMoney(manualAmount)
+    } else {
+      const projectCount = Array.isArray(row.projectIds) ? new Set(row.projectIds.filter(Boolean)).size : 0
+      if (projectCount === 0 && Array.isArray(row.projectIds)) continue
+      const extraProjects = projectCount > 0 ? projectCount - 1 : Math.max(0, Number(row.charts || 0))
+      amount = roundMoney(basePay + chartPay * extraProjects)
+    }
     const distribution = ensureDistribution(account)
     distribution.basePayroll = roundMoney(distribution.basePayroll + amount)
     totalTeamPayroll = roundMoney(totalTeamPayroll + amount)
@@ -157,6 +170,7 @@ export function calculatePayrollLedger(input: PayrollLedgerInput): PayrollLedger
   const referrals: PayrollLedgerReferral[] = []
   let totalReferrals = 0
   for (const row of input.clientIncome) {
+    if (row.skipReferral) continue
     const project = row.projectId ? projectsById.get(String(row.projectId)) : null
     const client = row.accountId ? accountsById.get(row.accountId) : null
     const referrerId = project?.referrerAccountId || (client ? accountReferralId(client) : null)
@@ -171,7 +185,7 @@ export function calculatePayrollLedger(input: PayrollLedgerInput): PayrollLedger
       (client ? accountShare(client) : 0),
     )
     if (!referrer || percentage <= 0) continue
-    const amount = roundMoney(Number(row.income || 0) * (percentage / 100))
+    const amount = roundMoney(Math.floor(Number(row.income || 0) * (percentage / 100)))
     if (amount <= 0) continue
     const distribution = ensureDistribution(referrer)
     distribution.referralCommission = roundMoney(distribution.referralCommission + amount)

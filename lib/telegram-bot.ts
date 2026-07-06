@@ -24,16 +24,24 @@ export async function getTelegramBotUsername() {
 }
 
 export async function telegramApi(token: string, method: string, body: Record<string, any>) {
-  return fetch(`${TELEGRAM_API}/bot${token}/${method}`, {
+  const response = await fetch(`${TELEGRAM_API}/bot${token}/${method}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  }).catch(() => null)
+  }).catch((error) => {
+    console.error(`[telegram] ${method} network error:`, error instanceof Error ? error.message : error)
+    return null
+  })
+  return response
 }
 
 export async function telegramApiJson(token: string, method: string, body: Record<string, any>) {
   const response = await telegramApi(token, method, body)
-  if (!response?.ok) return null
+  if (!response?.ok) {
+    const detail = await response?.text().catch(() => response?.statusText || "unknown error")
+    console.error(`[telegram] ${method} failed (${response?.status || "no response"}):`, detail)
+    return null
+  }
   return response.json().catch(() => null)
 }
 
@@ -82,6 +90,20 @@ export async function editTelegramMessage(
   return payload?.ok === true
 }
 
+function inlineReplyMarkup(replyMarkup?: Record<string, any>) {
+  if (replyMarkup?.inline_keyboard) return { inline_keyboard: replyMarkup.inline_keyboard }
+  return undefined
+}
+
+function plainTelegramText(text: string) {
+  return text
+    .replace(/<\/?(b|strong|i|em|u|s|code|pre|a)\b[^>]*>/gi, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .trim()
+}
+
 export async function withTelegramLoading(
   token: string,
   chatId: number | string,
@@ -107,24 +129,50 @@ export async function withTelegramLoading(
     clearTimeout(loadingTimer)
 
     const loadingMessageId = loadingMessagePromise ? await loadingMessagePromise : null
-    const options = {
+    const sendOptions = {
       parseMode: result.parseMode,
       replyMarkup: result.replyMarkup,
     }
+    const editOptions = {
+      parseMode: result.parseMode,
+      replyMarkup: inlineReplyMarkup(result.replyMarkup),
+    }
 
     if (loadingMessageId) {
-      const edited = await editTelegramMessage(token, chatId, loadingMessageId, result.text, options)
-      if (!edited) await sendTelegramMessage(token, chatId, result.text, options)
+      let edited = await editTelegramMessage(token, chatId, loadingMessageId, result.text, editOptions)
+      if (!edited && result.parseMode === "HTML") {
+        edited = await editTelegramMessage(token, chatId, loadingMessageId, plainTelegramText(result.text))
+      }
+      if (edited) return
+
+      let sent = await sendTelegramMessage(token, chatId, result.text, sendOptions)
+      if (!sent && result.parseMode === "HTML") {
+        sent = await sendTelegramMessage(token, chatId, plainTelegramText(result.text), {
+          replyMarkup: result.replyMarkup,
+        })
+      }
+      if (!sent) {
+        console.error("[telegram] failed to deliver response after loading message", { chatId, loadingMessageId })
+      }
       return
     }
 
-    await sendTelegramMessage(token, chatId, result.text, options)
+    let sent = await sendTelegramMessage(token, chatId, result.text, sendOptions)
+    if (!sent && result.parseMode === "HTML") {
+      sent = await sendTelegramMessage(token, chatId, plainTelegramText(result.text), {
+        replyMarkup: result.replyMarkup,
+      })
+    }
+    if (!sent) {
+      console.error("[telegram] failed to deliver response", { chatId })
+    }
   }
 
   try {
     await deliver(await params.work())
   } catch (error) {
     const message = error instanceof Error ? error.message : "Something went wrong."
+    console.error("[telegram] async response failed:", error)
     await deliver({ text: `⚠️ ${message}` })
   }
 }
@@ -140,4 +188,59 @@ export async function sendTelegramText(token: string, chatId: number | string, t
   if (!response?.ok) return false
   const payload = await response.json().catch(() => null)
   return payload?.ok !== false
+}
+
+export async function sendTelegramPhoto(
+  token: string,
+  chatId: number | string,
+  png: Buffer,
+  caption?: string,
+) {
+  const form = new FormData()
+  form.append("chat_id", String(chatId))
+  form.append("photo", new Blob([new Uint8Array(png)], { type: "image/png" }), "ghost-payroll-report.png")
+  if (caption) form.append("caption", caption.slice(0, 1024))
+
+  const response = await fetch(`${TELEGRAM_API}/bot${token}/sendPhoto`, {
+    method: "POST",
+    body: form,
+  }).catch((error) => {
+    console.error("[telegram] sendPhoto network error:", error instanceof Error ? error.message : error)
+    return null
+  })
+
+  if (!response?.ok) {
+    const detail = await response?.text().catch(() => response?.statusText || "unknown error")
+    console.error(`[telegram] sendPhoto failed (${response?.status || "no response"}):`, detail)
+    return false
+  }
+  return true
+}
+
+export async function sendTelegramDocument(
+  token: string,
+  chatId: number | string,
+  png: Buffer,
+  caption?: string,
+  filename = "ghost-payroll-report.png",
+) {
+  const form = new FormData()
+  form.append("chat_id", String(chatId))
+  form.append("document", new Blob([new Uint8Array(png)], { type: "image/png" }), filename)
+  if (caption) form.append("caption", caption.slice(0, 1024))
+
+  const response = await fetch(`${TELEGRAM_API}/bot${token}/sendDocument`, {
+    method: "POST",
+    body: form,
+  }).catch((error) => {
+    console.error("[telegram] sendDocument network error:", error instanceof Error ? error.message : error)
+    return null
+  })
+
+  if (!response?.ok) {
+    const detail = await response?.text().catch(() => response?.statusText || "unknown error")
+    console.error(`[telegram] sendDocument failed (${response?.status || "no response"}):`, detail)
+    return false
+  }
+  return true
 }

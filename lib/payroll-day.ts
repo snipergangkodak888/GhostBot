@@ -7,6 +7,7 @@ import {
   type PayrollProject,
   type TeamPayrollInput,
 } from "@/lib/payroll-ledger"
+import { normalizeDevAllocations, validateDevAllocations } from "@/lib/payroll-misc"
 
 export type PayrollDayRules = {
   dayType: string
@@ -68,7 +69,11 @@ export async function savePayrollDay(input: SavePayrollDayInput) {
   }
   const teamPayroll = Array.isArray(input.teamPayroll) ? input.teamPayroll : []
   const clientIncome = Array.isArray(input.clientIncome) ? input.clientIncome : []
-  const devAllocations = Array.isArray(input.devAllocations) ? input.devAllocations : []
+  const devAllocations = normalizeDevAllocations(input.devAllocations) as DevAllocationInput[]
+  const validationErrors = validateDevAllocations(devAllocations)
+  if (validationErrors.length) {
+    throw new Error(validationErrors[0])
+  }
   const calculation = calculatePayrollLedger({
     accounts,
     projects,
