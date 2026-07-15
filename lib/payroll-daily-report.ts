@@ -1,5 +1,6 @@
 import { getDb } from "@/lib/db"
 import type { PayrollAccount } from "@/lib/payroll-ledger"
+import { visiblePayrollEmployees, isVisiblePayrollTeamMember } from "@/lib/payroll-accounts"
 import { teamDateKey } from "@/lib/team-timezone"
 
 export type PayrollReportShareRow = {
@@ -79,9 +80,7 @@ export async function loadDailyPayrollReport(date: string): Promise<PayrollDaily
   const accounts = accountRows as PayrollAccount[]
   const projectsById = new Map(projectRows.map((project: any) => [String(project._id || project.id), project]))
   const accountsById = new Map(accounts.map((account) => [accountId(account), account]))
-  const employees = accounts
-    .filter((account) => account.type === "EMPLOYEE")
-    .sort((a, b) => a.name.localeCompare(b.name))
+  const employees = visiblePayrollEmployees(accounts)
 
   const inputs = entry.inputs || {}
   const calculation = entry.calculation || {}
@@ -111,6 +110,7 @@ export async function loadDailyPayrollReport(date: string): Promise<PayrollDaily
 
   const shareAccounts = accounts
     .filter((account) => account.type === "EMPLOYEE" || account.type === "SYSTEM_TREASURY")
+    .filter((account) => account.type !== "EMPLOYEE" || isVisiblePayrollTeamMember(account))
     .filter((account) => Number(account.profitSharePercentage ?? account.profit_share_percentage ?? 0) > 0)
     .sort((a, b) => {
       if (a.type !== b.type) return a.type === "EMPLOYEE" ? -1 : 1

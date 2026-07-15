@@ -394,6 +394,7 @@ export function renderPayrollReportSvg(report: PayrollDailyReport) {
   const sheetInnerW = col.contentW
 
   const startY = 54
+  const pairedIncomeRows = Math.max(report.dailyIncome.length, report.miscIncome.length, 8)
 
   const teamTable = drawTable({
     x: xTeam,
@@ -425,10 +426,8 @@ export function renderPayrollReportSvg(report: PayrollDailyReport) {
       { text: money(row.income), align: "right" },
     ]),
     footer: { label: "TOTAL:", value: money(report.totalDailyIncome), tone: "income" },
-    minRows: 8,
+    minRows: pairedIncomeRows,
   })
-
-  const dailyProfit = profitBlock(xDaily, startY + dailyTable.height + GAP, col.daily, report.dailyProfit, report.dailyProfitShares, "daily")
 
   const miscTable = drawTable({
     x: xMisc,
@@ -443,10 +442,12 @@ export function renderPayrollReportSvg(report: PayrollDailyReport) {
       { text: money(row.income), align: "right" },
     ]),
     footer: { label: "TOTAL:", value: money(report.totalMiscIncome), tone: "income" },
-    minRows: 6,
+    minRows: pairedIncomeRows,
   })
 
-  const miscProfit = profitBlock(xMisc, startY + miscTable.height + GAP, col.misc, report.miscProfit, report.miscProfitShares, "misc")
+  const profitY = startY + dailyTable.height + GAP
+  const dailyProfit = profitBlock(xDaily, profitY, col.daily, report.dailyProfit, report.dailyProfitShares, "daily")
+  const miscProfit = profitBlock(xMisc, profitY, col.misc, report.miscProfit, report.miscProfitShares, "misc")
 
   const referralsTable = drawTable({
     x: xReferrals,
@@ -468,9 +469,11 @@ export function renderPayrollReportSvg(report: PayrollDailyReport) {
 
   const distPanel = distributionsPanel(xDist, startY, col.dist, report)
 
+  const incomeColumnHeight = dailyTable.height + GAP + dailyProfit.height
+
   const mainHeight = Math.max(
     teamTable.height,
-    dailyTable.height + GAP + dailyProfit.height,
+    incomeColumnHeight,
     miscTable.height + GAP + miscProfit.height,
     referralsTable.height,
     distPanel.height,

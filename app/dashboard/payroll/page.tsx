@@ -1,7 +1,7 @@
 "use client"
 
 import { type ReactNode, useEffect, useMemo, useState } from "react"
-import { CalendarDays, ChevronLeft, ChevronRight, DollarSign, Download, Edit3, Plus, Save, Send, Trash2, X } from "lucide-react"
+import { CalendarDays, ChevronLeft, ChevronRight, DollarSign, Download, Edit3, Image, Plus, Save, Send, Trash2, X } from "lucide-react"
 import { toast } from "sonner"
 import { usePayrollCalculator } from "@/hooks/use-payroll-calculator"
 import type { PayrollAccount, PayrollAccountType } from "@/lib/payroll-ledger"
@@ -371,7 +371,7 @@ export default function PayrollPage() {
     }
   }
 
-  const shareDay = async () => {
+  const sharePayroll = async (mode: "text" | "report") => {
     setSharing(true)
     try {
       const saved = await saveDay(false, true)
@@ -380,19 +380,23 @@ export default function PayrollPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ date: selectedDate }),
+        body: JSON.stringify({ date: selectedDate, mode }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {
-        toast.error(data.error || "Payroll snapshot was not sent")
+        toast.error(data.error || (mode === "report" ? "Payroll report was not sent" : "Payroll snapshot was not sent"))
         return
       }
       const failed = Array.isArray(data.failed) && data.failed.length ? `; failed: ${data.failed.join(", ")}` : ""
-      toast.success(`Payroll snapshot sent to ${data.sent} Telegram destination${data.sent === 1 ? "" : "s"}${failed}`)
+      const label = mode === "report" ? "Report" : "Summary"
+      toast.success(`${label} sent to ${data.sent} Telegram destination${data.sent === 1 ? "" : "s"}${failed}`)
     } finally {
       setSharing(false)
     }
   }
+
+  const shareDay = () => sharePayroll("text")
+  const shareReport = () => sharePayroll("report")
 
   const shiftMonth = (direction: -1 | 1) => {
     setSelectedMonth((current) => new Date(current.getFullYear(), current.getMonth() + direction, 1))
@@ -1165,10 +1169,14 @@ export default function PayrollPage() {
             <TotalCard label="Employees" value={String(payroll.employees.length)} color="text-[#42e6a4]" />
           </div>
 
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <button onClick={shareReport} disabled={sharing || saving} className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl border border-[#4aa3ff]/25 bg-[#4aa3ff]/10 text-sm font-bold text-[#b8d9ff] disabled:opacity-50">
+              <Image className="h-4 w-4" />
+              Share Report
+            </button>
             <button onClick={shareDay} disabled={sharing || saving} className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl border border-[#42e6a4]/25 bg-[#42e6a4]/10 text-sm font-bold text-[#b8ffe1] disabled:opacity-50">
               <Send className="h-4 w-4" />
-              Send to TG Group
+              Send Summary
             </button>
             <button onClick={() => void saveDay()} disabled={saving || sharing} className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl bg-[#1f8f66] text-sm font-bold text-white disabled:opacity-50">
               <Save className="h-5 w-5" />

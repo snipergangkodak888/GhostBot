@@ -9,6 +9,7 @@ import {
   type PayrollProject,
   type TeamPayrollInput,
 } from "@/lib/payroll-ledger"
+import { visiblePayrollEmployees } from "@/lib/payroll-accounts"
 import { normalizeDevAllocationRow, type MiscIncomeCategory } from "@/lib/payroll-misc"
 
 export type PayrollLedgerDraft = {
@@ -39,7 +40,7 @@ const firstProjectId = (projects: PayrollProject[]) =>
   String(projects[0]?._id || projects[0]?.id || "")
 
 export function usePayrollCalculator(accounts: PayrollAccount[], projects: PayrollProject[] = []) {
-  const employees = useMemo(() => accounts.filter((account) => account.type === "EMPLOYEE"), [accounts])
+  const employees = useMemo(() => visiblePayrollEmployees(accounts), [accounts])
   const clients = useMemo(() => accounts.filter((account) => account.type === "CLIENT"), [accounts])
   const referrers = useMemo(() => accounts.filter((account) => account.type === "REFERRER"), [accounts])
   const treasury = useMemo(() => accounts.filter((account) => account.type === "SYSTEM_TREASURY"), [accounts])
