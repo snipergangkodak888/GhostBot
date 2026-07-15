@@ -5,6 +5,7 @@ import { Bell, Plus, Save, X } from "lucide-react"
 import { toast } from "sonner"
 
 type Project = { _id: string; name: string }
+type HostedGroup = { chatId: string; title: string }
 
 type Reminder = {
   _id: string
@@ -13,11 +14,13 @@ type Reminder = {
   dueAt?: string
   recurrence?: string
   status?: string
+  targetChatTitle?: string
 }
 
 export default function RemindersPage() {
   const [projects, setProjects] = useState<Project[]>([])
   const [reminders, setReminders] = useState<Reminder[]>([])
+  const [groups, setGroups] = useState<HostedGroup[]>([])
   const [formOpen, setFormOpen] = useState(false)
   const [form, setForm] = useState({
     title: "",
@@ -25,17 +28,21 @@ export default function RemindersPage() {
     dueAt: new Date().toISOString().slice(0, 16),
     projectId: "",
     recurrence: "none",
+    telegramChatId: "",
   })
 
   const load = async () => {
-    const [projectRes, reminderRes] = await Promise.all([
+    const [projectRes, reminderRes, groupRes] = await Promise.all([
       fetch("/api/ops/projects", { cache: "no-store", credentials: "include" }),
       fetch("/api/ops/reminders", { cache: "no-store", credentials: "include" }),
+      fetch("/api/ops/hosted-groups", { cache: "no-store", credentials: "include" }),
     ])
     const projectData = await projectRes.json().catch(() => [])
     const reminderData = await reminderRes.json().catch(() => [])
+    const groupData = await groupRes.json().catch(() => ({ groups: [] }))
     setProjects(Array.isArray(projectData) ? projectData : Array.isArray(projectData?.projects) ? projectData.projects : [])
     setReminders(Array.isArray(reminderData) ? reminderData : Array.isArray(reminderData?.reminders) ? reminderData.reminders : [])
+    setGroups(Array.isArray(groupData?.groups) ? groupData.groups : [])
   }
 
   useEffect(() => {
@@ -52,11 +59,16 @@ export default function RemindersPage() {
       toast.error("Reminder title or message is required")
       return
     }
+    if (!form.telegramChatId) {
+      toast.error("Select a delivery chat")
+      return
+    }
+    const selectedGroup = groups.find((group) => group.chatId === form.telegramChatId)
     const res = await fetch("/api/ops/reminders", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify(form),
+      body: JSON.stringify({ ...form, deliveryScope: "chat", targetChatTitle: selectedGroup?.title || form.telegramChatId }),
     })
     const data = await res.json().catch(() => ({}))
     if (!res.ok) {
@@ -65,7 +77,7 @@ export default function RemindersPage() {
     }
     toast.success("Reminder added")
     setFormOpen(false)
-    setForm({ title: "", message: "", dueAt: new Date().toISOString().slice(0, 16), projectId: "", recurrence: "none" })
+    setForm({ title: "", message: "", dueAt: new Date().toISOString().slice(0, 16), projectId: "", recurrence: "none", telegramChatId: "" })
     load()
   }
 
@@ -100,6 +112,11 @@ export default function RemindersPage() {
               <option value="daily">Daily</option>
               <option value="weekly">Weekly</option>
             </select>
+            <select value={form.telegramChatId} onChange={(event) => setForm({ ...form, telegramChatId: event.target.value })} className="h-10 rounded-lg border border-white/[0.08] bg-black px-3 text-sm text-white outline-none focus:border-[#ff4d5e]/60 sm:col-span-2">
+              <option value="">Deliver to…</option>
+              {groups.map((group) => <option key={group.chatId} value={group.chatId}>{group.title}</option>)}
+            </select>
+            {!groups.length ? <p className="text-xs text-amber-300/70 sm:col-span-2">Mention the bot in a Telegram group once so it appears here.</p> : null}
             <textarea value={form.message} onChange={(event) => setForm({ ...form, message: event.target.value })} placeholder="Message" className="min-h-20 rounded-lg border border-white/[0.08] bg-black/35 px-3 py-2 text-sm text-white outline-none focus:border-[#ff4d5e]/60 sm:col-span-2" />
           </div>
           <button onClick={saveReminder} className="mt-3 inline-flex h-10 items-center gap-2 rounded-lg bg-[#ff4d5e] px-3 text-sm font-bold text-white">
@@ -118,6 +135,7 @@ export default function RemindersPage() {
                 <p className="mt-1 text-sm text-white/45">
                   {reminder.dueAt ? new Date(reminder.dueAt).toLocaleString() : "No date"}
                   {reminder.recurrence ? ` · ${reminder.recurrence}` : ""}
+                  {reminder.targetChatTitle ? ` · → ${reminder.targetChatTitle}` : ""}
                 </p>
               </div>
               <span className={`rounded-full px-3 py-1 text-xs font-semibold ${reminder.status === "done" ? "bg-white/10 text-white/45" : "bg-[#ff4d5e]/15 text-[#ff8a95]"}`}>{reminder.status || "scheduled"}</span>

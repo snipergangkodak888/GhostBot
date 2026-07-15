@@ -204,6 +204,14 @@ function isGroupChatId(chatId: number | string) {
   return Number(chatId) < 0
 }
 
+function chatTitle(message: any, chatId: number | string) {
+  const chat = message?.chat
+  if (chat?.title) return String(chat.title)
+  if (chat?.username) return `@${chat.username}`
+  const name = [chat?.first_name, chat?.last_name].filter(Boolean).join(" ").trim()
+  return name || (isGroupChatId(chatId) ? `Group ${chatId}` : "Direct message")
+}
+
 const GROUP_MENU_TEXTS = new Set([
   "🏠 Home",
   "📁 Projects",
@@ -443,8 +451,9 @@ async function sendSheetDetail(token: string, chatId: number | string, sheetId: 
 
 async function sendReminders(token: string, chatId: number | string) {
   const db = await getDb()
-  const reminders = await db.collection("opsReminders").find({ status: { $ne: "done" } }).sort({ dueAt: 1 }).limit(8).toArray()
-  await sendMessage(token, chatId, `🔔 Reminders\n\n${reminders.length ? reminders.map((r: any, i: number) => `${i + 1}. ${r.title || r.message} - ${dateLabel(r.dueAt)}`).join("\n") : "No reminders yet."}`, [
+  const rows = await db.collection("opsReminders").find({ status: { $ne: "done" } }).sort({ dueAt: 1 }).toArray()
+  const reminders = rows.filter((reminder: any) => reminder.deliveryScope === "team" || !reminder.telegramChatId || String(reminder.telegramChatId) === String(chatId)).slice(0, 8)
+  await sendMessage(token, chatId, `🔔 Reminders\n\n${reminders.length ? reminders.map((r: any, i: number) => `${i + 1}. ${r.title || r.message} - ${dateLabel(r.dueAt)}${r.targetChatTitle ? ` → ${r.targetChatTitle}` : ""}`).join("\n") : "No reminders yet."}`, [
     [{ text: "➕ Add Reminder", callback_data: "reminder:add" }],
     ...reminders.map((r: any) => [{ text: `Open ${r.title || r.message}`.slice(0, 60), callback_data: `reminder:view:${r._id}` }]),
     [{ text: "⬅️ Back", callback_data: "main:menu" }],
@@ -544,7 +553,7 @@ async function sendPayrollReport(token: string, chatId: number | string, text: s
 async function logProjectIncome(token: string, chatId: number | string, text: string) {
   const parsed = parseIncomeLogCommand(text)
   if ("error" in parsed) {
-    return sendMessage(token, chatId, parsed.error)
+    return sendMessage(token, chatId, parsed.error || "Invalid income command.")
   }
   const { projectId, isTrading, miscCategory, amount } = parsed
 
@@ -584,6 +593,7 @@ async function logProjectIncome(token: string, chatId: number | string, text: st
 async function buildAiOptions(telegramId: number, chatId: number | string, message?: any): Promise<OpsAiOptions> {
   return {
     chatId,
+    chatTitle: chatTitle(message, chatId),
     conversation: await buildConversationContext(telegramId, chatId, message),
   }
 }
@@ -591,7 +601,7 @@ async function buildAiOptions(telegramId: number, chatId: number | string, messa
 async function maybeProposeAction(text: string, telegramId: number, aiOptions: OpsAiOptions) {
   if (aiOptions.conversation?.replyToBotText) return null
   if (isFollowUpMessage(text) && (aiOptions.conversation?.recentTurns.length || 0) > 0) return null
-  return proposeOpsAiAction(text, telegramId).catch(() => null)
+  return proposeOpsAiAction(text, telegramId, aiOptions).catch(() => null)
 }
 
 async function sendAiResponse(token: string, chatId: number | string, telegramId: number, text: string, message?: any) {
@@ -644,14 +654,20 @@ async function processState(token: string, chatId: number | string, telegramId: 
   }
 
   if (state.action === "add_reminder") {
-    const [title = "", dueAt = "", message = ""] = text.split("|").map((part) => part.trim())
+    const [title = "", dueAt = "", reminderMessage = ""] = text.split("|").map((part) => part.trim())
     if (!title) {
       await sendMessage(token, chatId, "Send: Reminder title | YYYY-MM-DD HH:mm | message")
       return true
     }
-    await db.collection("opsReminders").insertOne({ title, message: message || title, dueAt: dueAt ? (parseTeamDateTime(dueAt)?.toISOString() || new Date(dueAt).toISOString()) : new Date(Date.now() + 60 * 60 * 1000).toISOString(), timeZone: TEAM_TIME_ZONE, recurrence: "none", audience: "team", status: "scheduled", createdFrom: "bot", telegramId, createdAt: now, updatedAt: now })
+    const parsedDueAt = dueAt ? parseTeamDateTime(dueAt) : new Date(Date.now() + 60 * 60 * 1000)
+    if (!parsedDueAt) {
+      await sendMessage(token, chatId, "I could not read that due time. Send it as YYYY-MM-DD HH:mm in ET.")
+      return true
+    }
+    const targetChatTitle = chatTitle(message, chatId)
+    await db.collection("opsReminders").insertOne({ title, message: reminderMessage || title, dueAt: parsedDueAt.toISOString(), timeZone: TEAM_TIME_ZONE, recurrence: "none", audience: "team", deliveryScope: "chat", telegramChatId: String(chatId), targetChatTitle, status: "scheduled", createdFrom: "bot", telegramId, createdAt: now, updatedAt: now })
     await clearState(telegramId)
-    await sendMessage(token, chatId, "✅ Reminder added.")
+    await sendMessage(token, chatId, `✅ Reminder added.\n📅 Due: ${formatTeamDateTime(parsedDueAt)}\n💬 Deliver to: ${targetChatTitle}`)
     await sendReminders(token, chatId)
     return true
   }
@@ -877,6 +893,10 @@ async function routeText(token: string, chatId: number | string, telegramId: num
   }
   if (text === "📅 Calendar" || text === "🟠 Calendar" || isBotCommand(text, "calendar")) return sendCalendar(token, chatId)
   if (text === "🔔 Reminders" || isBotCommand(text, "reminders")) return sendReminders(token, chatId)
+  if (isBotCommand(text, "setreminder")) {
+    const aiOptions = await buildAiOptions(telegramId, chatId, message)
+    return sendAsyncResponse(token, chatId, async () => ({ text: await answerOpsBot(commandText, telegramId, aiOptions) }), "🔔 Scheduling…")
+  }
   if (text === "📝 Notes" || isBotCommand(text, "notes")) return sendProjectNotes(token, chatId, "all")
 
   const aiOptions = await buildAiOptions(telegramId, chatId, message)

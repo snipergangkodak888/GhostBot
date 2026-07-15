@@ -227,6 +227,7 @@ export type OpsConversationContext = {
 
 export type OpsAiOptions = {
   chatId?: number | string | null
+  chatTitle?: string
   conversation?: OpsConversationContext
 }
 
@@ -778,6 +779,7 @@ async function resolveActionPreview(actionType: string, payload: any, context: {
       const parsed = parseTeamDateTime(nextPayload.dueAt, String(nextPayload.timeZone || nextPayload.timezone || TEAM_TIME_ZONE))
       preview.push(`📅 Due: ${parsed ? formatTeamDateTime(parsed) : String(nextPayload.dueAt)}`)
     }
+    if (actionType === "create_reminder" && nextPayload.targetChatTitle) preview.push(`💬 Deliver to: ${nextPayload.targetChatTitle}`)
     if (actionType === "create_payroll" && nextPayload.member) preview.push(`💸 Payroll member: ${nextPayload.member}`)
   }
 
@@ -813,7 +815,7 @@ async function aiChat(messages: Array<{ role: "system" | "user" | "assistant"; c
   return outputFromChatCompletion(data) || "No answer returned."
 }
 
-export async function proposeOpsAiAction(textInput: string, telegramId?: number | null) {
+export async function proposeOpsAiAction(textInput: string, telegramId?: number | null, options: OpsAiOptions = {}) {
   const text = String(textInput || "").trim()
   if (!text || !isActionRequest(text)) return null
 
@@ -888,6 +890,11 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
     if (normalized) {
       payload.dueAt = normalized.dueAt
       payload.timeZone = normalized.timeZone
+    }
+    if (options.chatId !== undefined && options.chatId !== null) {
+      payload.deliveryScope = "chat"
+      payload.telegramChatId = String(options.chatId)
+      payload.targetChatTitle = String(options.chatTitle || options.chatId)
     }
   }
   const resolved = await resolveActionPreview(actionType, payload, { request: text, projects, sheets })
@@ -1081,13 +1088,16 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
       timeZone: normalized?.timeZone || TEAM_TIME_ZONE,
       recurrence: "none",
       audience: "team",
+      deliveryScope: payload.deliveryScope === "chat" && payload.telegramChatId ? "chat" : "team",
+      telegramChatId: payload.telegramChatId ? String(payload.telegramChatId) : "",
+      targetChatTitle: String(payload.targetChatTitle || "").trim(),
       status: "scheduled",
       createdFrom: "ai",
       telegramId: telegramId || null,
       createdAt: now,
       updatedAt: now,
     })
-    done = `✅ Reminder created: ${title}\n📅 Due: ${formatTeamDateTime(dueAt)}`
+    done = `✅ Reminder created: ${title}\n📅 Due: ${formatTeamDateTime(dueAt)}${payload.targetChatTitle ? `\n💬 Deliver to: ${payload.targetChatTitle}` : ""}`
   }
 
   if (action.actionType === "create_payroll") {
@@ -1363,19 +1373,24 @@ export async function answerOpsBot(textInput: string, telegramId?: number | null
     }
   } else if (text.startsWith("/setreminder ")) {
     const message = text.replace("/setreminder ", "").trim()
+    const dueAt = new Date(Date.now() + 60 * 60 * 1000).toISOString()
     await db.collection("opsReminders").insertOne({
       title: message.slice(0, 80),
       message,
-      dueAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-      recurrence: "once",
+      dueAt,
+      timeZone: TEAM_TIME_ZONE,
+      recurrence: "none",
       audience: "team",
+      deliveryScope: options.chatId !== undefined && options.chatId !== null ? "chat" : "team",
+      telegramChatId: options.chatId !== undefined && options.chatId !== null ? String(options.chatId) : "",
+      targetChatTitle: String(options.chatTitle || options.chatId || "").trim(),
       status: "scheduled",
       createdFrom: "bot",
       telegramId,
       createdAt: new Date(),
       updatedAt: new Date(),
     })
-    answer = "🔔 Reminder created for one hour from now."
+    answer = `🔔 Reminder created.\n📅 Due: ${formatTeamDateTime(dueAt)}${options.chatTitle ? `\n💬 Deliver to: ${options.chatTitle}` : ""}`
   } else if (text) {
     const docs = await db.collection("opsDocs").find({}).toArray()
     const lower = text.toLowerCase()

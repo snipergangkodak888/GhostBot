@@ -62,7 +62,12 @@ type Reminder = {
   recurrence?: "none" | "hourly" | "daily" | "weekly"
   audience?: "team" | "individual"
   status?: "scheduled" | "done"
+  deliveryScope?: "chat" | "team"
+  telegramChatId?: string
+  targetChatTitle?: string
 }
+
+type HostedGroup = { chatId: string; title: string }
 
 type PayrollRow = {
   _id: string
@@ -112,6 +117,8 @@ const emptyReminder = {
   recurrence: "none",
   audience: "team",
   status: "scheduled",
+  telegramChatId: "",
+  targetChatTitle: "",
 }
 
 const emptyDoc = {
@@ -584,6 +591,7 @@ export function AdminProjectsPage() {
 export function AdminRemindersPage() {
   const [reminders, setReminders] = useState<Reminder[]>([])
   const [projects, setProjects] = useState<Project[]>([])
+  const [groups, setGroups] = useState<HostedGroup[]>([])
   const [form, setForm] = useState(emptyReminder)
   const [editing, setEditing] = useState<string | null>(null)
   const [showForm, setShowForm] = useState(false)
@@ -592,14 +600,17 @@ export function AdminRemindersPage() {
   const load = async () => {
     setLoading(true)
     try {
-      const [reminderRes, projectRes] = await Promise.all([
+      const [reminderRes, projectRes, groupRes] = await Promise.all([
         fetch("/api/ops/reminders", { cache: "no-store", credentials: "include" }),
         fetch("/api/ops/projects", { cache: "no-store", credentials: "include" }),
+        fetch("/api/ops/hosted-groups", { cache: "no-store", credentials: "include" }),
       ])
       const reminderData = await readJson(reminderRes, [])
       const projectData = await readJson(projectRes, [])
+      const groupData = await readJson(groupRes, { groups: [] })
       setReminders(Array.isArray(reminderData) ? reminderData : [])
       setProjects(Array.isArray(projectData) ? projectData : [])
+      setGroups(Array.isArray(groupData?.groups) ? groupData.groups : [])
     } finally {
       setLoading(false)
     }
@@ -626,6 +637,8 @@ export function AdminRemindersPage() {
       recurrence: reminder.recurrence || "none",
       audience: reminder.audience || "team",
       status: reminder.status || "scheduled",
+      telegramChatId: reminder.telegramChatId || "",
+      targetChatTitle: reminder.targetChatTitle || "",
     })
   }
 
@@ -634,12 +647,17 @@ export function AdminRemindersPage() {
       toast.error("Reminder title is required")
       return
     }
+    if (!form.telegramChatId) {
+      toast.error("Select a delivery chat")
+      return
+    }
+    const selectedGroup = groups.find((group) => group.chatId === form.telegramChatId)
     const url = editing ? `/api/ops/reminders/${editing}` : "/api/ops/reminders"
     const res = await fetch(url, {
       method: editing ? "PATCH" : "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify(form),
+      body: JSON.stringify({ ...form, deliveryScope: "chat", targetChatTitle: selectedGroup?.title || form.targetChatTitle || form.telegramChatId }),
     })
     if (!res.ok) {
       toast.error("Reminder was not saved")
@@ -680,9 +698,10 @@ export function AdminRemindersPage() {
           <div className="lg:col-span-3"><Field label="Project"><Select value={form.projectId} onChange={(e) => setForm({ ...form, projectId: e.target.value })}><option value="">No project</option>{projects.map((project) => <option key={project._id} value={project._id}>{project.name}</option>)}</Select></Field></div>
           <div className="lg:col-span-3"><Field label="Due"><Input type="datetime-local" value={form.dueAt} onChange={(e) => setForm({ ...form, dueAt: e.target.value })} /></Field></div>
           <div className="lg:col-span-2"><Field label="Repeat"><Select value={form.recurrence} onChange={(e) => setForm({ ...form, recurrence: e.target.value })}><option value="none">None</option><option value="hourly">Hourly</option><option value="daily">Daily</option><option value="weekly">Weekly</option></Select></Field></div>
-          <div className="lg:col-span-2"><Field label="Audience"><Select value={form.audience} onChange={(e) => setForm({ ...form, audience: e.target.value })}><option value="team">Team</option><option value="individual">Individual</option></Select></Field></div>
+          <div className="lg:col-span-4"><Field label="Deliver to"><Select value={form.telegramChatId} onChange={(e) => setForm({ ...form, telegramChatId: e.target.value })}><option value="">Select chat…</option>{groups.map((group) => <option key={group.chatId} value={group.chatId}>{group.title}</option>)}</Select></Field></div>
           <div className="lg:col-span-2"><Field label="Status"><Select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}><option value="scheduled">Scheduled</option><option value="done">Done</option></Select></Field></div>
           <div className="lg:col-span-8"><Field label="Message"><Textarea value={form.message} onChange={(e) => setForm({ ...form, message: e.target.value })} /></Field></div>
+          {!groups.length ? <p className="text-xs text-amber-300/70 lg:col-span-12">Mention the bot in a Telegram group once so it appears here.</p> : null}
         </div>
         <div className="mt-4 flex justify-end">
           <IconButton onClick={save} className="border-[#ff4d5e]/50 bg-[#ff4d5e] hover:bg-[#ff4d5e]/90">
@@ -699,7 +718,7 @@ export function AdminRemindersPage() {
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <h3 className="font-semibold text-white">{reminder.title}</h3>
-                    <p className="mt-1 text-xs text-white/40">{dateLabel(reminder.dueAt)} - {reminder.recurrence || "none"} - {reminder.audience || "team"}</p>
+                    <p className="mt-1 text-xs text-white/40">{dateLabel(reminder.dueAt)} - {reminder.recurrence || "none"}{reminder.targetChatTitle ? ` - → ${reminder.targetChatTitle}` : ""}</p>
                   </div>
                   <span className={`rounded-full px-2 py-1 text-xs ${reminder.status === "done" ? "bg-white/10 text-white/45" : "bg-[#ff4d5e]/18 text-[#ff7a86]"}`}>{reminder.status || "scheduled"}</span>
                 </div>
@@ -720,6 +739,7 @@ export function AdminRemindersPage() {
 export function AdminCalendarPage() {
   const [projects, setProjects] = useState<Project[]>([])
   const [reminders, setReminders] = useState<Reminder[]>([])
+  const [groups, setGroups] = useState<HostedGroup[]>([])
   const [form, setForm] = useState(emptyReminder)
   const [showForm, setShowForm] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -727,14 +747,17 @@ export function AdminCalendarPage() {
   const load = async () => {
     setLoading(true)
     try {
-      const [projectRes, reminderRes] = await Promise.all([
+      const [projectRes, reminderRes, groupRes] = await Promise.all([
         fetch("/api/ops/projects", { cache: "no-store", credentials: "include" }),
         fetch("/api/ops/reminders", { cache: "no-store", credentials: "include" }),
+        fetch("/api/ops/hosted-groups", { cache: "no-store", credentials: "include" }),
       ])
       const projectData = await readJson(projectRes, [])
       const reminderData = await readJson(reminderRes, [])
+      const groupData = await readJson(groupRes, { groups: [] })
       setProjects(Array.isArray(projectData) ? projectData : [])
       setReminders(Array.isArray(reminderData) ? reminderData : [])
+      setGroups(Array.isArray(groupData?.groups) ? groupData.groups : [])
     } finally {
       setLoading(false)
     }
@@ -749,11 +772,16 @@ export function AdminCalendarPage() {
       toast.error("Reminder title is required")
       return
     }
+    if (!form.telegramChatId) {
+      toast.error("Select a delivery chat")
+      return
+    }
+    const selectedGroup = groups.find((group) => group.chatId === form.telegramChatId)
     const res = await fetch("/api/ops/reminders", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify(form),
+      body: JSON.stringify({ ...form, deliveryScope: "chat", targetChatTitle: selectedGroup?.title || form.telegramChatId }),
     })
     if (!res.ok) {
       toast.error("Reminder was not saved")
@@ -804,7 +832,9 @@ export function AdminCalendarPage() {
           <div className="lg:col-span-3"><Field label="Project"><Select value={form.projectId} onChange={(e) => setForm({ ...form, projectId: e.target.value })}><option value="">No project</option>{projects.map((project) => <option key={project._id} value={project._id}>{project.name}</option>)}</Select></Field></div>
           <div className="lg:col-span-3"><Field label="Due"><Input type="datetime-local" value={form.dueAt} onChange={(e) => setForm({ ...form, dueAt: e.target.value })} /></Field></div>
           <div className="lg:col-span-2"><Field label="Repeat"><Select value={form.recurrence} onChange={(e) => setForm({ ...form, recurrence: e.target.value })}><option value="none">None</option><option value="hourly">Hourly</option><option value="daily">Daily</option><option value="weekly">Weekly</option></Select></Field></div>
+          <div className="lg:col-span-4"><Field label="Deliver to"><Select value={form.telegramChatId} onChange={(e) => setForm({ ...form, telegramChatId: e.target.value })}><option value="">Select chat…</option>{groups.map((group) => <option key={group.chatId} value={group.chatId}>{group.title}</option>)}</Select></Field></div>
           <div className="lg:col-span-12"><Field label="Message"><Textarea value={form.message} onChange={(e) => setForm({ ...form, message: e.target.value })} /></Field></div>
+          {!groups.length ? <p className="text-xs text-amber-300/70 lg:col-span-12">Mention the bot in a Telegram group once so it appears here.</p> : null}
         </div>
         <div className="mt-4 flex justify-end">
           <IconButton onClick={saveReminder} className="border-[#ff8a3d]/50 bg-[#ff8a3d] text-black hover:bg-[#ff8a3d]/90"><Save className="h-4 w-4" />Save Reminder</IconButton>

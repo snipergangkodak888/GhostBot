@@ -1,17 +1,23 @@
 import { NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
+import { normalizeReminderDueAt, TEAM_TIME_ZONE } from '@/lib/team-timezone'
 
 export const dynamic = 'force-dynamic'
 
 function cleanReminder(body: any) {
+  const normalized = normalizeReminderDueAt({ dueAt: body.dueAt, timeZone: body.timeZone || TEAM_TIME_ZONE })
+  const telegramChatId = body.telegramChatId ? String(body.telegramChatId).trim() : ''
   return {
     title: String(body.title || '').trim(),
     message: String(body.message || '').trim(),
     projectId: body.projectId ? String(body.projectId) : null,
-    dueAt: body.dueAt ? new Date(body.dueAt).toISOString() : new Date().toISOString(),
+    dueAt: normalized?.dueAt || '',
+    timeZone: normalized?.timeZone || TEAM_TIME_ZONE,
     recurrence: ['none', 'hourly', 'daily', 'weekly'].includes(body.recurrence) ? body.recurrence : 'none',
     audience: body.audience === 'team' ? 'team' : 'individual',
-    telegramChatId: body.telegramChatId ? String(body.telegramChatId).trim() : '',
+    deliveryScope: telegramChatId ? 'chat' : 'team',
+    telegramChatId,
+    targetChatTitle: String(body.targetChatTitle || '').trim(),
     status: body.status === 'done' ? 'done' : 'scheduled',
   }
 }
@@ -32,6 +38,8 @@ export async function POST(req: Request) {
   if (!reminder.title && !reminder.message) {
     return NextResponse.json({ error: 'Reminder title or message is required' }, { status: 400 })
   }
+  if (!reminder.dueAt) return NextResponse.json({ error: 'A valid reminder due time is required' }, { status: 400 })
+  if (!reminder.telegramChatId) return NextResponse.json({ error: 'Select a delivery chat' }, { status: 400 })
   const now = new Date()
   const db = await getDb()
   const result = await db.collection('opsReminders').insertOne({

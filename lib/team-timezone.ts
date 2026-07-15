@@ -113,9 +113,62 @@ export function parseTeamDateTime(value: unknown, timeZone = TEAM_TIME_ZONE) {
   return Number.isNaN(fallback.getTime()) ? null : fallback
 }
 
-export function normalizeReminderDueAt(payload: { dueAt?: unknown; timeZone?: unknown; timezone?: unknown }) {
+function parsedClock(raw: string) {
+  if (/\bnoon\b/i.test(raw)) return { hour: 12, minute: 0 }
+  if (/\bmidnight\b/i.test(raw)) return { hour: 0, minute: 0 }
+  const match = raw.match(/\b(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?\b/i)
+  if (!match) return null
+  let hour = Number(match[1])
+  const minute = Number(match[2] || 0)
+  const meridiem = String(match[3] || "").toLowerCase().replace(/\./g, "")
+  if (hour > 23 || minute > 59) return null
+  if (meridiem === "pm" && hour < 12) hour += 12
+  if (meridiem === "am" && hour === 12) hour = 0
+  return { hour, minute }
+}
+
+export function parseRelativeTeamDateTime(value: unknown, timeZone = TEAM_TIME_ZONE, now = new Date()) {
+  const raw = String(value || "").trim().toLowerCase()
+  if (!raw) return null
+
+  const offset = raw.match(/\bin\s+(\d+)\s*(minute|minutes|hour|hours|day|days|week|weeks)\b/i)
+  if (offset) {
+    const amount = Number(offset[1])
+    const unit = offset[2].toLowerCase()
+    const multiplier = unit.startsWith("minute") ? 60_000 : unit.startsWith("hour") ? 3_600_000 : unit.startsWith("day") ? 86_400_000 : 604_800_000
+    return new Date(now.getTime() + amount * multiplier)
+  }
+
+  const weekdays = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]
+  const weekdayIndex = weekdays.findIndex((day) => new RegExp(`\\b(?:next\\s+)?${day}\\b`, "i").test(raw))
+  const relativeDay = /\btomorrow\b/.test(raw) ? 1 : /\btoday\b|\btonight\b/.test(raw) ? 0 : null
+  if (relativeDay === null && weekdayIndex < 0) return null
+
+  const current = partsInTimeZone(now, timeZone)
+  const currentAnchor = new Date(Date.UTC(current.year, current.month - 1, current.day, 12))
+  let addDays = relativeDay ?? 0
+  if (weekdayIndex >= 0) {
+    const currentWeekday = currentAnchor.getUTCDay()
+    addDays = (weekdayIndex - currentWeekday + 7) % 7
+    if (addDays === 0) addDays = 7
+  }
+  currentAnchor.setUTCDate(currentAnchor.getUTCDate() + addDays)
+
+  const clock = parsedClock(raw) || (/\btonight\b/.test(raw) ? { hour: 19, minute: 0 } : { hour: 9, minute: 0 })
+  return zonedDateTimeToUtc(
+    currentAnchor.getUTCFullYear(),
+    currentAnchor.getUTCMonth() + 1,
+    currentAnchor.getUTCDate(),
+    clock.hour,
+    clock.minute,
+    0,
+    timeZone,
+  )
+}
+
+export function normalizeReminderDueAt(payload: { dueAt?: unknown; timeZone?: unknown; timezone?: unknown }, now = new Date()) {
   const timeZone = String(payload.timeZone || payload.timezone || TEAM_TIME_ZONE).trim() || TEAM_TIME_ZONE
-  const parsed = parseTeamDateTime(payload.dueAt, timeZone)
+  const parsed = parseTeamDateTime(payload.dueAt, timeZone) || parseRelativeTeamDateTime(payload.dueAt, timeZone, now)
   if (!parsed) return null
   return { dueAt: parsed.toISOString(), timeZone }
 }

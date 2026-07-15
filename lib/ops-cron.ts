@@ -105,6 +105,17 @@ async function getRecipients(extraChatId?: string) {
   return Array.from(recipients.values())
 }
 
+function directRecipient(reminder: any): CronRecipient[] | null {
+  const chatId = String(reminder.telegramChatId || "").trim()
+  if (!chatId) return null
+  if (reminder.deliveryScope !== "chat" && reminder.deliveryScope) return null
+  return [{
+    chatId,
+    kind: "direct",
+    label: String(reminder.targetChatTitle || chatId),
+  }]
+}
+
 async function sendToRecipients(token: string, recipients: CronRecipient[], text: string) {
   let sent = 0
   let failed = 0
@@ -137,7 +148,7 @@ async function processDueReminders(token: string, now: Date) {
       continue
     }
 
-    const recipients = await getRecipients(reminder.telegramChatId ? String(reminder.telegramChatId) : undefined)
+    const recipients = directRecipient(reminder) || await getRecipients()
     const text = [
       "🔔 <b>Team Reminder</b>",
       "",
