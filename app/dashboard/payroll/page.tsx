@@ -7,6 +7,8 @@ import { usePayrollCalculator } from "@/hooks/use-payroll-calculator"
 import type { PayrollAccount, PayrollAccountType } from "@/lib/payroll-ledger"
 import {
   MISC_INCOME_CATEGORIES,
+  miscIncomeCategoryIsSingleton,
+  miscIncomeProjectDisabled,
   miscIncomeProjectRequired,
   validateDevAllocations,
 } from "@/lib/payroll-misc"
@@ -992,9 +994,12 @@ export default function PayrollPage() {
                         onChange={(event) => payroll.updateDevAllocationRow(index, { category: event.target.value, projectId: miscIncomeProjectRequired(event.target.value) ? row.projectId : undefined })}
                         className="ledger-input w-full"
                       >
-                        {MISC_INCOME_CATEGORIES.map((item) => (
-                          <option key={item.id} value={item.id}>{item.label}</option>
-                        ))}
+                        {MISC_INCOME_CATEGORIES.map((item) => {
+                          const alreadyUsed = miscIncomeCategoryIsSingleton(item.id) && payroll.devAllocations.some(
+                            (otherRow, otherIndex) => otherIndex !== index && otherRow.category === item.id,
+                          )
+                          return <option key={item.id} value={item.id} disabled={alreadyUsed}>{item.label}</option>
+                        })}
                       </select>
                     </label>
                     <label className="min-w-0">
@@ -1003,7 +1008,7 @@ export default function PayrollPage() {
                         value={row.projectId || ""}
                         onChange={(event) => payroll.updateDevAllocationRow(index, { projectId: event.target.value || undefined })}
                         className="ledger-input w-full"
-                        disabled={!projectRequired && category === "fee_rebate"}
+                        disabled={miscIncomeProjectDisabled(category)}
                       >
                         <option value="">{projectRequired ? "Choose project" : "None"}</option>
                         {projects.map((project) => <option key={project._id} value={project._id}>{project.name}</option>)}

@@ -1,7 +1,7 @@
 export const MISC_INCOME_CATEGORIES = [
   { id: "dev_allocation", label: "Dev allocation", projectRequired: true },
   { id: "private_liqs", label: "Private liquidations", projectRequired: false },
-  { id: "fee_rebate", label: "Fee rebate", projectRequired: false },
+  { id: "fee_rebate", label: "Rebate", projectRequired: false },
   { id: "other", label: "Other", projectRequired: false },
 ] as const
 
@@ -20,8 +20,16 @@ export function normalizeMiscIncomeCategory(value: unknown): MiscIncomeCategory 
   return match?.id || "dev_allocation"
 }
 
-export function miscIncomeProjectRequired(category: MiscIncomeCategory) {
+export function miscIncomeProjectRequired(category: MiscIncomeCategory | string) {
   return category === "dev_allocation"
+}
+
+export function miscIncomeProjectDisabled(category: MiscIncomeCategory | string) {
+  return category === "fee_rebate" || category === "private_liqs"
+}
+
+export function miscIncomeCategoryIsSingleton(category: MiscIncomeCategory | string) {
+  return category === "fee_rebate" || category === "private_liqs"
 }
 
 export function normalizeDevAllocationRow(row: {
@@ -32,7 +40,7 @@ export function normalizeDevAllocationRow(row: {
 }) {
   const category = normalizeMiscIncomeCategory(row.category)
   let projectId = String(row.projectId || "").trim() || undefined
-  if (category === "fee_rebate") projectId = undefined
+  if (miscIncomeProjectDisabled(category)) projectId = undefined
   return {
     accountId: row.accountId ? String(row.accountId) : undefined,
     projectId,
@@ -46,9 +54,12 @@ export function normalizeDevAllocations(rows: unknown) {
   return rows.map((row) => normalizeDevAllocationRow(row as any))
 }
 
-export function validateDevAllocations(rows: ReturnType<typeof normalizeDevAllocations>) {
+export function validateDevAllocations(rows: unknown) {
   const errors: string[] = []
-  rows.forEach((row, index) => {
+  const categoryCounts = new Map<MiscIncomeCategory, number>()
+  const normalizedRows = normalizeDevAllocations(rows)
+  normalizedRows.forEach((row, index) => {
+    categoryCounts.set(row.category, (categoryCounts.get(row.category) || 0) + 1)
     if (!Number.isFinite(row.income) || row.income < 0) {
       errors.push(`Misc income row ${index + 1}: amount must be zero or greater`)
     }
@@ -56,6 +67,11 @@ export function validateDevAllocations(rows: ReturnType<typeof normalizeDevAlloc
       errors.push(`Misc income row ${index + 1}: ${miscIncomeCategoryLabel(row.category)} requires a project`)
     }
   })
+  for (const category of ["fee_rebate", "private_liqs"] as const) {
+    if ((categoryCounts.get(category) || 0) > 1) {
+      errors.push(`Only one ${miscIncomeCategoryLabel(category).toLowerCase()} row is allowed per day`)
+    }
+  }
   return errors
 }
 
