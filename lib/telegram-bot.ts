@@ -1,8 +1,58 @@
+import { AsyncLocalStorage } from "node:async_hooks"
 import { getDb } from "@/lib/db"
 
 const TELEGRAM_API = "https://api.telegram.org"
 
+export type TelegramCaptureCall = {
+  method: string
+  body: Record<string, any>
+  messageId?: number
+  createdAt: string
+}
+
+type TelegramCaptureSession = {
+  calls: TelegramCaptureCall[]
+  nextMessageId: number
+}
+
+const telegramCapture = new AsyncLocalStorage<TelegramCaptureSession>()
+
+export function isTelegramCaptureActive() {
+  return Boolean(telegramCapture.getStore())
+}
+
+export async function withTelegramCapture<T>(work: () => Promise<T>) {
+  const session: TelegramCaptureSession = { calls: [], nextMessageId: 1 }
+  const result = await telegramCapture.run(session, work)
+  return { result, calls: session.calls }
+}
+
+function captureTelegramCall(method: string, body: Record<string, any>, messageId?: number) {
+  const session = telegramCapture.getStore()
+  if (!session) return false
+  session.calls.push({ method, body, ...(messageId ? { messageId } : {}), createdAt: new Date().toISOString() })
+  return true
+}
+
+function capturedTelegramResponse(method: string, body: Record<string, any>) {
+  const session = telegramCapture.getStore()
+  if (!session) return null
+
+  const createsMessage = method === "sendMessage"
+  const messageId = createsMessage ? session.nextMessageId++ : Number(body.message_id || 0) || undefined
+  captureTelegramCall(method, body, messageId)
+
+  const result = createsMessage
+    ? { message_id: messageId, chat: { id: body.chat_id }, text: body.text || "" }
+    : true
+  return new Response(JSON.stringify({ ok: true, result }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  })
+}
+
 export async function getTelegramBotToken() {
+  if (isTelegramCaptureActive()) return "ghostbot-local-lab-token"
   const db = await getDb()
   const settingsRow = await db.collection("settings").findOne({ key: "telegramBotToken" }).catch(() => null)
   return String(settingsRow?.value || process.env.TELEGRAM_BOT_TOKEN || "").trim()
@@ -24,6 +74,8 @@ export async function getTelegramBotUsername() {
 }
 
 export async function telegramApi(token: string, method: string, body: Record<string, any>) {
+  const captured = capturedTelegramResponse(method, body)
+  if (captured) return captured
   const response = await fetch(`${TELEGRAM_API}/bot${token}/${method}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -196,6 +248,15 @@ export async function sendTelegramPhoto(
   png: Buffer,
   caption?: string,
 ) {
+  if (isTelegramCaptureActive()) {
+    captureTelegramCall("sendPhoto", {
+      chat_id: chatId,
+      caption: caption || "",
+      filename: "ghost-payroll-report.png",
+      byte_length: png.byteLength,
+    })
+    return true
+  }
   const form = new FormData()
   form.append("chat_id", String(chatId))
   form.append("photo", new Blob([new Uint8Array(png)], { type: "image/png" }), "ghost-payroll-report.png")
@@ -224,6 +285,15 @@ export async function sendTelegramDocument(
   caption?: string,
   filename = "ghost-payroll-report.png",
 ) {
+  if (isTelegramCaptureActive()) {
+    captureTelegramCall("sendDocument", {
+      chat_id: chatId,
+      caption: caption || "",
+      filename,
+      byte_length: png.byteLength,
+    })
+    return true
+  }
   const form = new FormData()
   form.append("chat_id", String(chatId))
   form.append("document", new Blob([new Uint8Array(png)], { type: "image/png" }), filename)

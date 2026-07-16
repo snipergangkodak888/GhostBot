@@ -206,6 +206,7 @@ export async function POST(request: NextRequest) {
         lastName: profile.lastName,
         username: profile.username,
         isPremium: profile.isPremium,
+        timeZone: access.allowed ? String(access.member?.timeZone || user?.timeZone || "") : String(user?.timeZone || ""),
       },
     })
 

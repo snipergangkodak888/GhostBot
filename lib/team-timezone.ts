@@ -1,5 +1,15 @@
 export const TEAM_TIME_ZONE = "America/New_York"
 
+export const TIME_ZONE_OPTIONS = [
+  { key: "pt", label: "Pacific", timeZone: "America/Los_Angeles" },
+  { key: "mt", label: "Mountain", timeZone: "America/Denver" },
+  { key: "ct", label: "Central", timeZone: "America/Chicago" },
+  { key: "et", label: "Eastern", timeZone: "America/New_York" },
+  { key: "utc", label: "UTC", timeZone: "UTC" },
+  { key: "london", label: "London", timeZone: "Europe/London" },
+  { key: "cyprus", label: "Cyprus", timeZone: "Asia/Nicosia" },
+] as const
+
 const ZONE_LABELS: Record<string, string> = {
   "America/New_York": "ET",
   "America/Chicago": "CT",
@@ -8,7 +18,47 @@ const ZONE_LABELS: Record<string, string> = {
   "UTC": "UTC",
 }
 
-function partsInTimeZone(date: Date, timeZone: string) {
+export function isValidTimeZone(timeZone: unknown) {
+  const value = String(timeZone || "").trim()
+  if (!value) return false
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value }).format(new Date())
+    return true
+  } catch {
+    return false
+  }
+}
+
+export function normalizeTimeZone(timeZone: unknown) {
+  const raw = String(timeZone || "").trim()
+  if (!raw) return ""
+  const option = TIME_ZONE_OPTIONS.find((item) => item.key === raw.toLowerCase() || item.label.toLowerCase() === raw.toLowerCase())
+  const value = option?.timeZone || raw
+  return isValidTimeZone(value) ? value : ""
+}
+
+export function timeZoneFromOption(key: unknown) {
+  return TIME_ZONE_OPTIONS.find((item) => item.key === String(key || "").toLowerCase())?.timeZone || ""
+}
+
+export function detectExplicitTimeZone(text: unknown) {
+  const value = String(text || "")
+  const iana = value.match(/\b(?:Africa|America|Antarctica|Asia|Atlantic|Australia|Europe|Indian|Pacific)\/[A-Za-z_+-]+\b/)?.[0]
+  if (iana && isValidTimeZone(iana)) return iana
+
+  const aliases: Array<[RegExp, string]> = [
+    [/\b(?:PST|PDT|PT|Pacific(?:\s+Time)?)\b/i, "America/Los_Angeles"],
+    [/\b(?:MST|MDT|MT|Mountain(?:\s+Time)?)\b/i, "America/Denver"],
+    [/\b(?:CST|CDT|CT|Central(?:\s+Time)?)\b/i, "America/Chicago"],
+    [/\b(?:EST|EDT|ET|Eastern(?:\s+Time)?)\b/i, "America/New_York"],
+    [/\b(?:London(?:\s+Time)?|BST)\b/i, "Europe/London"],
+    [/\b(?:Cyprus(?:\s+Time)?|EEST)\b/i, "Asia/Nicosia"],
+    [/\b(?:UTC|GMT)\b/i, "UTC"],
+  ]
+  return aliases.find(([pattern]) => pattern.test(value))?.[1] || ""
+}
+
+export function partsInTimeZone(date: Date, timeZone: string) {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone,
     year: "numeric",
@@ -85,15 +135,12 @@ export function parseTeamDateTime(value: unknown, timeZone = TEAM_TIME_ZONE) {
   const raw = String(value || "").trim()
   if (!raw) return null
 
-  if (/[+-]\d{2}:\d{2}$/.test(raw)) {
+  if (/[zZ]$/.test(raw) || /[+-]\d{2}:\d{2}$/.test(raw)) {
     const date = new Date(raw)
     return Number.isNaN(date.getTime()) ? null : date
   }
 
   let normalized = raw.replace(" ", "T")
-  if (/[zZ]$/.test(normalized)) {
-    normalized = normalized.replace(/[zZ]$/, "")
-  }
 
   const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?)?$/)
   if (match) {
@@ -167,8 +214,43 @@ export function parseRelativeTeamDateTime(value: unknown, timeZone = TEAM_TIME_Z
 }
 
 export function normalizeReminderDueAt(payload: { dueAt?: unknown; timeZone?: unknown; timezone?: unknown }, now = new Date()) {
-  const timeZone = String(payload.timeZone || payload.timezone || TEAM_TIME_ZONE).trim() || TEAM_TIME_ZONE
+  const timeZone = normalizeTimeZone(payload.timeZone || payload.timezone) || TEAM_TIME_ZONE
   const parsed = parseTeamDateTime(payload.dueAt, timeZone) || parseRelativeTeamDateTime(payload.dueAt, timeZone, now)
   if (!parsed) return null
   return { dueAt: parsed.toISOString(), timeZone }
+}
+
+export function nextRecurringDueAt(
+  currentDueAt: string,
+  recurrence: string,
+  timeZone = TEAM_TIME_ZONE,
+  now = new Date(),
+) {
+  const current = new Date(currentDueAt)
+  if (Number.isNaN(current.getTime())) return null
+  if (recurrence === "hourly") {
+    const next = new Date(current)
+    while (next.getTime() <= now.getTime()) next.setTime(next.getTime() + 60 * 60 * 1000)
+    return next.toISOString()
+  }
+  const days = recurrence === "daily" ? 1 : recurrence === "weekly" ? 7 : 0
+  if (!days) return null
+
+  const zone = normalizeTimeZone(timeZone) || TEAM_TIME_ZONE
+  const local = partsInTimeZone(current, zone)
+  const calendar = new Date(Date.UTC(local.year, local.month - 1, local.day, 12))
+  let next = current
+  do {
+    calendar.setUTCDate(calendar.getUTCDate() + days)
+    next = zonedDateTimeToUtc(
+      calendar.getUTCFullYear(),
+      calendar.getUTCMonth() + 1,
+      calendar.getUTCDate(),
+      local.hour,
+      local.minute,
+      local.second,
+      zone,
+    )
+  } while (next.getTime() <= now.getTime())
+  return next.toISOString()
 }

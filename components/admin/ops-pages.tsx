@@ -65,6 +65,7 @@ type Reminder = {
   deliveryScope?: "chat" | "team"
   telegramChatId?: string
   targetChatTitle?: string
+  timeZone?: string
 }
 
 type HostedGroup = { chatId: string; title: string }
@@ -119,6 +120,17 @@ const emptyReminder = {
   status: "scheduled",
   telegramChatId: "",
   targetChatTitle: "",
+  timeZone: "",
+}
+
+function browserTimeZone() {
+  return typeof Intl === "undefined" ? "" : Intl.DateTimeFormat().resolvedOptions().timeZone || ""
+}
+
+function localDateTimeInput(value: string | Date) {
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) return ""
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16)
 }
 
 const emptyDoc = {
@@ -633,12 +645,13 @@ export function AdminRemindersPage() {
       title: reminder.title || "",
       message: reminder.message || "",
       projectId: reminder.projectId || "",
-      dueAt: reminder.dueAt ? String(reminder.dueAt).slice(0, 16) : "",
+      dueAt: reminder.dueAt ? localDateTimeInput(reminder.dueAt) : "",
       recurrence: reminder.recurrence || "none",
       audience: reminder.audience || "team",
       status: reminder.status || "scheduled",
       telegramChatId: reminder.telegramChatId || "",
       targetChatTitle: reminder.targetChatTitle || "",
+      timeZone: reminder.timeZone || browserTimeZone(),
     })
   }
 
@@ -657,7 +670,7 @@ export function AdminRemindersPage() {
       method: editing ? "PATCH" : "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ ...form, deliveryScope: "chat", targetChatTitle: selectedGroup?.title || form.targetChatTitle || form.telegramChatId }),
+      body: JSON.stringify({ ...form, timeZone: form.timeZone || browserTimeZone(), deliveryScope: "chat", targetChatTitle: selectedGroup?.title || form.targetChatTitle || form.telegramChatId }),
     })
     if (!res.ok) {
       toast.error("Reminder was not saved")
@@ -696,7 +709,7 @@ export function AdminRemindersPage() {
         <div className="grid gap-3 lg:grid-cols-12">
           <div className="lg:col-span-4"><Field label="Title"><Input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></Field></div>
           <div className="lg:col-span-3"><Field label="Project"><Select value={form.projectId} onChange={(e) => setForm({ ...form, projectId: e.target.value })}><option value="">No project</option>{projects.map((project) => <option key={project._id} value={project._id}>{project.name}</option>)}</Select></Field></div>
-          <div className="lg:col-span-3"><Field label="Due"><Input type="datetime-local" value={form.dueAt} onChange={(e) => setForm({ ...form, dueAt: e.target.value })} /></Field></div>
+          <div className="lg:col-span-3"><Field label={`Due (${form.timeZone || browserTimeZone() || "local"})`}><Input type="datetime-local" value={form.dueAt} onChange={(e) => setForm({ ...form, dueAt: e.target.value, timeZone: form.timeZone || browserTimeZone() })} /></Field></div>
           <div className="lg:col-span-2"><Field label="Repeat"><Select value={form.recurrence} onChange={(e) => setForm({ ...form, recurrence: e.target.value })}><option value="none">None</option><option value="hourly">Hourly</option><option value="daily">Daily</option><option value="weekly">Weekly</option></Select></Field></div>
           <div className="lg:col-span-4"><Field label="Deliver to"><Select value={form.telegramChatId} onChange={(e) => setForm({ ...form, telegramChatId: e.target.value })}><option value="">Select chat…</option>{groups.map((group) => <option key={group.chatId} value={group.chatId}>{group.title}</option>)}</Select></Field></div>
           <div className="lg:col-span-2"><Field label="Status"><Select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}><option value="scheduled">Scheduled</option><option value="done">Done</option></Select></Field></div>
@@ -781,7 +794,7 @@ export function AdminCalendarPage() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ ...form, deliveryScope: "chat", targetChatTitle: selectedGroup?.title || form.telegramChatId }),
+      body: JSON.stringify({ ...form, timeZone: form.timeZone || browserTimeZone(), deliveryScope: "chat", targetChatTitle: selectedGroup?.title || form.telegramChatId }),
     })
     if (!res.ok) {
       toast.error("Reminder was not saved")
@@ -830,7 +843,7 @@ export function AdminCalendarPage() {
         <div className="grid gap-3 lg:grid-cols-12">
           <div className="lg:col-span-4"><Field label="Title"><Input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></Field></div>
           <div className="lg:col-span-3"><Field label="Project"><Select value={form.projectId} onChange={(e) => setForm({ ...form, projectId: e.target.value })}><option value="">No project</option>{projects.map((project) => <option key={project._id} value={project._id}>{project.name}</option>)}</Select></Field></div>
-          <div className="lg:col-span-3"><Field label="Due"><Input type="datetime-local" value={form.dueAt} onChange={(e) => setForm({ ...form, dueAt: e.target.value })} /></Field></div>
+          <div className="lg:col-span-3"><Field label={`Due (${form.timeZone || browserTimeZone() || "local"})`}><Input type="datetime-local" value={form.dueAt} onChange={(e) => setForm({ ...form, dueAt: e.target.value, timeZone: form.timeZone || browserTimeZone() })} /></Field></div>
           <div className="lg:col-span-2"><Field label="Repeat"><Select value={form.recurrence} onChange={(e) => setForm({ ...form, recurrence: e.target.value })}><option value="none">None</option><option value="hourly">Hourly</option><option value="daily">Daily</option><option value="weekly">Weekly</option></Select></Field></div>
           <div className="lg:col-span-4"><Field label="Deliver to"><Select value={form.telegramChatId} onChange={(e) => setForm({ ...form, telegramChatId: e.target.value })}><option value="">Select chat…</option>{groups.map((group) => <option key={group.chatId} value={group.chatId}>{group.title}</option>)}</Select></Field></div>
           <div className="lg:col-span-12"><Field label="Message"><Textarea value={form.message} onChange={(e) => setForm({ ...form, message: e.target.value })} /></Field></div>

@@ -5,6 +5,9 @@
   "scripts": {
     "build": "next build",
     "dev": "next dev",
+    "dev:bot": "node ./scripts/dev-bot.mjs",
+    "bot:lab": "node ./scripts/bot-lab.mjs",
+    "bot:test": "node ./scripts/bot-lab-test.mjs",
     "dev:cron": "node ./scripts/dev-cron.mjs",
     "db:init": "node ./scripts/init-db.mjs",
     "seed:july-payroll": "node ./scripts/seed-july-payroll.mjs",

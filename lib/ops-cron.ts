@@ -1,6 +1,7 @@
 import { getDb } from "@/lib/db"
 import { calculateSheetFinancials } from "@/lib/ops-sheets"
 import { getTelegramBotToken, sendTelegramText } from "@/lib/telegram-bot"
+import { formatTeamDateTime, nextRecurringDueAt, TEAM_TIME_ZONE } from "@/lib/team-timezone"
 
 const EST_TIME_ZONE = "America/New_York"
 
@@ -50,17 +51,11 @@ function escapeHtml(value: unknown) {
     .replace(/>/g, "&gt;")
 }
 
-function nextDueAt(currentDueAt: string, recurrence: string, now: Date) {
-  const due = new Date(currentDueAt)
-  if (Number.isNaN(due.getTime())) return null
-  const step =
-    recurrence === "hourly" ? 60 * 60 * 1000 :
-    recurrence === "daily" ? 24 * 60 * 60 * 1000 :
-    recurrence === "weekly" ? 7 * 24 * 60 * 60 * 1000 :
-    0
-  if (!step) return null
-  while (due.getTime() <= now.getTime()) due.setTime(due.getTime() + step)
-  return due.toISOString()
+function telegramLocalDateTime(value: string | Date, timeZone: string) {
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) return escapeHtml(formatTeamDateTime(value, timeZone))
+  const fallback = escapeHtml(formatTeamDateTime(date, timeZone))
+  return `<a href="tg://time?unix=${Math.floor(date.getTime() / 1000)}&amp;format=wDt">${fallback}</a>`
 }
 
 async function claimDelivery(key: string, type: string) {
@@ -149,20 +144,21 @@ async function processDueReminders(token: string, now: Date) {
     }
 
     const recipients = directRecipient(reminder) || await getRecipients()
+    const reminderTimeZone = String(reminder.timeZone || TEAM_TIME_ZONE)
     const text = [
       "🔔 <b>Team Reminder</b>",
       "",
       `<b>${escapeHtml(reminder.title || "Reminder")}</b>`,
       reminder.message ? escapeHtml(reminder.message) : "",
       "",
-      `⏰ ${escapeHtml(estTimeLabel(dueAt))} EST`,
+      `⏰ ${telegramLocalDateTime(dueAt, reminderTimeZone)}`,
     ].filter(Boolean).join("\n")
 
     const result = await sendToRecipients(token, recipients, text)
     sent += result.sent
     failed += result.failed
 
-    const next = nextDueAt(dueAt, String(reminder.recurrence || "none"), now)
+    const next = nextRecurringDueAt(dueAt, String(reminder.recurrence || "none"), reminderTimeZone, now)
     await db.collection("opsReminders").updateOne(
       { _id: reminder._id },
       {

@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server"
 import { answerOpsAi, answerOpsBot, buildConversationContext, chooseOpsAiActionCandidate, executeOpsAiAction, formatOpsProjectDetails, isFollowUpMessage, proposeOpsAiAction, rejectOpsAiAction, type OpsAiOptions } from "@/lib/ops-bot"
-import { getTeamAccess, redeemGuardInviteCode } from "@/lib/team-access"
+import { getMemberTimeZone, getTeamAccess, redeemGuardInviteCode, saveMemberTimeZone } from "@/lib/team-access"
 import { getDb } from "@/lib/db"
 import { deleteProjectCascade } from "@/lib/platform-data"
 import { getSheetSchema, SHEET_KIND_ORDER, valuesForKind, type SheetKind } from "@/lib/sheet-schemas"
-import { formatTeamDateTime, parseTeamDateTime, TEAM_TIME_ZONE } from "@/lib/team-timezone"
-import { getTelegramBotToken, getTelegramBotUsername, sendChatAction, sendTelegramDocument, sendTelegramMessage, sendTelegramPhoto, telegramApi, telegramApiJson, withTelegramLoading } from "@/lib/telegram-bot"
+import { detectExplicitTimeZone, formatTeamDateTime, parseTeamDateTime, teamZoneLabel, TIME_ZONE_OPTIONS, timeZoneFromOption, TEAM_TIME_ZONE } from "@/lib/team-timezone"
+import { getTelegramBotToken, getTelegramBotUsername, isTelegramCaptureActive, sendChatAction, sendTelegramDocument, sendTelegramMessage, sendTelegramPhoto, telegramApi, telegramApiJson, withTelegramLoading } from "@/lib/telegram-bot"
 import { savePayrollDay } from "@/lib/payroll-day"
 import { loadDailyPayrollReport, parseReportDateFromText } from "@/lib/payroll-daily-report"
 import { renderPayrollReportPng } from "@/lib/payroll-report-image"
@@ -98,6 +98,7 @@ async function setBotCommands(token: string) {
       { command: "log", description: "Log project trading or dev income" },
       { command: "notes", description: "Show project notes" },
       { command: "ai", description: "Ask AI about projects and data" },
+      { command: "timezone", description: "Set your local timezone" },
     ],
   })
 }
@@ -129,7 +130,37 @@ function helpMessage() {
     "🧾 /log <project id> <trading|dev> <amount>",
     "📝 /notes",
     "🧠 @me your question",
+    "🌍 /timezone - set your local timezone",
   ].join("\n")
+}
+
+function timeZoneButtons(targetTelegramId: number) {
+  return [
+    TIME_ZONE_OPTIONS.slice(0, 4).map((option) => ({ text: option.label, callback_data: `tz:set:${option.key}:${targetTelegramId}` })),
+    TIME_ZONE_OPTIONS.slice(4).map((option) => ({ text: option.label, callback_data: `tz:set:${option.key}:${targetTelegramId}` })),
+  ]
+}
+
+function timeZonePrompt() {
+  return "🌍 What timezone should I use for times you enter without a timezone?\n\nYou can also send /timezone Europe/London or another IANA timezone."
+}
+
+function isRelativeDurationReminder(text: string) {
+  return /\bin\s+\d+\s*(?:minutes?|hours?|days?|weeks?)\b/i.test(text)
+}
+
+async function maybeRequestReminderTimeZone(
+  token: string,
+  chatId: number | string,
+  telegramId: number,
+  text: string,
+  stateAction = "timezone_for_reminder",
+) {
+  if (!/\bremind(?:er|ers)?\b/i.test(text)) return false
+  if (detectExplicitTimeZone(text) || isRelativeDurationReminder(text) || await getMemberTimeZone(telegramId)) return false
+  await setState(telegramId, { action: stateAction, pendingText: text })
+  await sendMessage(token, chatId, timeZonePrompt(), timeZoneButtons(telegramId))
+  return true
 }
 
 function inviteMessage() {
@@ -157,6 +188,7 @@ async function ensureAccess(params: {
   profile: any
   req: NextRequest
 }) {
+  if (isTelegramCaptureActive()) return true
   if (!params.telegramId) {
     await sendMessage(params.token, params.chatId, inviteMessage())
     return false
@@ -453,7 +485,7 @@ async function sendReminders(token: string, chatId: number | string) {
   const db = await getDb()
   const rows = await db.collection("opsReminders").find({ status: { $ne: "done" } }).sort({ dueAt: 1 }).toArray()
   const reminders = rows.filter((reminder: any) => reminder.deliveryScope === "team" || !reminder.telegramChatId || String(reminder.telegramChatId) === String(chatId)).slice(0, 8)
-  await sendMessage(token, chatId, `🔔 Reminders\n\n${reminders.length ? reminders.map((r: any, i: number) => `${i + 1}. ${r.title || r.message} - ${dateLabel(r.dueAt)}${r.targetChatTitle ? ` → ${r.targetChatTitle}` : ""}`).join("\n") : "No reminders yet."}`, [
+  await sendMessage(token, chatId, `🔔 Reminders\n\n${reminders.length ? reminders.map((r: any, i: number) => `${i + 1}. ${r.title || r.message} - ${dateLabel(r.dueAt, String(r.timeZone || TEAM_TIME_ZONE))}${r.targetChatTitle ? ` → ${r.targetChatTitle}` : ""}`).join("\n") : "No reminders yet."}`, [
     [{ text: "➕ Add Reminder", callback_data: "reminder:add" }],
     ...reminders.map((r: any) => [{ text: `Open ${r.title || r.message}`.slice(0, 60), callback_data: `reminder:view:${r._id}` }]),
     [{ text: "⬅️ Back", callback_data: "main:menu" }],
@@ -468,7 +500,7 @@ async function sendCalendar(token: string, chatId: number | string) {
   ])
   const lines = [
     ...projects.map((p: any) => `📁 ${dateLabel(p.launchDate)} - ${p.name}`),
-    ...reminders.map((r: any) => `🔔 ${dateLabel(r.dueAt)} - ${r.title || r.message}`),
+    ...reminders.map((r: any) => `🔔 ${dateLabel(r.dueAt, String(r.timeZone || TEAM_TIME_ZONE))} - ${r.title || r.message}`),
   ].slice(0, 10)
   await sendMessage(token, chatId, `📅 Calendar\n\n${lines.length ? lines.join("\n") : "No calendar items yet."}`, [
     [{ text: "➕ Add Reminder", callback_data: "reminder:add" }, { text: "📁 Projects", callback_data: "projects:list" }],
@@ -605,6 +637,7 @@ async function maybeProposeAction(text: string, telegramId: number, aiOptions: O
 }
 
 async function sendAiResponse(token: string, chatId: number | string, telegramId: number, text: string, message?: any) {
+  if (await maybeRequestReminderTimeZone(token, chatId, telegramId, text)) return
   const aiOptions = await buildAiOptions(telegramId, chatId, message)
   await sendAsyncResponse(token, chatId, async () => {
     const proposed = await maybeProposeAction(text, telegramId, aiOptions)
@@ -659,15 +692,16 @@ async function processState(token: string, chatId: number | string, telegramId: 
       await sendMessage(token, chatId, "Send: Reminder title | YYYY-MM-DD HH:mm | message")
       return true
     }
-    const parsedDueAt = dueAt ? parseTeamDateTime(dueAt) : new Date(Date.now() + 60 * 60 * 1000)
+    const timeZone = await getMemberTimeZone(telegramId) || TEAM_TIME_ZONE
+    const parsedDueAt = dueAt ? parseTeamDateTime(dueAt, timeZone) : new Date(Date.now() + 60 * 60 * 1000)
     if (!parsedDueAt) {
       await sendMessage(token, chatId, "I could not read that due time. Send it as YYYY-MM-DD HH:mm in ET.")
       return true
     }
     const targetChatTitle = chatTitle(message, chatId)
-    await db.collection("opsReminders").insertOne({ title, message: reminderMessage || title, dueAt: parsedDueAt.toISOString(), timeZone: TEAM_TIME_ZONE, recurrence: "none", audience: "team", deliveryScope: "chat", telegramChatId: String(chatId), targetChatTitle, status: "scheduled", createdFrom: "bot", telegramId, createdAt: now, updatedAt: now })
+    await db.collection("opsReminders").insertOne({ title, message: reminderMessage || title, dueAt: parsedDueAt.toISOString(), timeZone, recurrence: "none", audience: "team", deliveryScope: "chat", telegramChatId: String(chatId), targetChatTitle, status: "scheduled", createdFrom: "bot", telegramId, createdAt: now, updatedAt: now })
     await clearState(telegramId)
-    await sendMessage(token, chatId, `✅ Reminder added.\n📅 Due: ${formatTeamDateTime(parsedDueAt)}\n💬 Deliver to: ${targetChatTitle}`)
+    await sendMessage(token, chatId, `✅ Reminder added.\n📅 Due: ${formatTeamDateTime(parsedDueAt, timeZone)}\n💬 Deliver to: ${targetChatTitle}`)
     await sendReminders(token, chatId)
     return true
   }
@@ -739,6 +773,25 @@ async function processState(token: string, chatId: number | string, telegramId: 
 async function handleCallback(token: string, chatId: number | string, telegramId: number, data: string, req: NextRequest) {
   const db = await getDb()
   const [area, action, id, extra] = data.split(":")
+
+  if (area === "tz" && action === "set") {
+    if (extra && Number(extra) !== telegramId) return
+    const timeZone = timeZoneFromOption(id)
+    const saved = await saveMemberTimeZone(telegramId, timeZone, "bot")
+    if (!saved.ok) return sendMessage(token, chatId, `⚠️ ${saved.error}`)
+    const state = await takeState(telegramId)
+    if (state?.action === "timezone_for_reminder" && state.pendingText) {
+      await clearState(telegramId)
+      await sendMessage(token, chatId, `✅ Timezone saved as ${teamZoneLabel(saved.timeZone)}. Continuing your reminder…`)
+      return sendAiResponse(token, chatId, telegramId, String(state.pendingText))
+    }
+    if (state?.action === "timezone_for_manual_reminder") {
+      await setState(telegramId, { action: "add_reminder" })
+      return sendMessage(token, chatId, `✅ Timezone saved as ${teamZoneLabel(saved.timeZone)}.\n\n➕ Send reminder like this:\n\nReminder title | YYYY-MM-DD HH:mm | message\n\nSend /cancel to stop.`)
+    }
+    await clearState(telegramId)
+    return sendMessage(token, chatId, `✅ Your timezone is now ${saved.timeZone} (${teamZoneLabel(saved.timeZone)}).\nCurrent local time: ${formatTeamDateTime(new Date(), saved.timeZone)}`)
+  }
 
   if (data === "main:menu") return sendMessage(token, chatId, helpMessage())
   if (data === "projects:list") return sendProjects(token, chatId)
@@ -828,13 +881,17 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   }
 
   if (area === "reminder" && action === "add") {
+    if (!(await getMemberTimeZone(telegramId))) {
+      await setState(telegramId, { action: "timezone_for_manual_reminder" })
+      return sendMessage(token, chatId, timeZonePrompt(), timeZoneButtons(telegramId))
+    }
     await setState(telegramId, { action: "add_reminder" })
     return sendMessage(token, chatId, "➕ Send reminder like this:\n\nReminder title | YYYY-MM-DD HH:mm | message\n\nSend /cancel to stop.")
   }
   if (area === "reminder" && action === "view") {
     const reminder = await db.collection("opsReminders").findOne({ _id: id })
     if (!reminder) return sendReminders(token, chatId)
-    return sendMessage(token, chatId, `🔔 ${reminder.title}\n\nDue: ${dateLabel(reminder.dueAt)}\nStatus: ${reminder.status || "scheduled"}\n\n${reminder.message || ""}`, [
+    return sendMessage(token, chatId, `🔔 ${reminder.title}\n\nDue: ${dateLabel(reminder.dueAt, String(reminder.timeZone || TEAM_TIME_ZONE))}\nStatus: ${reminder.status || "scheduled"}\n\n${reminder.message || ""}`, [
       [{ text: "✅ Mark Done", callback_data: `reminder:done:${id}` }, { text: "🗑 Remove", callback_data: `reminder:delete:${id}` }],
       [{ text: "⬅️ Reminders", callback_data: "reminders:list" }],
     ])
@@ -863,6 +920,30 @@ async function handleCallback(token: string, chatId: number | string, telegramId
 
 async function routeText(token: string, chatId: number | string, telegramId: number, text: string, req: NextRequest, messageDateMs: number, message?: any) {
   const commandText = stripBotCommandSuffix(text)
+  const timeZoneCommand = commandText.match(/^\/timezone(?:\s+(.+))?$/i)
+  if (timeZoneCommand) {
+    const requested = String(timeZoneCommand[1] || "").trim()
+    if (!requested) {
+      const current = await getMemberTimeZone(telegramId)
+      const intro = current
+        ? `🌍 Your timezone is ${current} (${teamZoneLabel(current)}).\nCurrent local time: ${formatTeamDateTime(new Date(), current)}\n\nChoose a different timezone:`
+        : timeZonePrompt()
+      return sendMessage(token, chatId, intro, timeZoneButtons(telegramId))
+    }
+    const saved = await saveMemberTimeZone(telegramId, requested, "bot")
+    if (!saved.ok) return sendMessage(token, chatId, "⚠️ I could not recognize that timezone. Try /timezone America/Los_Angeles or use /timezone to choose.")
+    const state = await takeState(telegramId)
+    if (state?.action === "timezone_for_reminder" && state.pendingText) {
+      await clearState(telegramId)
+      await sendMessage(token, chatId, `✅ Timezone saved as ${teamZoneLabel(saved.timeZone)}. Continuing your reminder…`)
+      return sendAiResponse(token, chatId, telegramId, String(state.pendingText), message)
+    }
+    if (state?.action === "timezone_for_manual_reminder") {
+      await setState(telegramId, { action: "add_reminder" })
+      return sendMessage(token, chatId, `✅ Timezone saved as ${teamZoneLabel(saved.timeZone)}.\n\n➕ Send reminder like this:\n\nReminder title | YYYY-MM-DD HH:mm | message\n\nSend /cancel to stop.`)
+    }
+    return sendMessage(token, chatId, `✅ Your timezone is now ${saved.timeZone} (${teamZoneLabel(saved.timeZone)}).`)
+  }
   const aiCommand = aiCommandText(commandText)
   if (aiCommand !== null) {
     await clearState(telegramId)
@@ -894,11 +975,12 @@ async function routeText(token: string, chatId: number | string, telegramId: num
   if (text === "📅 Calendar" || text === "🟠 Calendar" || isBotCommand(text, "calendar")) return sendCalendar(token, chatId)
   if (text === "🔔 Reminders" || isBotCommand(text, "reminders")) return sendReminders(token, chatId)
   if (isBotCommand(text, "setreminder")) {
-    const aiOptions = await buildAiOptions(telegramId, chatId, message)
-    return sendAsyncResponse(token, chatId, async () => ({ text: await answerOpsBot(commandText, telegramId, aiOptions) }), "🔔 Scheduling…")
+    const reminderRequest = commandText.replace(/^\/setreminder(?:\s+|$)/i, "Remind the team ").trim()
+    return sendAiResponse(token, chatId, telegramId, reminderRequest, message)
   }
   if (text === "📝 Notes" || isBotCommand(text, "notes")) return sendProjectNotes(token, chatId, "all")
 
+  if (await maybeRequestReminderTimeZone(token, chatId, telegramId, text)) return
   const aiOptions = await buildAiOptions(telegramId, chatId, message)
   return sendAsyncResponse(token, chatId, async () => {
     const proposed = await maybeProposeAction(text, telegramId, aiOptions)

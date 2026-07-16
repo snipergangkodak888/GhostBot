@@ -1,0 +1,48 @@
+[
+  {
+    "name": "shows the main menu",
+    "text": "/menu",
+    "resetBefore": true,
+    "expectIncludes": ["Ghost Team bot is ready", "/profit", "/projects"]
+  },
+  {
+    "name": "lists projects",
+    "text": "/projects",
+    "expectIncludes": ["Projects"]
+  },
+  {
+    "name": "starts and cancels AI input state",
+    "text": "/ai",
+    "resetBefore": true,
+    "expectIncludes": ["Send your AI question now", "/cancel"]
+  },
+  {
+    "name": "cancels the active state",
+    "text": "/cancel",
+    "expectIncludes": ["Cancelled"]
+  },
+  {
+    "name": "routes an inline main-menu callback",
+    "callbackData": "main:menu",
+    "resetBefore": true,
+    "expectIncludes": ["Ghost Team bot is ready"]
+  },
+  {
+    "name": "shows timezone setup",
+    "text": "/timezone",
+    "resetBefore": true,
+    "expectIncludes": ["timezone"]
+  },
+  {
+    "name": "asks an unknown member for timezone before an ambiguous reminder",
+    "telegramId": 990000123,
+    "text": "remind the team tomorrow at 9 to review launches",
+    "resetBefore": true,
+    "expectIncludes": ["What timezone should I use"]
+  },
+  {
+    "name": "saves a timezone from an inline choice",
+    "callbackData": "tz:set:pt:990000099",
+    "expectIncludes": ["America/Los_Angeles", "PT"]
+  }
+]

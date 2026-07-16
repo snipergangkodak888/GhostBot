@@ -15,6 +15,15 @@ type Reminder = {
   recurrence?: string
   status?: string
   targetChatTitle?: string
+  timeZone?: string
+}
+
+function localDateTimeInput(date = new Date()) {
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16)
+}
+
+function browserTimeZone() {
+  return typeof Intl === "undefined" ? "" : Intl.DateTimeFormat().resolvedOptions().timeZone || ""
 }
 
 export default function RemindersPage() {
@@ -25,7 +34,7 @@ export default function RemindersPage() {
   const [form, setForm] = useState({
     title: "",
     message: "",
-    dueAt: new Date().toISOString().slice(0, 16),
+    dueAt: localDateTimeInput(),
     projectId: "",
     recurrence: "none",
     telegramChatId: "",
@@ -68,7 +77,7 @@ export default function RemindersPage() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ ...form, deliveryScope: "chat", targetChatTitle: selectedGroup?.title || form.telegramChatId }),
+      body: JSON.stringify({ ...form, timeZone: browserTimeZone(), deliveryScope: "chat", targetChatTitle: selectedGroup?.title || form.telegramChatId }),
     })
     const data = await res.json().catch(() => ({}))
     if (!res.ok) {
@@ -77,7 +86,7 @@ export default function RemindersPage() {
     }
     toast.success("Reminder added")
     setFormOpen(false)
-    setForm({ title: "", message: "", dueAt: new Date().toISOString().slice(0, 16), projectId: "", recurrence: "none", telegramChatId: "" })
+    setForm({ title: "", message: "", dueAt: localDateTimeInput(), projectId: "", recurrence: "none", telegramChatId: "" })
     load()
   }
 
@@ -101,7 +110,10 @@ export default function RemindersPage() {
           </div>
           <div className="grid gap-2 sm:grid-cols-2">
             <input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} placeholder="Reminder title" className="h-10 rounded-lg border border-white/[0.08] bg-black/35 px-3 text-sm text-white outline-none focus:border-[#ff4d5e]/60" />
-            <input type="datetime-local" value={form.dueAt} onChange={(event) => setForm({ ...form, dueAt: event.target.value })} className="h-10 rounded-lg border border-white/[0.08] bg-black/35 px-3 text-sm text-white outline-none focus:border-[#ff4d5e]/60" />
+            <label className="space-y-1">
+              <input type="datetime-local" value={form.dueAt} onChange={(event) => setForm({ ...form, dueAt: event.target.value })} className="h-10 w-full rounded-lg border border-white/[0.08] bg-black/35 px-3 text-sm text-white outline-none focus:border-[#ff4d5e]/60" />
+              <span className="block text-[11px] text-white/40">Your timezone: {browserTimeZone() || "Unknown"}</span>
+            </label>
             <select value={form.projectId} onChange={(event) => setForm({ ...form, projectId: event.target.value })} className="h-10 rounded-lg border border-white/[0.08] bg-black px-3 text-sm text-white outline-none focus:border-[#ff4d5e]/60">
               <option value="">No project</option>
               {projects.map((project) => <option key={project._id} value={project._id}>{project.name}</option>)}
@@ -133,7 +145,7 @@ export default function RemindersPage() {
               <div className="min-w-0">
                 <h2 className="truncate text-base font-bold text-white">{reminder.title}</h2>
                 <p className="mt-1 text-sm text-white/45">
-                  {reminder.dueAt ? new Date(reminder.dueAt).toLocaleString() : "No date"}
+                  {reminder.dueAt ? new Date(reminder.dueAt).toLocaleString(undefined, { timeZone: reminder.timeZone || undefined }) : "No date"}
                   {reminder.recurrence ? ` · ${reminder.recurrence}` : ""}
                   {reminder.targetChatTitle ? ` · → ${reminder.targetChatTitle}` : ""}
                 </p>

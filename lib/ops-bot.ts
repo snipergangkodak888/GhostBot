@@ -1,4 +1,5 @@
 import { getDb } from "@/lib/db"
+import { getMemberTimeZone } from "@/lib/team-access"
 import { deleteProjectCascade } from "@/lib/platform-data"
 import { calculateSheetFinancials, createDefaultSheetsForProject, inferSheetKind } from "@/lib/ops-sheets"
 import { getOpsSourceDocs } from "@/lib/ops-source-docs"
@@ -16,7 +17,7 @@ import {
   weekStartKey,
 } from "@/lib/payroll-financials"
 import { miscIncomeCategoryLabel, parseIncomeLogCommand } from "@/lib/payroll-misc"
-import { formatTeamDateTime, normalizeReminderDueAt, parseTeamDateTime, teamNowParts, TEAM_TIME_ZONE } from "@/lib/team-timezone"
+import { detectExplicitTimeZone, formatTeamDateTime, normalizeReminderDueAt, parseTeamDateTime, teamNowParts, TEAM_TIME_ZONE } from "@/lib/team-timezone"
 import { getSheetSchema, normalizeSheetKind, valuesForKind, type SheetKind } from "@/lib/sheet-schemas"
 
 function includes(text: string, words: string[]) {
@@ -630,7 +631,8 @@ function latestProject(projects: any[]) {
 
 function resolveProject(projects: any[], value: unknown, request: string) {
   const raw = String(value || "").trim()
-  if (!raw || /^(this|latest|current)\s+project$/i.test(raw) || /\b(this|latest|current) project\b/i.test(request)) return latestProject(projects)
+  if (/^(this|latest|current)\s+project$/i.test(raw) || /\b(this|latest|current) project\b/i.test(request)) return latestProject(projects)
+  if (!raw) return null
   return projects.find((item: any) => sameName(item.name, raw)) || projects.find((item: any) => includesText(item.name, raw)) || null
 }
 
@@ -776,8 +778,9 @@ async function resolveActionPreview(actionType: string, payload: any, context: {
   if (!isDelete) {
     if (actionType === "create_reminder" && nextPayload.title) preview.push(`🔔 Reminder: ${nextPayload.title}`)
     if (actionType === "create_reminder" && nextPayload.dueAt) {
-      const parsed = parseTeamDateTime(nextPayload.dueAt, String(nextPayload.timeZone || nextPayload.timezone || TEAM_TIME_ZONE))
-      preview.push(`📅 Due: ${parsed ? formatTeamDateTime(parsed) : String(nextPayload.dueAt)}`)
+      const timeZone = String(nextPayload.timeZone || nextPayload.timezone || TEAM_TIME_ZONE)
+      const parsed = parseTeamDateTime(nextPayload.dueAt, timeZone)
+      preview.push(`📅 Due: ${parsed ? formatTeamDateTime(parsed, timeZone) : String(nextPayload.dueAt)}`)
     }
     if (actionType === "create_reminder" && nextPayload.targetChatTitle) preview.push(`💬 Deliver to: ${nextPayload.targetChatTitle}`)
     if (actionType === "create_payroll" && nextPayload.member) preview.push(`💸 Payroll member: ${nextPayload.member}`)
@@ -820,6 +823,9 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
   if (!text || !isActionRequest(text)) return null
 
   const db = await getDb()
+  const explicitTimeZone = detectExplicitTimeZone(text)
+  const memberTimeZone = await getMemberTimeZone(telegramId)
+  const requestTimeZone = explicitTimeZone || memberTimeZone || TEAM_TIME_ZONE
   const [projects, sheets] = await Promise.all([
     db.collection("opsProjects").find({}).toArray(),
     db.collection("opsSheets").find({}).toArray(),
@@ -851,8 +857,8 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
         "delete_payroll: {member, projectName, date, amount}",
         "delete_sheet: {projectName, sheetType, title}",
         "delete_sheet_row: {projectName, sheetType, match}",
-        `Team default timezone is ${TEAM_TIME_ZONE} (ET). Interpret reminder times without an explicit timezone as ET.`,
-        "For create_reminder dueAt, return a local datetime string WITHOUT a Z suffix, e.g. 2026-07-07T23:00:00 for 11:00 PM ET on July 7.",
+        `The requester's timezone is ${requestTimeZone}. Interpret reminder times without an explicit timezone in that timezone.`,
+        "For create_reminder dueAt, return a local datetime string WITHOUT a Z suffix, e.g. 2026-07-07T23:00:00 for 11:00 PM in the requester's timezone on July 7.",
         "If the user names another timezone (PT, UTC, London, etc.), include timeZone in the payload using an IANA name like America/Los_Angeles.",
         "Use exact existing project names when possible. Do not invent missing required values.",
         "For delete actions, identify the most specific target possible and add warnings if more than one item may match.",
@@ -865,6 +871,8 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
         request: text,
         nowUtc: new Date().toISOString(),
         nowEt: formatTeamDateTime(new Date()),
+        nowForRequester: formatTeamDateTime(new Date(), requestTimeZone),
+        requesterTimeZone: requestTimeZone,
         teamTimeZone: TEAM_TIME_ZONE,
         teamNow: teamNowParts(),
         projects: projectNames,
@@ -886,6 +894,7 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
 
   const payload = plan?.payload && typeof plan.payload === "object" ? plan.payload : {}
   if (actionType === "create_reminder") {
+    payload.timeZone = explicitTimeZone || payload.timeZone || memberTimeZone || TEAM_TIME_ZONE
     const normalized = normalizeReminderDueAt(payload)
     if (normalized) {
       payload.dueAt = normalized.dueAt
@@ -1097,7 +1106,8 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
       createdAt: now,
       updatedAt: now,
     })
-    done = `✅ Reminder created: ${title}\n📅 Due: ${formatTeamDateTime(dueAt)}${payload.targetChatTitle ? `\n💬 Deliver to: ${payload.targetChatTitle}` : ""}`
+    const reminderTimeZone = normalized?.timeZone || TEAM_TIME_ZONE
+    done = `✅ Reminder created: ${title}\n📅 Due: ${formatTeamDateTime(dueAt, reminderTimeZone)}${payload.targetChatTitle ? `\n💬 Deliver to: ${payload.targetChatTitle}` : ""}`
   }
 
   if (action.actionType === "create_payroll") {

@@ -26,7 +26,7 @@ loadEnvFile(localEnvPath)
 const baseUrl = String(process.env.CRON_PING_URL || "http://localhost:3000").replace(/\/+$/, "")
 const secret = String(process.env.CRON_SECRET || "").trim()
 const intervalMs = Math.max(5000, Number(process.env.CRON_PING_INTERVAL_MS || 15000) || 15000)
-const cronUrl = `${baseUrl}/api/cron/ops${secret ? `?secret=${encodeURIComponent(secret)}` : ""}`
+const cronUrl = `${baseUrl}/api/cron/ops`
 
 function stamp() {
   return new Date().toLocaleTimeString("en-US", { hour12: false })
@@ -35,7 +35,10 @@ function stamp() {
 async function pingOnce() {
   const started = Date.now()
   try {
-    const res = await fetch(cronUrl, { method: "GET" })
+    const res = await fetch(cronUrl, {
+      method: "GET",
+      headers: secret ? { Authorization: `Bearer ${secret}` } : {},
+    })
     const body = await res.json().catch(() => ({}))
     const elapsed = Date.now() - started
     if (!res.ok) {
@@ -53,7 +56,7 @@ async function pingOnce() {
 }
 
 console.log(`Local ops cron pinger`)
-console.log(`URL: ${cronUrl.replace(secret, secret ? "(secret)" : "")}`)
+console.log(`URL: ${cronUrl}${secret ? " (authenticated)" : ""}`)
 console.log(`Interval: ${intervalMs}ms`)
 console.log(`Press Ctrl+C to stop\n`)
 

@@ -1,5 +1,6 @@
 import { randomBytes } from "crypto"
 import { getDb } from "@/lib/db"
+import { normalizeTimeZone } from "@/lib/team-timezone"
 
 export type TeamProfile = {
   firstName?: string
@@ -30,6 +31,39 @@ export async function getTeamAccess(telegramId: number | string | null | undefin
   if (!member) return { allowed: false, reason: "invite-required" }
   if (member.status !== "active") return { allowed: false, reason: "deactivated", member }
   return { allowed: true, reason: "active", member }
+}
+
+export async function getMemberTimeZone(telegramId: number | string | null | undefined) {
+  const id = Number(telegramId)
+  if (!Number.isFinite(id)) return ""
+  const db = await getDb()
+  const [member, user] = await Promise.all([
+    db.collection("guardMembers").findOne({ telegramId: id }),
+    db.collection("users").findOne({ telegramId: id }),
+  ])
+  return normalizeTimeZone(member?.timeZone || user?.timeZone)
+}
+
+export async function saveMemberTimeZone(telegramId: number | string, value: unknown, source: "bot" | "mini-app" | "admin" = "bot") {
+  const id = Number(telegramId)
+  const timeZone = normalizeTimeZone(value)
+  if (!Number.isFinite(id)) return { ok: false as const, error: "Invalid Telegram user" }
+  if (!timeZone) return { ok: false as const, error: "Invalid timezone" }
+
+  const db = await getDb()
+  const now = new Date()
+  await Promise.all([
+    db.collection("guardMembers").updateOne(
+      { telegramId: id },
+      { $set: { timeZone, timeZoneSource: source, timeZoneUpdatedAt: now, updatedAt: now } },
+    ),
+    db.collection("users").updateOne(
+      { telegramId: id },
+      { $set: { timeZone, timeZoneSource: source, timeZoneUpdatedAt: now, updatedAt: now } },
+      { upsert: true },
+    ),
+  ])
+  return { ok: true as const, timeZone }
 }
 
 export async function createGuardInviteCode(daysValid = 7) {
@@ -126,4 +160,3 @@ export async function deleteGuardInviteCode(id: string) {
   await db.collection("guardInviteCodes").updateOne({ _id: id }, { $set: { status: "deleted", deletedAt: new Date(), updatedAt: new Date() } })
   return { ok: true }
 }
-
