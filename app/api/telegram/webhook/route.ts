@@ -336,6 +336,22 @@ async function resolveGroupMessage(text: string, entities: any[] = [], message?:
   const menu = isGroupMenuButton(text)
   const reply = await isReplyToBot(message, botUsername)
   if (!command && !mention && !menu && !reply) {
+    console.info("[telegram] ignored group message", {
+      botUsername,
+      textLength: text.length,
+      atTokens: text.match(/@[a-z0-9_]+/gi) || [],
+      entities: entities.map((entity) => ({
+        type: String(entity?.type || ""),
+        offset: Number(entity?.offset || 0),
+        length: Number(entity?.length || 0),
+        mentionText: entity?.type === "mention"
+          ? text.slice(Number(entity.offset || 0), Number(entity.offset || 0) + Number(entity.length || 0))
+          : undefined,
+        mentionedBotUsername: entity?.type === "text_mention" && entity?.user?.is_bot
+          ? String(entity.user.username || "")
+          : undefined,
+      })),
+    })
     return { shouldRoute: false as const, routedText: "" }
   }
   const routedText = mention && !command ? stripBotMention(text, entities, botUsername) : text
