@@ -22,6 +22,16 @@ function estDateKey(date = new Date()) {
   return `${value("year")}-${value("month")}-${value("day")}`
 }
 
+function estDateLabel(date = new Date()) {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: EST_TIME_ZONE,
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  }).format(date)
+}
+
 function estTimeLabel(date: string | Date) {
   const value = new Date(date)
   if (Number.isNaN(value.getTime())) return "No date"
@@ -41,7 +51,12 @@ function tomorrowEstKey() {
 }
 
 function money(value: number) {
-  return `$${Number(value || 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}`
+  return Number(value || 0).toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  })
 }
 
 function escapeHtml(value: unknown) {
@@ -237,8 +252,8 @@ async function processDailyPerformance(token: string, now: Date) {
   const recipients = await getRecipients()
 
   const text = [
-    "📈 <b>Daily Project Performance</b>",
-    `🗓️ ${today} EST`,
+    "<b>Daily Project Performance</b>",
+    estDateLabel(now),
     "",
     `🟢 Income today: <b>${money(financials.incomeToday)}</b>`,
     `🔴 Expenses today: <b>${money(financials.expenseToday + financials.payrollToday)}</b>`,
