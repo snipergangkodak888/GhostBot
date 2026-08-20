@@ -188,6 +188,24 @@ export async function getRevenueReceipt(receiptId: string) {
   return db.collection(RECEIPTS).findOne({ _id: receiptId }) as Promise<RevenueReceipt | null>
 }
 
+export async function resolveFeeWithoutRevenue(feeId: string, status: "ignored" | "waived") {
+  const db = await getDb()
+  const fee = await db.collection(FEES).findOne({ _id: feeId })
+  if (!fee) throw new Error("Fee entry was not found")
+  if (fee.status === "confirmed") throw new Error("Confirmed revenue cannot be ignored or waived")
+  for (const receiptId of fee.proposedReceiptIds || []) {
+    const receipt = await db.collection(RECEIPTS).findOne({ _id: receiptId })
+    if (receipt?.proposedFeeEventId === feeId && !(receipt.allocations || []).length) {
+      await db.collection(RECEIPTS).updateOne({ _id: receiptId }, { $set: { status: "unclassified", proposedFeeEventId: null, updatedAt: iso() } })
+    }
+  }
+  await db.collection(FEES).updateOne(
+    { _id: feeId },
+    { $set: { status, proposedReceiptIds: [], resolvedWithoutRevenueAt: iso(), updatedAt: iso() } },
+  )
+  return db.collection(FEES).findOne({ _id: feeId }) as Promise<RevenueFeeEvent>
+}
+
 export async function createFeeFromReceipt(params: { receiptId: string; feeType: FeeType; projectId?: string | null; amount?: number | null }) {
   const db = await getDb()
   const receipt = await db.collection(RECEIPTS).findOne({ _id: params.receiptId })

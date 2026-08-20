@@ -10,6 +10,7 @@ import {
   listRevenueDay,
   proposeReceiptMatch,
   revenuePayrollDraft,
+  resolveFeeWithoutRevenue,
   setFeeQuoteAsset,
   setFeeType,
   updateReceiptClassification,
@@ -51,6 +52,8 @@ export async function POST(req: Request) {
       case "confirm_fee": result = await confirmFeeExpectation(String(body.feeId)); break
       case "propose_match": result = await proposeReceiptMatch(String(body.feeId)); break
       case "accept_match": result = await acceptReceiptMatch(String(body.feeId), null, Array.isArray(body.receiptIds) ? body.receiptIds.map(String) : undefined); break
+      case "ignore_fee": result = await resolveFeeWithoutRevenue(String(body.feeId), "ignored"); break
+      case "waive_fee": result = await resolveFeeWithoutRevenue(String(body.feeId), "waived"); break
       case "classify_receipt": result = await updateReceiptClassification(String(body.receiptId), String(body.status) as RevenueReceiptStatus, body.amountUsd === undefined ? undefined : body.amountUsd == null ? null : Number(body.amountUsd)); break
       case "create_receipt_fee": result = await createFeeFromReceipt({ receiptId: String(body.receiptId), feeType: String(body.feeType) as FeeType, projectId: body.projectId ? String(body.projectId) : null, amount: body.amount == null || body.amount === "" ? null : Number(body.amount) }); break
       case "preview_consolidation": result = await saveConsolidationPreview(String(body.date || teamDateKey(0)), Number(body.finalUsdc)); break

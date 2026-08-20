@@ -11,6 +11,7 @@ This workflow automates evidence gathering and accounting preparation. It never 
 5. The bot parses the message deterministically. Supply percentages and privacy-swap fees are ignored. Liquidation revenue is always recalculated from the gross cashout using the project's configured percentage (default 5%).
 6. Telegram never creates a project. The admin chooses an existing configured project, chooses the quote asset when needed, and confirms the expectation.
 7. Receipt matching can combine several transactions. An admin accepts the suggested match or checks the exact receipts in Admin → Revenue Inbox.
+   Test, duplicate, or mistaken fee entries can be ignored; a legitimately uncollected expected fee can be explicitly waived. Either action releases any reserved receipt.
 8. Native-token receipts can be given a manual USD valuation. This is explicit and auditable; the system does not silently guess a historical price.
 9. At the end of the day, the admin performs swaps and bridges manually. They enter the actual final Solana USDC in Revenue Inbox and preview the discrepancy.
 10. Finalization is blocked until every fee expectation is resolved, every incoming receipt is classified, and every confirmed native receipt has a USD value.
