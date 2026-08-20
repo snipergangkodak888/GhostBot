@@ -9,6 +9,7 @@
     "bot:lab": "node ./scripts/bot-lab.mjs",
     "bot:test": "node ./scripts/bot-lab-test.mjs",
     "bot:test:launch": "node ./scripts/test-launch-workflow.mjs",
+    "revenue:test": "node ./scripts/test-revenue-automation.mjs",
     "dev:cron": "node ./scripts/dev-cron.mjs",
     "db:init": "node ./scripts/init-db.mjs",
     "seed:july-payroll": "node ./scripts/seed-july-payroll.mjs",

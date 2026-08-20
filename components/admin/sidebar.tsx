@@ -2,7 +2,7 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { DollarSign, Home, Settings, Send, Rocket, ChevronDown, Radio, Clock, Database, CalendarDays, FolderKanban, Bot, Bell, Shield } from 'lucide-react'
+import { DollarSign, Home, Settings, Send, Rocket, ChevronDown, Radio, Clock, Database, CalendarDays, FolderKanban, Bot, Bell, Shield, WalletCards } from 'lucide-react'
 
 type NavLeaf = { href: string; label: string; icon: React.ElementType; color?: string }
 type NavGroup = { group: string; icon: React.ElementType; color?: string; children: NavLeaf[] }
@@ -24,6 +24,7 @@ const navItems: NavItem[] = [
   { href: '/admin/projects', label: 'Projects', icon: FolderKanban, color: sectionColors.projects },
   { href: '/admin/calendar', label: 'Calendar', icon: CalendarDays, color: sectionColors.calendar },
   { href: '/admin/reminders', label: 'Reminders', icon: Bell, color: sectionColors.reminders },
+  { href: '/admin/revenue', label: 'Revenue Inbox', icon: WalletCards, color: sectionColors.payroll },
   { href: '/admin/payroll', label: 'Payroll', icon: DollarSign, color: sectionColors.payroll },
   { href: '/admin/guard-team', label: 'Guard Team', icon: Shield, color: sectionColors.home },
   {

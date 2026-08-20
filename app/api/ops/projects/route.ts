@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
 import { createDefaultSheetsForProject, ensureDefaultSheetsForProjects } from '@/lib/ops-sheets'
+import { cleanProjectFeeFields } from '@/lib/revenue-projects'
 
 export const dynamic = 'force-dynamic'
 
@@ -25,6 +26,7 @@ function cleanProject(body: any) {
     profitThisWeek: currentProfitLoss,
     notes: String(body.notes || '').trim(),
     tags: Array.isArray(body.tags) ? body.tags.map(String) : [],
+    ...cleanProjectFeeFields(body),
   }
 }
 

@@ -16,7 +16,7 @@ export type PayrollLedgerDraft = {
   teamPayroll?: TeamPayrollInput[]
   clientIncome?: ClientIncomeInput[]
   devAllocations?: DevAllocationInput[]
-  rules?: PayrollRules
+  rules?: Partial<PayrollRules>
 }
 
 export type PayrollRules = {
@@ -68,6 +68,13 @@ export function usePayrollCalculator(accounts: PayrollAccount[], projects: Payro
     setRules({ ...defaultRules, ...(draft?.rules || {}) })
   }
 
+  const mergeRevenueDraft = (draft?: PayrollLedgerDraft | null) => {
+    const manualClient = clientIncome.filter((row) => !row.sourceFeeEventIds?.length)
+    const manualDev = devAllocations.filter((row) => !row.sourceFeeEventIds?.length)
+    setClientIncome([...manualClient, ...(Array.isArray(draft?.clientIncome) ? draft.clientIncome : [])])
+    setDevAllocations([...manualDev, ...(Array.isArray(draft?.devAllocations) ? draft.devAllocations.map((row) => normalizeDevAllocationRow(row)) : [])])
+  }
+
   const addTeamRow = () => setTeamPayroll((rows) => [...rows, { accountId: firstAccountId(accounts, "EMPLOYEE"), status: "active", projectIds: [] }])
   const addClientIncomeRow = () => setClientIncome((rows) => [...rows, { projectId: firstProjectId(projects), incomeType: "trading", income: 0 }])
   const addDevAllocationRow = () =>
@@ -110,6 +117,7 @@ export function usePayrollCalculator(accounts: PayrollAccount[], projects: Payro
     setRules,
     loadTemplate,
     loadDraft,
+    mergeRevenueDraft,
     addTeamRow,
     addClientIncomeRow,
     addDevAllocationRow,

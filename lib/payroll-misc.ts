@@ -37,6 +37,7 @@ export function normalizeDevAllocationRow(row: {
   projectId?: string
   income?: number
   category?: string
+  sourceFeeEventIds?: string[]
 }) {
   const category = normalizeMiscIncomeCategory(row.category)
   let projectId = String(row.projectId || "").trim() || undefined
@@ -46,6 +47,7 @@ export function normalizeDevAllocationRow(row: {
     projectId,
     category,
     income: Number(row.income || 0),
+    sourceFeeEventIds: Array.isArray(row.sourceFeeEventIds) ? row.sourceFeeEventIds.map(String) : undefined,
   }
 }
 

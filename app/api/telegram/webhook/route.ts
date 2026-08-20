@@ -12,6 +12,10 @@ import { renderPayrollReportPng } from "@/lib/payroll-report-image"
 import { miscIncomeCategoryLabel, parseIncomeLogCommand } from "@/lib/payroll-misc"
 import { chatPurposeLabel, listChatSubscriptions, normalizeChatPurpose, setChatSubscription } from "@/lib/chat-subscriptions"
 import { formatLaunchDaySchedule } from "@/lib/launch-calendar"
+import { projectFeeConfig } from "@/lib/revenue-projects"
+import { acceptReceiptMatch, assignFeeProject, confirmFeeExpectation, createForwardedFeeEvent, getRevenueReceipt, listRevenueDay, setFeeQuoteAsset, setFeeType, updateReceiptClassification } from "@/lib/revenue-service"
+import { feeProjectButtons, formatFeeExpectation, isFeeInboxChat } from "@/lib/revenue-telegram"
+import type { FeeType } from "@/lib/revenue-types"
 
 type InlineButton = { text: string; callback_data?: string; url?: string; web_app?: { url: string } }
 
@@ -96,6 +100,7 @@ async function setBotCommands(token: string) {
       { command: "calendar", description: "Show launches and reminders" },
       { command: "reminders", description: "Manage reminders" },
       { command: "payroll", description: "Manage payroll" },
+      { command: "fees", description: "Show today’s revenue inbox" },
       { command: "report", description: "Spreadsheet-style payroll breakdown image" },
       { command: "log", description: "Log project trading or dev income" },
       { command: "notes", description: "Show project notes" },
@@ -135,7 +140,8 @@ function helpMessage() {
     "📝 /notes",
     "🧠 @me your question",
     "🌍 /timezone - set your local timezone",
-    "📣 /subscribe launches - send launch schedules to this chat",
+    "💰 /fees - show today’s revenue inbox",
+    "📣 /subscribe launches or /subscribe fees",
   ].join("\n")
 }
 
@@ -739,6 +745,19 @@ async function processState(token: string, chatId: number | string, telegramId: 
     return true
   }
 
+  if (state.action === "fee_project_search") {
+    const term = text.trim().toLowerCase()
+    const projects = await db.collection("opsProjects").find({ status: { $ne: "inactive" } }).sort({ name: 1 }).toArray()
+    const matches = projects.filter((project: any) => projectFeeConfig(project).chain && String(project.name || "").toLowerCase().includes(term)).slice(0, 10)
+    if (!matches.length) {
+      await sendMessage(token, chatId, "No configured active project matched that name. Try another search or /cancel.")
+      return true
+    }
+    await clearState(telegramId)
+    await sendMessage(token, chatId, "Choose the existing project for this fee:", matches.map((project: any) => [{ text: project.name, callback_data: `fee:project:${state.feeId}:${project._id}` }]))
+    return true
+  }
+
   if (state.action === "add_payroll") {
     const [member = "", amount = "0", project = "", date = new Date().toISOString().slice(0, 10)] = text.split("|").map((part) => part.trim())
     if (!member) {
@@ -806,6 +825,47 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   }
 
   if (data === "main:menu") return sendMessage(token, chatId, helpMessage())
+
+  if (area === "fee" && action === "type") {
+    const fee = await setFeeType(id, extra as FeeType)
+    return sendMessage(token, chatId, `${formatFeeExpectation(fee)}\n\nNow choose the existing project:`, await feeProjectButtons(id))
+  }
+  if (area === "fee" && action === "project") {
+    const fee = await assignFeeProject(id, extra)
+    const activeFeeId = String(fee._id || id)
+    if (fee.status === "awaiting_asset") {
+      const project = await db.collection("opsProjects").findOne({ _id: fee.projectId })
+      const assets = projectFeeConfig(project).quoteAssets
+      return sendMessage(token, chatId, `${formatFeeExpectation(fee)}\n\nWhich quote asset was cashed out?`, assets.map((asset) => [{ text: asset, callback_data: `fee:asset:${activeFeeId}:${asset}` }]))
+    }
+    return sendMessage(token, chatId, `${formatFeeExpectation(fee)}\n\nConfirm this expectation before matching wallet receipts.`, [[{ text: "✅ Confirm expectation", callback_data: `fee:confirm:${activeFeeId}` }]])
+  }
+  if (area === "fee" && action === "asset") {
+    const fee = await setFeeQuoteAsset(id, extra)
+    return sendMessage(token, chatId, `${formatFeeExpectation(fee)}\n\nConfirm this expectation before matching wallet receipts.`, [[{ text: "✅ Confirm expectation", callback_data: `fee:confirm:${id}` }]])
+  }
+  if (area === "fee" && action === "confirm") {
+    const fee = await confirmFeeExpectation(id, telegramId)
+    if (!fee) return sendMessage(token, chatId, "Fee entry was not found.")
+    return sendMessage(token, chatId, fee.status === "match_proposed" ? `${formatFeeExpectation(fee)}\n\nI found ${fee.proposedReceiptIds.length} receipt(s) that add up to the expected fee.` : `${formatFeeExpectation(fee)}\n\nNo exact receipt combination is available yet. I’ll keep it waiting.`, fee.status === "match_proposed" ? [[{ text: "✅ Accept receipt match", callback_data: `fee:match:${id}` }]] : undefined)
+  }
+  if (area === "fee" && action === "match") {
+    const fee = await acceptReceiptMatch(id, telegramId)
+    return sendMessage(token, chatId, `✅ Fee verified and ready for payroll accounting.\n\n${formatFeeExpectation(fee)}`)
+  }
+  if (area === "fee" && action === "search") {
+    await setState(telegramId, { action: "fee_project_search", feeId: id })
+    return sendMessage(token, chatId, "Type part of the existing project name. Send /cancel to stop.")
+  }
+  if (area === "fee" && action === "receipt") {
+    const receipt = await getRevenueReceipt(id)
+    if (!receipt) return sendMessage(token, chatId, "Receipt was not found.")
+    return sendMessage(token, chatId, `Revenue receipt\n\n${receipt.amount} ${receipt.asset}\nChain: ${receipt.chain}\nStatus: ${receipt.status}\nTransaction: ${receipt.transactionHash}\n\nSelect it with the matching fee in Revenue Inbox.`, [[{ text: "Open Revenue Inbox", url: `${appBaseUrl(req)}/admin/revenue` }], [{ text: "↔️ Internal transfer", callback_data: `fee:internal:${id}` }, { text: "Ignore", callback_data: `fee:ignore:${id}` }]])
+  }
+  if (area === "fee" && (action === "internal" || action === "ignore")) {
+    await updateReceiptClassification(id, action === "internal" ? "internal" : "ignored")
+    return sendMessage(token, chatId, action === "internal" ? "✅ Marked as an internal movement; it will not count as new revenue." : "✅ Receipt ignored.")
+  }
   if (data === "projects:list") return sendProjects(token, chatId)
   if (data === "data:list") return sendDataProjects(token, chatId)
   if (area === "notes" && action === "project") return sendProjectNotes(token, chatId, id)
@@ -943,8 +1003,7 @@ async function routeText(token: string, chatId: number | string, telegramId: num
   if (subscribeCommand || naturalLaunchSubscription) {
     const active = naturalLaunchSubscription || subscribeCommand?.[1].toLowerCase() === "subscribe"
     const purpose = naturalLaunchSubscription ? "launches" : normalizeChatPurpose(subscribeCommand?.[2])
-    if (!purpose) return sendMessage(token, chatId, "Choose a scheduled update type. For now, use /subscribe launches.")
-    if (purpose !== "launches") return sendMessage(token, chatId, "Launch schedules are the first available subscription. Use /subscribe launches.")
+    if (!purpose) return sendMessage(token, chatId, "Choose an update type: /subscribe launches or /subscribe fees.")
     await setChatSubscription({
       chatId,
       purpose,
@@ -954,7 +1013,7 @@ async function routeText(token: string, chatId: number | string, telegramId: num
       telegramId,
     })
     return sendMessage(token, chatId, active
-      ? `✅ This chat is subscribed to ${chatPurposeLabel(purpose)}.\n\nI’ll post the complete launch schedule here each morning in ET.`
+      ? purpose === "fees" ? `✅ This is now the private Fee Inbox. Forward standardized fee/cashout messages here, and I’ll also post new revenue-wallet receipts.` : `✅ This chat is subscribed to ${chatPurposeLabel(purpose)}.\n\nI’ll post the complete launch schedule here each morning in ET.`
       : `✅ This chat is no longer subscribed to ${chatPurposeLabel(purpose)}.`)
   }
   if (/^\/subscriptions$/i.test(commandText)) {
@@ -1011,6 +1070,10 @@ async function routeText(token: string, chatId: number | string, telegramId: num
     }), "📈 Checking…")
   }
   if (text === "💸 Payroll" || isBotCommand(text, "payroll")) return sendPayroll(token, chatId)
+  if (isBotCommand(text, "fees")) {
+    const day = await listRevenueDay()
+    return sendMessage(token, chatId, `💰 Revenue Inbox today\n\nExpected fees: ${day.summary.fees}\nVerified: ${day.summary.confirmedFees}\nNeeds review: ${day.summary.unresolvedFees}\nUnclassified receipts: ${day.summary.unclassifiedReceipts}\nRecognized: ${Number(day.summary.recognizedUsd).toLocaleString("en-US", { style: "currency", currency: "USD" })}`, [[{ text: "Open Revenue Inbox", url: `${appBaseUrl(req)}/admin/revenue` }]])
+  }
   if (isBotCommand(text, "report") || /^\/report(?:@\w+)?(?:\s|$)/i.test(text)) {
     return sendPayrollReport(token, chatId, text, req)
   }
@@ -1045,7 +1108,7 @@ export async function POST(req: NextRequest) {
   const update = await req.json().catch(() => ({}))
   const callback = update.callback_query
   const message = update.message || update.edited_message || callback?.message
-  const text = String(update.message?.text || update.edited_message?.text || "").trim()
+  const text = String(update.message?.text || update.message?.caption || update.edited_message?.text || update.edited_message?.caption || "").trim()
   const messageDateMs = Number(update.message?.date || update.edited_message?.date || 0) * 1000 || Date.now()
   const chatId = message?.chat?.id
   const from = update.message?.from || update.edited_message?.from || callback?.from
@@ -1074,6 +1137,19 @@ export async function POST(req: NextRequest) {
   const entities = update.message?.entities || update.edited_message?.entities || []
 
   if (isGroupChat(chat)) {
+    const forwarded = Boolean(message?.forward_origin || message?.forward_date || message?.forward_from_chat || message?.forward_sender_name)
+    if (forwarded && await isFeeInboxChat(chatId)) {
+      const ok = await ensureAccess({ token, chatId, telegramId, text, profile: from, req })
+      if (ok) await hostGroupIfAllowed(chat, from)
+      if (ok && telegramId) {
+        const created = await createForwardedFeeEvent({ chatId, messageId: Number(message.message_id), text, telegramId, messageDate: new Date(messageDateMs) })
+        const fee = created.fee
+        if (created.duplicate) await sendMessage(token, chatId, "This forwarded message is already in Revenue Inbox.")
+        else if (!fee.feeType) await sendMessage(token, chatId, `I saved the message but could not classify the fee. Choose the type:`, [[{ text: "Liquidation", callback_data: `fee:type:${fee._id}:liquidation` }], [{ text: "Daily trading", callback_data: `fee:type:${fee._id}:daily_trading` }, { text: "Launch / TGE cash", callback_data: `fee:type:${fee._id}:launch` }], [{ text: "Dev allocation", callback_data: `fee:type:${fee._id}:dev_allocation` }]])
+        else await sendMessage(token, chatId, `${formatFeeExpectation(fee)}\n\nChoose the existing project:`, await feeProjectButtons(String(fee._id)))
+      }
+      return NextResponse.json({ ok: true })
+    }
     const groupMessage = await resolveGroupMessage(text, entities, message)
     if (!groupMessage.shouldRoute) {
       await hostGroupIfAllowed(chat, from)

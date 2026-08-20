@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
 import { ObjectId } from '@/lib/object-id'
 import { deleteProjectCascade } from '@/lib/platform-data'
+import { cleanProjectFeeFields } from '@/lib/revenue-projects'
 
 export const dynamic = 'force-dynamic'
 
@@ -11,6 +12,9 @@ function idFilter(id: string) {
 
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   const body = await req.json().catch(() => ({}))
+  const db = await getDb()
+  const existing = await db.collection('opsProjects').findOne(idFilter(params.id))
+  if (!existing) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
   const update: Record<string, any> = { updatedAt: new Date() }
   for (const key of ['name', 'owner', 'referrer', 'referrerWallet', 'service', 'notes']) {
     if (typeof body[key] === 'string') update[key] = body[key].trim()
@@ -33,8 +37,10 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     update.profitThisWeek = update.currentProfitLoss
   }
   if (Array.isArray(body.tags)) update.tags = body.tags.map(String)
+  if (["chain", "revenueChain", "quoteAssets", "dailyTradingFeeEnabled", "dailyTradingFeeUsd", "liquidationFeeEnabled", "liquidationFeePercentage", "launchFeeUsd"].some((key) => body[key] !== undefined)) {
+    Object.assign(update, cleanProjectFeeFields({ ...existing, ...body, chain: body.chain ?? body.revenueChain ?? existing.chain }))
+  }
 
-  const db = await getDb()
   await db.collection('opsProjects').updateOne(idFilter(params.id), { $set: update })
   const project = await db.collection('opsProjects').findOne(idFilter(params.id))
   return NextResponse.json({ project })

@@ -42,6 +42,13 @@ type Project = {
   profitThisWeek?: number
   notes?: string
   tags?: string[]
+  chain?: string
+  quoteAssets?: string[]
+  dailyTradingFeeEnabled?: boolean
+  dailyTradingFeeUsd?: number
+  liquidationFeeEnabled?: boolean
+  liquidationFeePercentage?: number
+  launchFeeUsd?: number
 }
 
 type ProjectNote = {
@@ -108,6 +115,13 @@ const emptyProject = {
   currentProfitLoss: "0",
   tags: "",
   notes: "",
+  chain: "",
+  quoteAssets: "",
+  dailyTradingFeeEnabled: false,
+  dailyTradingFeeUsd: "500",
+  liquidationFeeEnabled: true,
+  liquidationFeePercentage: "5",
+  launchFeeUsd: "1000",
 }
 
 const emptyReminder = {
@@ -362,6 +376,13 @@ export function AdminProjectsPage() {
       currentProfitLoss: String(project.currentProfitLoss ?? project.profitThisWeek ?? 0),
       tags: (project.tags || []).join(", "),
       notes: project.notes || "",
+      chain: project.chain || "",
+      quoteAssets: (project.quoteAssets || []).join(", "),
+      dailyTradingFeeEnabled: project.dailyTradingFeeEnabled === true,
+      dailyTradingFeeUsd: String(project.dailyTradingFeeUsd ?? 500),
+      liquidationFeeEnabled: project.liquidationFeeEnabled !== false,
+      liquidationFeePercentage: String(project.liquidationFeePercentage ?? 5),
+      launchFeeUsd: String(project.launchFeeUsd ?? 1000),
     })
   }
 
@@ -381,6 +402,10 @@ export function AdminProjectsPage() {
       revenueToday: Number(form.revenueToday || 0),
       currentProfitLoss: Number(form.currentProfitLoss || 0),
       tags: form.tags.split(",").map((tag) => tag.trim()).filter(Boolean),
+      quoteAssets: form.quoteAssets.split(",").map((asset) => asset.trim().toUpperCase()).filter(Boolean),
+      dailyTradingFeeUsd: Number(form.dailyTradingFeeUsd || 500),
+      liquidationFeePercentage: Number(form.liquidationFeePercentage || 5),
+      launchFeeUsd: Number(form.launchFeeUsd || 1000),
     }
     const url = editing ? `/api/ops/projects/${editing}` : "/api/ops/projects"
     const res = await fetch(url, {
@@ -501,6 +526,25 @@ export function AdminProjectsPage() {
           </div>
           <div className="grid gap-3 md:grid-cols-1">
             <Field label="Revenue today"><Input type="number" value={form.revenueToday} onChange={(e) => setForm({ ...form, revenueToday: e.target.value })} /></Field>
+          </div>
+          <div className="rounded-xl border border-[#42e6a4]/20 bg-[#42e6a4]/[0.05] p-4">
+            <div className="mb-3">
+              <h4 className="font-bold text-white">Revenue automation</h4>
+              <p className="mt-1 text-xs text-white/45">The bot only matches receipts to this existing project. It never creates projects from forwarded messages.</p>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <Field label="Revenue chain"><Select value={form.chain} onChange={(e) => setForm({ ...form, chain: e.target.value })}><option value="">Not configured</option><option value="ethereum">Ethereum Mainnet</option><option value="base">Base</option><option value="bnb">BNB Smart Chain</option><option value="robinhood">Robinhood Chain</option><option value="solana">Solana</option></Select></Field>
+              <Field label="Allowed quote assets"><Input value={form.quoteAssets} onChange={(e) => setForm({ ...form, quoteAssets: e.target.value })} placeholder={form.chain === "solana" ? "SOL, USDC" : "ETH, USDC"} /></Field>
+            </div>
+            <div className="mt-3 grid gap-3 md:grid-cols-3">
+              <Field label="Daily fee (USD)"><Input type="number" min="0" value={form.dailyTradingFeeUsd} onChange={(e) => setForm({ ...form, dailyTradingFeeUsd: e.target.value })} /></Field>
+              <Field label="Liquidation fee %"><Input type="number" min="0" max="100" step="0.01" value={form.liquidationFeePercentage} onChange={(e) => setForm({ ...form, liquidationFeePercentage: e.target.value })} /></Field>
+              <Field label="Launch cash fee (USD)"><Input type="number" min="0" value={form.launchFeeUsd} onChange={(e) => setForm({ ...form, launchFeeUsd: e.target.value })} /></Field>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-5 text-sm text-white/70">
+              <label className="flex items-center gap-2"><input type="checkbox" checked={form.dailyTradingFeeEnabled} onChange={(e) => setForm({ ...form, dailyTradingFeeEnabled: e.target.checked })} />Create the $500 daily expectation while active</label>
+              <label className="flex items-center gap-2"><input type="checkbox" checked={form.liquidationFeeEnabled} onChange={(e) => setForm({ ...form, liquidationFeeEnabled: e.target.checked })} />Accept liquidation fees</label>
+            </div>
           </div>
           <Field label="Tags"><Input value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} placeholder="trading, launch, payroll" /></Field>
           <Field label="Notes"><Textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Project notes" /></Field>

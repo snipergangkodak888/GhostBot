@@ -1,6 +1,6 @@
 import { getDb } from "@/lib/db"
 
-export const CHAT_PURPOSES = ["launches", "performance", "payroll", "reminders"] as const
+export const CHAT_PURPOSES = ["launches", "performance", "payroll", "reminders", "fees"] as const
 export type ChatPurpose = typeof CHAT_PURPOSES[number]
 
 export function normalizeChatPurpose(value: unknown): ChatPurpose | null {
@@ -9,6 +9,7 @@ export function normalizeChatPurpose(value: unknown): ChatPurpose | null {
   if (["performance", "dailyperformance", "stats"].includes(normalized)) return "performance"
   if (["payroll", "pay"].includes(normalized)) return "payroll"
   if (["reminder", "reminders"].includes(normalized)) return "reminders"
+  if (["fee", "fees", "revenue", "feeinbox", "revenueinbox"].includes(normalized)) return "fees"
   return null
 }
 
@@ -18,6 +19,7 @@ export function chatPurposeLabel(purpose: ChatPurpose) {
     performance: "Performance updates",
     payroll: "Payroll updates",
     reminders: "Team reminders",
+    fees: "Revenue and fee alerts",
   }[purpose]
 }
 

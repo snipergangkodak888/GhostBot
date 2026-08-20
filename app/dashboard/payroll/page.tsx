@@ -167,6 +167,7 @@ export default function PayrollPage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [sharing, setSharing] = useState(false)
+  const [importingRevenue, setImportingRevenue] = useState(false)
   const [tab, setTab] = useState<Tab>("overview")
   const [selectedMonth, setSelectedMonth] = useState(new Date())
   const [selectedDate, setSelectedDate] = useState(today)
@@ -313,6 +314,18 @@ export default function PayrollPage() {
       return
     }
     payroll.loadTemplate()
+  }
+
+  const importVerifiedRevenue = async () => {
+    setImportingRevenue(true)
+    try {
+      const res = await fetch(`/api/ops/revenue?date=${encodeURIComponent(selectedDate)}&payroll=1`, { cache: "no-store", credentials: "include" })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) return toast.error(data.error || "Verified revenue could not be loaded")
+      payroll.mergeRevenueDraft(data)
+      const count = Number(data.clientIncome?.length || 0) + Number(data.devAllocations?.length || 0)
+      toast.success(count ? `Imported ${count} verified revenue row${count === 1 ? "" : "s"}` : "No verified revenue is ready yet")
+    } finally { setImportingRevenue(false) }
   }
 
   const updateEntry = (index: number, patch: Partial<Payroll>) => {
@@ -788,7 +801,7 @@ export default function PayrollPage() {
                 {displayDate(selectedDate, { month: "long", day: "numeric", year: "numeric" })}
               </button>
             </div>
-            <button onClick={loadTemplate} className="h-10 shrink-0 rounded-xl border border-[#42e6a4]/20 bg-[#42e6a4]/10 px-3 text-xs font-bold text-[#b8ffe1]">Load Template</button>
+            <div className="flex gap-2"><button onClick={importVerifiedRevenue} disabled={importingRevenue} className="h-10 shrink-0 rounded-xl bg-[#42e6a4] px-3 text-xs font-bold text-black disabled:opacity-50">{importingRevenue ? "Importing…" : "Import Verified Revenue"}</button><button onClick={loadTemplate} className="h-10 shrink-0 rounded-xl border border-[#42e6a4]/20 bg-[#42e6a4]/10 px-3 text-xs font-bold text-[#b8ffe1]">Load Template</button></div>
           </div>
 
           {datePickerOpen ? (

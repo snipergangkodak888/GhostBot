@@ -4,6 +4,7 @@ import { getTelegramBotToken, sendTelegramText } from "@/lib/telegram-bot"
 import { formatTeamDateTime, nextRecurringDueAt, TEAM_TIME_ZONE } from "@/lib/team-timezone"
 import { getSubscribedChats } from "@/lib/chat-subscriptions"
 import { formatLaunchDaySchedule, getLaunchesForDay, launchDateKey, LAUNCH_TIME_ZONE } from "@/lib/launch-calendar"
+import { ensureDailyTradingFeeExpectations } from "@/lib/revenue-service"
 
 const EST_TIME_ZONE = LAUNCH_TIME_ZONE
 
@@ -267,9 +268,10 @@ async function processDailyPerformance(token: string, now: Date) {
 export async function runOpsSuperCron() {
   const startedAt = new Date()
   const db = await getDb()
+  const revenueDailyFees = await ensureDailyTradingFeeExpectations()
   const token = await getTelegramBotToken()
   if (!token) {
-    const result = { ok: false, error: "Telegram bot token is not configured" }
+    const result = { ok: false, error: "Telegram bot token is not configured", revenueDailyFees }
     await db.collection("cronLogs").insertOne({ type: "ops-super", result, runAt: startedAt })
     return result
   }
@@ -285,6 +287,7 @@ export async function runOpsSuperCron() {
     reminders,
     calendar,
     dailyPerformance,
+    revenueDailyFees,
     startedAt: startedAt.toISOString(),
     finishedAt: finishedAt.toISOString(),
   }

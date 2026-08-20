@@ -13,6 +13,7 @@ const sectionSpots = [
   { match: "/admin/calendar", rgb: "255,138,61", hex: "#ff8a3d" },
   { match: "/admin/reminders", rgb: "255,77,94", hex: "#ff4d5e" },
   { match: "/admin/payroll", rgb: "66,230,164", hex: "#42e6a4" },
+  { match: "/admin/revenue", rgb: "66,230,164", hex: "#42e6a4" },
   { match: "/admin/data", rgb: "168,85,247", hex: "#a855f7" },
   { match: "/admin", rgb: "47,128,255", hex: "#2f80ff" },
 ]

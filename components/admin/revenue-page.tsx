@@ -1,0 +1,83 @@
+"use client"
+
+import { useCallback, useEffect, useMemo, useState } from "react"
+import { Check, Link2, RefreshCw, WalletCards } from "lucide-react"
+import { toast } from "sonner"
+
+const money = (value: unknown) => value == null ? "Pending value" : Number(value).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 })
+const amount = (value: unknown, asset: unknown) => `${Number(value || 0).toLocaleString("en-US", { maximumFractionDigits: 8 })} ${String(asset || "")}`
+const title = (value: unknown) => String(value || "unclassified").replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase())
+
+export function AdminRevenuePage() {
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [data, setData] = useState<any>({ fees: [], receipts: [], projects: [], summary: {} })
+  const [loading, setLoading] = useState(true)
+  const [selected, setSelected] = useState<Record<string, boolean>>({})
+  const [finalUsdc, setFinalUsdc] = useState("")
+  const [receiptDrafts, setReceiptDrafts] = useState<Record<string, { feeType: string; projectId: string; amount: string }>>({})
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const response = await fetch(`/api/ops/revenue?date=${encodeURIComponent(date)}`, { cache: "no-store", credentials: "include" })
+      const body = await response.json()
+      if (!response.ok) throw new Error(body.error || "Revenue Inbox could not be loaded")
+      setData(body)
+      setFinalUsdc(body.consolidation?.finalUsdc == null ? "" : String(body.consolidation.finalUsdc))
+    } catch (error: any) { toast.error(error.message) } finally { setLoading(false) }
+  }, [date])
+
+  useEffect(() => { load() }, [load])
+
+  const action = async (body: any, success?: string) => {
+    const response = await fetch("/api/ops/revenue", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ ...body, date }) })
+    const result = await response.json().catch(() => ({}))
+    if (!response.ok) return toast.error(result.error || "That action could not be completed")
+    if (success) toast.success(success)
+    setSelected({})
+    await load()
+  }
+
+  const selectableReceipts = useMemo(() => data.receipts.filter((receipt: any) => receipt.status === "unclassified"), [data.receipts])
+
+  return <div className="space-y-5">
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#42e6a4]/20 bg-black/45 p-5">
+      <div className="flex items-center gap-3"><span className="rounded-xl bg-[#42e6a4]/15 p-3 text-[#42e6a4]"><WalletCards className="h-5 w-5" /></span><div><h1 className="text-xl font-black">Revenue Inbox</h1><p className="text-sm text-white/45">Verify wallet receipts and prepare accounting. Nothing here sends funds.</p></div></div>
+      <div className="flex gap-2"><input type="date" value={date} onChange={(event) => setDate(event.target.value)} className="rounded-xl border border-white/10 bg-black/50 px-3 text-sm" /><button onClick={load} className="rounded-xl border border-white/10 p-3 text-white/70"><RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /></button><button onClick={() => action({ action: "ensure_daily" }, "Daily expectations are ready")} className="rounded-xl bg-[#42e6a4] px-4 text-sm font-bold text-black">Create daily fees</button></div>
+    </div>
+
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+      {[["Expected fees", data.summary.fees || 0], ["Verified", data.summary.confirmedFees || 0], ["Needs review", data.summary.unresolvedFees || 0], ["Unclassified receipts", data.summary.unclassifiedReceipts || 0], ["Recognized", money(data.summary.recognizedUsd || 0)]].map(([label, value]) => <div key={String(label)} className="rounded-xl border border-white/[0.08] bg-white/[0.035] p-4"><p className="text-xs uppercase text-white/40">{label}</p><p className="mt-1 text-xl font-black text-white">{value}</p></div>)}
+    </div>
+
+    <section className="rounded-2xl border border-white/[0.08] bg-black/40 p-5"><h2 className="font-black">Fee expectations</h2><p className="mt-1 text-xs text-white/40">Forwarded messages land here for project selection. Scheduled daily fees already know their project.</p><div className="mt-4 space-y-3">
+      {!data.fees.length ? <p className="rounded-xl border border-dashed border-white/10 p-8 text-center text-sm text-white/35">No fee expectations for this day.</p> : data.fees.map((fee: any) => <article key={fee._id} className="rounded-xl border border-white/[0.08] bg-white/[0.035] p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-bold">{fee.projectName || "Choose a project"} · {title(fee.feeType)}</h3><p className="mt-1 text-sm text-white/50">{fee.expectedAssetAmount != null ? amount(fee.expectedAssetAmount, fee.quoteAsset || fee.grossAsset) : money(fee.expectedUsd)} · {title(fee.status)}</p>{fee.grossAmount != null ? <p className="mt-1 text-xs text-white/35">Gross cashout {amount(fee.grossAmount, fee.grossAsset)}; liquidation fee only, privacy fee excluded.</p> : null}</div><span className={`rounded-full px-3 py-1 text-xs font-bold ${fee.status === "confirmed" ? "bg-emerald-500/15 text-emerald-300" : "bg-amber-500/15 text-amber-200"}`}>{title(fee.status)}</span></div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {!fee.feeType ? <select defaultValue="" onChange={(event) => event.target.value && action({ action: "set_fee_type", feeId: fee._id, feeType: event.target.value })} className="rounded-lg border border-white/10 bg-[#111] px-3 py-2 text-sm"><option value="">Classify fee…</option><option value="liquidation">Liquidation</option><option value="daily_trading">Daily trading</option><option value="launch">Launch / TGE cash</option><option value="dev_allocation">Dev allocation</option><option value="other">Other</option></select> : null}
+          {!fee.projectId ? <select defaultValue="" onChange={(event) => event.target.value && action({ action: "assign_project", feeId: fee._id, projectId: event.target.value })} className="rounded-lg border border-white/10 bg-[#111] px-3 py-2 text-sm"><option value="">Choose existing project…</option>{data.projects.map((project: any) => <option key={project._id} value={project._id}>{project.name} · {project.chain || "chain not set"}</option>)}</select> : null}
+          {fee.status === "awaiting_asset" ? <select defaultValue="" onChange={(event) => event.target.value && action({ action: "set_asset", feeId: fee._id, asset: event.target.value })} className="rounded-lg border border-white/10 bg-[#111] px-3 py-2 text-sm"><option value="">Choose quote asset…</option>{(data.projects.find((project: any) => String(project._id) === String(fee.projectId))?.quoteAssets || []).map((asset: string) => <option key={asset}>{asset}</option>)}</select> : null}
+          {fee.status === "awaiting_confirmation" ? <button onClick={() => action({ action: "confirm_fee", feeId: fee._id }, "Fee expectation confirmed")} className="rounded-lg bg-blue-500 px-3 py-2 text-sm font-bold"><Check className="mr-1 inline h-4 w-4" />Confirm expectation</button> : null}
+          {fee.status === "awaiting_receipt" ? <button onClick={() => action({ action: "propose_match", feeId: fee._id })} className="rounded-lg border border-blue-400/30 px-3 py-2 text-sm text-blue-200">Search receipts</button> : null}
+          {fee.status === "match_proposed" ? <button onClick={() => action({ action: "accept_match", feeId: fee._id }, "Receipt match confirmed")} className="rounded-lg bg-[#42e6a4] px-3 py-2 text-sm font-bold text-black"><Link2 className="mr-1 inline h-4 w-4" />Accept suggested match ({fee.proposedReceiptIds?.length || 0})</button> : null}
+          {["awaiting_receipt", "match_proposed"].includes(fee.status) && Object.values(selected).some(Boolean) ? <button onClick={() => action({ action: "accept_match", feeId: fee._id, receiptIds: Object.entries(selected).filter(([, yes]) => yes).map(([id]) => id) }, "Selected receipts linked")} className="rounded-lg bg-purple-500 px-3 py-2 text-sm font-bold">Link selected receipts</button> : null}
+        </div>
+      </article>)}
+    </div></section>
+
+    <section className="rounded-2xl border border-white/[0.08] bg-black/40 p-5"><h2 className="font-black">Revenue-wallet activity</h2><p className="mt-1 text-xs text-white/40">One fee may use several checked receipts. Internal consolidation transfers can be excluded.</p><div className="mt-4 space-y-2">
+      {!data.receipts.length ? <p className="rounded-xl border border-dashed border-white/10 p-8 text-center text-sm text-white/35">No wallet activity received for this day.</p> : data.receipts.map((receipt: any) => <div key={receipt._id} className="flex flex-wrap items-center gap-3 rounded-xl border border-white/[0.08] bg-white/[0.035] p-3">
+        <input type="checkbox" disabled={!selectableReceipts.some((row: any) => row._id === receipt._id)} checked={selected[receipt._id] || false} onChange={(event) => setSelected((current) => ({ ...current, [receipt._id]: event.target.checked }))} />
+        <div className="min-w-[190px] flex-1"><p className="font-bold">{amount(receipt.amount, receipt.asset)} · {title(receipt.chain)}</p><p className="text-xs text-white/35">{String(receipt.transactionHash || "").slice(0, 18)}… · {title(receipt.status)}</p></div>
+        <span className="text-sm text-white/60">{money(receipt.amountUsd)}</span>
+        {receipt.amountUsd == null ? <button onClick={() => { const value = window.prompt(`USD value for ${amount(receipt.amount, receipt.asset)}`); if (value != null && value.trim() !== "") action({ action: "classify_receipt", receiptId: receipt._id, status: receipt.status, amountUsd: Number(value) }, "USD value saved") }} className="rounded-lg border border-amber-400/20 px-3 py-2 text-xs text-amber-200">Set USD value</button> : null}
+        {receipt.status === "unclassified" ? <><select value={receiptDrafts[receipt._id]?.feeType || ""} onChange={(event) => setReceiptDrafts((current) => ({ ...current, [receipt._id]: { feeType: event.target.value, projectId: current[receipt._id]?.projectId || "", amount: current[receipt._id]?.amount || String(receipt.amount) } }))} className="rounded-lg border border-white/10 bg-[#111] px-2 py-2 text-xs"><option value="">Classify revenue…</option><option value="dev_allocation">Dev allocation</option><option value="fee_collector">Fee collector</option><option value="fee_rebate">Fee rebate</option><option value="other">Other project revenue</option></select>{receiptDrafts[receipt._id]?.feeType ? <><select value={receiptDrafts[receipt._id]?.projectId || ""} disabled={receiptDrafts[receipt._id]?.feeType === "fee_rebate"} onChange={(event) => setReceiptDrafts((current) => ({ ...current, [receipt._id]: { ...current[receipt._id], projectId: event.target.value } }))} className="rounded-lg border border-white/10 bg-[#111] px-2 py-2 text-xs"><option value="">{receiptDrafts[receipt._id]?.feeType === "fee_rebate" ? "No project needed" : "Choose project…"}</option>{data.projects.filter((project: any) => project.chain === receipt.chain && (project.quoteAssets || []).includes(receipt.asset)).map((project: any) => <option key={project._id} value={project._id}>{project.name}</option>)}</select><input aria-label="Amount to classify" type="number" min="0" max={receipt.amount} step="any" value={receiptDrafts[receipt._id]?.amount || String(receipt.amount)} onChange={(event) => setReceiptDrafts((current) => ({ ...current, [receipt._id]: { ...current[receipt._id], amount: event.target.value } }))} className="w-28 rounded-lg border border-white/10 bg-[#111] px-2 py-2 text-xs" /><button onClick={() => action({ action: "create_receipt_fee", receiptId: receipt._id, ...receiptDrafts[receipt._id] }, "Revenue classification created")} className="rounded-lg bg-blue-500 px-3 py-2 text-xs font-bold">Create fee</button></> : null}<button onClick={() => action({ action: "classify_receipt", receiptId: receipt._id, status: "internal" })} className="rounded-lg border border-white/10 px-3 py-2 text-xs">Internal transfer</button><button onClick={() => action({ action: "classify_receipt", receiptId: receipt._id, status: "ignored" })} className="rounded-lg border border-white/10 px-3 py-2 text-xs text-white/45">Ignore</button></> : null}
+      </div>)}
+    </div></section>
+
+    <section className="rounded-2xl border border-[#42e6a4]/20 bg-[#42e6a4]/[0.04] p-5"><h2 className="font-black">End-of-day consolidation</h2><p className="mt-1 text-xs text-white/45">After the admin manually swaps and bridges, enter the actual final Solana USDC. The preview adjusts liquidation fees only.</p><div className="mt-4 flex flex-wrap items-end gap-2"><label><span className="mb-1 block text-xs text-white/45">Actual final Solana USDC</span><input type="number" min="0" step="0.01" value={finalUsdc} onChange={(event) => setFinalUsdc(event.target.value)} className="h-10 rounded-xl border border-white/10 bg-black/50 px-3" /></label><button onClick={() => action({ action: "preview_consolidation", finalUsdc: Number(finalUsdc) }, "Reconciliation preview ready")} className="h-10 rounded-xl border border-[#42e6a4]/30 px-4 text-sm font-bold text-[#b8ffe1]">Preview discrepancy</button>{data.consolidation?.status === "review" ? <button disabled={!data.consolidation.canConfirm} onClick={() => action({ action: "confirm_consolidation" }, "Day finalized for payroll")} className="h-10 rounded-xl bg-[#42e6a4] px-4 text-sm font-bold text-black disabled:opacity-40">Confirm final accounting</button> : null}</div>
+      {data.consolidation ? <div className="mt-4 grid gap-2 sm:grid-cols-4"><div className="rounded-lg bg-black/30 p-3"><p className="text-xs text-white/40">Before bridge costs</p><p className="font-bold">{money(data.consolidation.rawTotalUsd)}</p></div><div className="rounded-lg bg-black/30 p-3"><p className="text-xs text-white/40">Actual final</p><p className="font-bold">{money(data.consolidation.finalUsdc)}</p></div><div className="rounded-lg bg-black/30 p-3"><p className="text-xs text-white/40">Discrepancy</p><p className="font-bold">{money(data.consolidation.discrepancyUsd)}</p></div><div className="rounded-lg bg-black/30 p-3"><p className="text-xs text-white/40">Status</p><p className="font-bold">{title(data.consolidation.status)}</p></div></div> : null}
+      {data.consolidation?.pendingValuation ? <p className="mt-3 text-sm text-amber-200">{data.consolidation.pendingValuation} confirmed fee(s) still need a USD value before finalization.</p> : null}
+    </section>
+  </div>
+}

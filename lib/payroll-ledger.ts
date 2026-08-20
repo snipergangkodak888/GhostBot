@@ -39,6 +39,7 @@ export type ClientIncomeInput = {
   income: number
   /** When true, this line does not generate referral commission even if the project has a referrer. */
   skipReferral?: boolean
+  sourceFeeEventIds?: string[]
 }
 
 import type { MiscIncomeCategory } from "./payroll-misc"
@@ -48,6 +49,7 @@ export type DevAllocationInput = {
   projectId?: string
   income: number
   category?: MiscIncomeCategory | string
+  sourceFeeEventIds?: string[]
 }
 
 export type PayrollLedgerInput = {
