@@ -13,8 +13,9 @@ This workflow automates evidence gathering and accounting preparation. It never 
 7. Receipt matching can combine several transactions. An admin accepts the suggested match or checks the exact receipts in Admin → Revenue Inbox.
 8. Native-token receipts can be given a manual USD valuation. This is explicit and auditable; the system does not silently guess a historical price.
 9. At the end of the day, the admin performs swaps and bridges manually. They enter the actual final Solana USDC in Revenue Inbox and preview the discrepancy.
-10. On confirmation, the discrepancy is spread proportionally across liquidation revenue only. Daily trading, launch cash, and dev-allocation revenue remain fixed.
-11. Admin → Payroll → Import Verified Revenue replaces only previously imported revenue rows. Manually entered payroll rows and payout execution remain untouched.
+10. Finalization is blocked until every fee expectation is resolved, every incoming receipt is classified, and every confirmed native receipt has a USD value.
+11. On confirmation, the discrepancy is spread proportionally across liquidation revenue only. Daily trading, launch cash, and dev-allocation revenue remain fixed.
+12. Admin → Payroll → Import Verified Revenue remains locked until reconciliation is final. It replaces only previously imported revenue rows; manually entered payroll rows and payout execution remain untouched.
 
 ## QuickNode delivery setup
 

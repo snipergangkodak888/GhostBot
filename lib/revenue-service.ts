@@ -494,6 +494,8 @@ export async function listRevenueDay(date = teamDateKey(0)) {
 
 export async function revenuePayrollDraft(date = teamDateKey(0)) {
   const db = await getDb()
+  const consolidation = await getConsolidation(date)
+  if (!consolidation || consolidation.status !== "confirmed") throw new Error("Finalize end-of-day revenue reconciliation before importing payroll")
   const fees = await db.collection(FEES).find({ date, status: "confirmed" }).toArray()
   const valued = fees.filter((fee: any) => Number(fee.recognizedUsd || 0) > 0 && (fee.projectId || fee.feeType === "fee_rebate"))
   const clientGroups = new Map<string, { projectId: string; incomeType: string; income: number; sourceFeeEventIds: string[] }>()
