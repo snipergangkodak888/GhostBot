@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { answerOpsAi, answerOpsBot, buildConversationContext, chooseOpsAiActionCandidate, executeOpsAiAction, formatOpsProjectDetails, isFollowUpMessage, proposeOpsAiAction, rejectOpsAiAction, type OpsAiOptions } from "@/lib/ops-bot"
+import { answerOpsAi, answerOpsBot, buildConversationContext, chooseOpsAiActionCandidate, executeOpsAiAction, formatOpsProjectDetails, proposeOpsAiAction, rejectOpsAiAction, type OpsAiOptions } from "@/lib/ops-bot"
 import { getMemberTimeZone, getTeamAccess, redeemGuardInviteCode, saveMemberTimeZone } from "@/lib/team-access"
 import { getDb } from "@/lib/db"
 import { deleteProjectCascade } from "@/lib/platform-data"
@@ -10,6 +10,8 @@ import { savePayrollDay } from "@/lib/payroll-day"
 import { loadDailyPayrollReport, parseReportDateFromText } from "@/lib/payroll-daily-report"
 import { renderPayrollReportPng } from "@/lib/payroll-report-image"
 import { miscIncomeCategoryLabel, parseIncomeLogCommand } from "@/lib/payroll-misc"
+import { chatPurposeLabel, listChatSubscriptions, normalizeChatPurpose, setChatSubscription } from "@/lib/chat-subscriptions"
+import { formatLaunchDaySchedule } from "@/lib/launch-calendar"
 
 type InlineButton = { text: string; callback_data?: string; url?: string; web_app?: { url: string } }
 
@@ -99,6 +101,8 @@ async function setBotCommands(token: string) {
       { command: "notes", description: "Show project notes" },
       { command: "ai", description: "Ask AI about projects and data" },
       { command: "timezone", description: "Set your local timezone" },
+      { command: "subscribe", description: "Subscribe this chat to scheduled updates" },
+      { command: "subscriptions", description: "Show scheduled updates for this chat" },
     ],
   })
 }
@@ -131,6 +135,7 @@ function helpMessage() {
     "📝 /notes",
     "🧠 @me your question",
     "🌍 /timezone - set your local timezone",
+    "📣 /subscribe launches - send launch schedules to this chat",
   ].join("\n")
 }
 
@@ -623,17 +628,24 @@ async function logProjectIncome(token: string, chatId: number | string, text: st
 }
 
 async function buildAiOptions(telegramId: number, chatId: number | string, message?: any): Promise<OpsAiOptions> {
+  const messageTimestamp = Number(message?.date || message?.edit_date || 0) * 1000
+  const referenceTime = messageTimestamp > 0 ? new Date(messageTimestamp) : new Date()
   return {
     chatId,
     chatTitle: chatTitle(message, chatId),
     conversation: await buildConversationContext(telegramId, chatId, message),
+    referenceTime: referenceTime.toISOString(),
+    requestTimeZone: await getMemberTimeZone(telegramId) || TEAM_TIME_ZONE,
   }
 }
 
 async function maybeProposeAction(text: string, telegramId: number, aiOptions: OpsAiOptions) {
-  if (aiOptions.conversation?.replyToBotText) return null
-  if (isFollowUpMessage(text) && (aiOptions.conversation?.recentTurns.length || 0) > 0) return null
-  return proposeOpsAiAction(text, telegramId, aiOptions).catch(() => null)
+  try {
+    return await proposeOpsAiAction(text, telegramId, aiOptions)
+  } catch (error) {
+    console.error("[ops-ai] capability planner failed:", error instanceof Error ? error.message : error)
+    return null
+  }
 }
 
 async function sendAiResponse(token: string, chatId: number | string, telegramId: number, text: string, message?: any) {
@@ -644,9 +656,9 @@ async function sendAiResponse(token: string, chatId: number | string, telegramId
     if (proposed) {
       return {
         text: proposed.message,
-        inline: proposed.buttons || [
+        inline: proposed.buttons || (proposed.actionId ? [
           [{ text: "✅ Confirm", callback_data: `ai:confirm:${proposed.actionId}` }, { text: "❌ Refuse", callback_data: `ai:reject:${proposed.actionId}` }],
-        ],
+        ] : undefined),
       }
     }
     return { text: await answerOpsAi(text, telegramId, aiOptions) }
@@ -799,9 +811,15 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   if (area === "notes" && action === "project") return sendProjectNotes(token, chatId, id)
 
   if (area === "ai" && action === "confirm") {
-    return sendAsyncResponse(token, chatId, async () => ({
-      text: await executeOpsAiAction(id, telegramId),
-    }), "✅ Applying…")
+    return sendAsyncResponse(token, chatId, async () => {
+      const pending = await db.collection("opsAiActions").findOne({ _id: id })
+      const text = await executeOpsAiAction(id, telegramId)
+      const launchDate = pending?.payload?.launchDate || pending?.payload?.startDate
+      const changedLaunch = ["create_project", "update_project"].includes(String(pending?.actionType || "")) && launchDate
+      if (!text.startsWith("✅") || !changedLaunch) return { text }
+      const schedule = await formatLaunchDaySchedule(launchDate)
+      return { text: `${text}\n\n${schedule}` }
+    }, "✅ Applying…")
   }
   if (area === "ai" && action === "reject") {
     return sendAsyncResponse(token, chatId, async () => ({
@@ -920,6 +938,30 @@ async function handleCallback(token: string, chatId: number | string, telegramId
 
 async function routeText(token: string, chatId: number | string, telegramId: number, text: string, req: NextRequest, messageDateMs: number, message?: any) {
   const commandText = stripBotCommandSuffix(text)
+  const subscribeCommand = commandText.match(/^\/(subscribe|unsubscribe)(?:\s+(.+))?$/i)
+  const naturalLaunchSubscription = /\b(?:make|set|use)\s+this\s+(?:group|chat)\s+(?:as\s+)?(?:the\s+)?launch(?:es)?\s+(?:chat|channel)|\bsend\s+(?:the\s+)?(?:daily\s+|morning\s+)?launch\s+(?:schedule|updates?)\s+to\s+this\s+(?:group|chat)\b/i.test(commandText)
+  if (subscribeCommand || naturalLaunchSubscription) {
+    const active = naturalLaunchSubscription || subscribeCommand?.[1].toLowerCase() === "subscribe"
+    const purpose = naturalLaunchSubscription ? "launches" : normalizeChatPurpose(subscribeCommand?.[2])
+    if (!purpose) return sendMessage(token, chatId, "Choose a scheduled update type. For now, use /subscribe launches.")
+    if (purpose !== "launches") return sendMessage(token, chatId, "Launch schedules are the first available subscription. Use /subscribe launches.")
+    await setChatSubscription({
+      chatId,
+      purpose,
+      active,
+      title: message?.chat?.title || message?.chat?.username || "",
+      chatType: message?.chat?.type || (isGroupChatId(chatId) ? "group" : "private"),
+      telegramId,
+    })
+    return sendMessage(token, chatId, active
+      ? `✅ This chat is subscribed to ${chatPurposeLabel(purpose)}.\n\nI’ll post the complete launch schedule here each morning in ET.`
+      : `✅ This chat is no longer subscribed to ${chatPurposeLabel(purpose)}.`)
+  }
+  if (/^\/subscriptions$/i.test(commandText)) {
+    const subscriptions = await listChatSubscriptions(chatId)
+    const labels = subscriptions.map((row: any) => chatPurposeLabel(row.purpose)).filter(Boolean)
+    return sendMessage(token, chatId, `📣 Scheduled updates for this chat\n\n${labels.length ? labels.map((label: string) => `• ${label}`).join("\n") : "No scheduled updates are subscribed here."}`)
+  }
   const timeZoneCommand = commandText.match(/^\/timezone(?:\s+(.+))?$/i)
   if (timeZoneCommand) {
     const requested = String(timeZoneCommand[1] || "").trim()
@@ -987,9 +1029,9 @@ async function routeText(token: string, chatId: number | string, telegramId: num
     if (proposed) {
       return {
         text: proposed.message,
-        inline: proposed.buttons || [
+        inline: proposed.buttons || (proposed.actionId ? [
           [{ text: "✅ Confirm", callback_data: `ai:confirm:${proposed.actionId}` }, { text: "❌ Refuse", callback_data: `ai:reject:${proposed.actionId}` }],
-        ],
+        ] : undefined),
       }
     }
     return { text: await answerOpsBot(text, telegramId, aiOptions) }

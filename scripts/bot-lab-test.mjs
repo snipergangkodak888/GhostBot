@@ -30,6 +30,7 @@ try {
       ...config,
       telegramId: Number(scenario.telegramId || config.telegramId),
       chatId: Number(scenario.chatId || scenario.telegramId || config.chatId),
+      chatType: scenario.chatType || config.chatType,
     }
     if (scenario.resetBefore) await resetBotLab(scenarioConfig)
     const data = await sendBotLabUpdate(scenarioConfig, scenario.callbackData

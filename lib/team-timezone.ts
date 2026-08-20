@@ -112,6 +112,12 @@ export function teamDateKey(offsetDays = 0, timeZone = TEAM_TIME_ZONE) {
   return `${parts.year}-${pad(parts.month)}-${pad(parts.day)}`
 }
 
+export function dateKeyInTimeZone(date: Date, timeZone = TEAM_TIME_ZONE) {
+  const parts = partsInTimeZone(date, timeZone)
+  const pad = (value: number) => String(value).padStart(2, "0")
+  return `${parts.year}-${pad(parts.month)}-${pad(parts.day)}`
+}
+
 export function zonedDateTimeToUtc(
   year: number,
   month: number,
@@ -163,7 +169,11 @@ export function parseTeamDateTime(value: unknown, timeZone = TEAM_TIME_ZONE) {
 function parsedClock(raw: string) {
   if (/\bnoon\b/i.test(raw)) return { hour: 12, minute: 0 }
   if (/\bmidnight\b/i.test(raw)) return { hour: 0, minute: 0 }
-  const match = raw.match(/\b(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?\b/i)
+  const match = raw.match(/\b(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)\b/i)
+    || raw.match(/\bat\s+(\d{1,2})(?::(\d{2}))?\b/i)
+    || (/\b(?:today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(raw)
+      ? raw.match(/\b(\d{1,2})(?::(\d{2}))?\b/i)
+      : null)
   if (!match) return null
   let hour = Number(match[1])
   const minute = Number(match[2] || 0)
@@ -172,6 +182,52 @@ function parsedClock(raw: string) {
   if (meridiem === "pm" && hour < 12) hour += 12
   if (meridiem === "am" && hour === 12) hour = 0
   return { hour, minute }
+}
+
+const MONTH_INDEX: Record<string, number> = {
+  jan: 1,
+  january: 1,
+  feb: 2,
+  february: 2,
+  mar: 3,
+  march: 3,
+  apr: 4,
+  april: 4,
+  may: 5,
+  jun: 6,
+  june: 6,
+  jul: 7,
+  july: 7,
+  aug: 8,
+  august: 8,
+  sep: 9,
+  sept: 9,
+  september: 9,
+  oct: 10,
+  october: 10,
+  nov: 11,
+  november: 11,
+  dec: 12,
+  december: 12,
+}
+
+function naturalCalendarParts(raw: string, timeZone: string, now: Date) {
+  const iso = raw.match(/\b(\d{4})-(\d{2})-(\d{2})\b/)
+  if (iso) return { year: Number(iso[1]), month: Number(iso[2]), day: Number(iso[3]) }
+
+  const named = raw.match(/\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?\b/i)
+  const reversed = raw.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)(?:,?\s+(\d{4}))?\b/i)
+  const match = named
+    ? { month: MONTH_INDEX[named[1].toLowerCase()], day: Number(named[2]), year: Number(named[3] || 0) }
+    : reversed
+      ? { month: MONTH_INDEX[reversed[2].toLowerCase()], day: Number(reversed[1]), year: Number(reversed[3] || 0) }
+      : null
+  if (!match) return null
+
+  const current = partsInTimeZone(now, timeZone)
+  let year = match.year || current.year
+  if (!match.year && (match.month < current.month || (match.month === current.month && match.day < current.day))) year += 1
+  return { year, month: match.month, day: match.day }
 }
 
 export function parseRelativeTeamDateTime(value: unknown, timeZone = TEAM_TIME_ZONE, now = new Date()) {
@@ -213,9 +269,54 @@ export function parseRelativeTeamDateTime(value: unknown, timeZone = TEAM_TIME_Z
   )
 }
 
+export function parseNaturalTeamDateTime(value: unknown, timeZone = TEAM_TIME_ZONE, now = new Date()) {
+  const raw = String(value || "").trim()
+  if (!raw) return null
+
+  if (/^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?)?(?:[zZ]|[+-]\d{2}:\d{2})?$/.test(raw)) {
+    return parseTeamDateTime(raw, timeZone)
+  }
+
+  const relative = parseRelativeTeamDateTime(raw, timeZone, now)
+  if (relative) return relative
+
+  const calendar = naturalCalendarParts(raw, timeZone, now)
+  if (calendar) {
+    const clock = parsedClock(raw) || { hour: 9, minute: 0 }
+    const parsed = zonedDateTimeToUtc(calendar.year, calendar.month, calendar.day, clock.hour, clock.minute, 0, timeZone)
+    const verified = partsInTimeZone(parsed, timeZone)
+    if (verified.year === calendar.year && verified.month === calendar.month && verified.day === calendar.day) return parsed
+    return null
+  }
+
+  return parseTeamDateTime(raw, timeZone)
+}
+
+export function temporalDateConflict(value: unknown, timeZone = TEAM_TIME_ZONE, now = new Date()) {
+  const raw = String(value || "").trim()
+  const relativeOffset = /\btomorrow\b/i.test(raw) ? 1 : /\btoday\b|\btonight\b/i.test(raw) ? 0 : null
+  if (relativeOffset === null) return null
+
+  const explicit = naturalCalendarParts(raw, timeZone, now)
+  if (!explicit) return null
+  const explicitDate = zonedDateTimeToUtc(explicit.year, explicit.month, explicit.day, 12, 0, 0, timeZone)
+  const expected = new Date(now)
+  const current = partsInTimeZone(expected, timeZone)
+  const expectedDate = zonedDateTimeToUtc(current.year, current.month, current.day, 12, 0, 0, timeZone)
+  expectedDate.setUTCDate(expectedDate.getUTCDate() + relativeOffset)
+  const expectedKey = dateKeyInTimeZone(expectedDate, timeZone)
+  const explicitKey = dateKeyInTimeZone(explicitDate, timeZone)
+  if (expectedKey === explicitKey) return null
+  return {
+    relativeLabel: relativeOffset === 1 ? "tomorrow" : "today",
+    expectedKey,
+    explicitKey,
+  }
+}
+
 export function normalizeReminderDueAt(payload: { dueAt?: unknown; timeZone?: unknown; timezone?: unknown }, now = new Date()) {
   const timeZone = normalizeTimeZone(payload.timeZone || payload.timezone) || TEAM_TIME_ZONE
-  const parsed = parseTeamDateTime(payload.dueAt, timeZone) || parseRelativeTeamDateTime(payload.dueAt, timeZone, now)
+  const parsed = parseNaturalTeamDateTime(payload.dueAt, timeZone, now)
   if (!parsed) return null
   return { dueAt: parsed.toISOString(), timeZone }
 }

@@ -44,5 +44,60 @@
     "name": "saves a timezone from an inline choice",
     "callbackData": "tz:set:pt:990000099",
     "expectIncludes": ["America/Los_Angeles", "PT"]
+  },
+  {
+    "name": "schedules a naturally phrased project launch",
+    "text": "prime launch tomorrow 9am et",
+    "resetBefore": true,
+    "expectIncludes": ["Action: Create project", "New project: Prime", "Launch:", "ET"]
+  },
+  {
+    "name": "understands conversational launch-calendar wording",
+    "text": "we have a launch (prime) tomorrow at 9am et, please add it to the launch calendar",
+    "resetBefore": true,
+    "expectIncludes": ["Action: Create project", "New project: Prime", "Launch:", "ET"]
+  },
+  {
+    "name": "updates an existing project launch from statement-style language",
+    "text": "hey launches next friday at 3pm pt",
+    "resetBefore": true,
+    "expectIncludes": ["Action: Update project", "Project: hey", "Launch:", "PT"]
+  },
+  {
+    "name": "accepts polite natural mutation wording",
+    "text": "please schedule hey launch for next monday at noon pt",
+    "resetBefore": true,
+    "expectIncludes": ["Action: Update project", "Project: hey", "Launch:", "12:00 PM", "PT"]
+  },
+  {
+    "name": "clarifies conflicting relative and explicit dates",
+    "text": "prime launch tomorrow, August 31 2099 at 9am ET",
+    "resetBefore": true,
+    "expectIncludes": ["two different dates", "tomorrow is", "2099-08-31", "Which date should I use"]
+  },
+  {
+    "name": "subscribes a group to launch schedules",
+    "telegramId": 990000099,
+    "chatId": 990000987,
+    "chatType": "group",
+    "text": "/subscribe launches",
+    "resetBefore": true,
+    "expectIncludes": ["subscribed to Launch updates", "each morning in ET"]
+  },
+  {
+    "name": "lists launch schedule subscriptions",
+    "telegramId": 990000099,
+    "chatId": 990000987,
+    "chatType": "group",
+    "text": "/subscriptions",
+    "expectIncludes": ["Scheduled updates for this chat", "Launch updates"]
+  },
+  {
+    "name": "unsubscribes a group from launch schedules",
+    "telegramId": 990000099,
+    "chatId": 990000987,
+    "chatType": "group",
+    "text": "/unsubscribe launches",
+    "expectIncludes": ["no longer subscribed to Launch updates"]
   }
 ]

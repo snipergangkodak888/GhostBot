@@ -17,7 +17,17 @@ import {
   weekStartKey,
 } from "@/lib/payroll-financials"
 import { miscIncomeCategoryLabel, parseIncomeLogCommand } from "@/lib/payroll-misc"
-import { detectExplicitTimeZone, formatTeamDateTime, normalizeReminderDueAt, parseTeamDateTime, teamNowParts, TEAM_TIME_ZONE } from "@/lib/team-timezone"
+import {
+  dateKeyInTimeZone,
+  detectExplicitTimeZone,
+  formatTeamDateTime,
+  normalizeReminderDueAt,
+  parseNaturalTeamDateTime,
+  parseTeamDateTime,
+  partsInTimeZone,
+  temporalDateConflict,
+  TEAM_TIME_ZONE,
+} from "@/lib/team-timezone"
 import { getSheetSchema, normalizeSheetKind, valuesForKind, type SheetKind } from "@/lib/sheet-schemas"
 
 function includes(text: string, words: string[]) {
@@ -200,11 +210,13 @@ function uniqueLines(lines: string[]) {
 
 function isActionRequest(text: string) {
   const lower = text.toLowerCase()
-  if (/^(show|list|what|how much|tell me|summarize|summary|calculate|check|view)\b/.test(lower)) return false
-  if (/^(yes|yeah|yep|yup|sure|ok|okay|please|thanks|thank you)\b/.test(lower)) return false
-  if (/^(yes|yeah|yep|sure|ok|okay)[,.!?\s-]*(go ahead|please|do it|sounds good|that works)\b/.test(lower)) return false
+  const explicitMutation = /\b(add|create|insert|update|edit|change|set|schedule|reschedule|move|remind|mark|pay|paid|delete|remove|rename|activate|deactivate|log|record|post)\b/.test(lower)
+  if (/^(show|list|what|when|where|who|why|how much|tell me|summarize|summary|calculate|check|view)\b/.test(lower)) return false
+  if (/^(yes|yeah|yep|yup|sure|ok|okay|thanks|thank you)\b/.test(lower) && !explicitMutation) return false
+  if (/^(yes|yeah|yep|sure|ok|okay)[,.!?\s-]*(go ahead|please|do it|sounds good|that works)\b/.test(lower) && !explicitMutation) return false
   if (/^go ahead\b/.test(lower)) return false
-  return /\b(add|create|insert|update|edit|change|set|schedule|remind|mark|pay|delete|remove)\b/.test(lower)
+  return explicitMutation
+    || /\b(?:launch|launches|launching)\b.*\b(?:today|tomorrow|tonight|next\s+(?:mon|tue|wed|thu|fri|sat|sun)|\d{1,2}(?::\d{2})?\s*(?:am|pm)|noon|midnight)\b/i.test(lower)
 }
 
 export function isFollowUpMessage(text: string) {
@@ -230,6 +242,25 @@ export type OpsAiOptions = {
   chatId?: number | string | null
   chatTitle?: string
   conversation?: OpsConversationContext
+  referenceTime?: string
+  requestTimeZone?: string
+}
+
+function referenceDate(options: OpsAiOptions) {
+  const parsed = options.referenceTime ? new Date(options.referenceTime) : new Date()
+  return Number.isNaN(parsed.getTime()) ? new Date() : parsed
+}
+
+function temporalContext(text: string, options: OpsAiOptions) {
+  const timeZone = detectExplicitTimeZone(text) || options.requestTimeZone || TEAM_TIME_ZONE
+  const referenceTime = referenceDate(options)
+  return {
+    referenceTime,
+    timeZone,
+    nowUtc: referenceTime.toISOString(),
+    nowForRequester: formatTeamDateTime(referenceTime, timeZone),
+    dateForRequester: dateKeyInTimeZone(referenceTime, timeZone),
+  }
 }
 
 export async function buildConversationContext(
@@ -636,6 +667,85 @@ function resolveProject(projects: any[], value: unknown, request: string) {
   return projects.find((item: any) => sameName(item.name, raw)) || projects.find((item: any) => includesText(item.name, raw)) || null
 }
 
+function cleanNaturalProjectName(value: unknown) {
+  const cleaned = String(value || "")
+    .replace(/[()"“”'‘’]/g, " ")
+    .replace(/^(?:please\s+)?(?:the\s+)?(?:project\s+)?/i, "")
+    .replace(/\s+(?:project)$/i, "")
+    .replace(/[,:;.!?]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+  if (cleaned && cleaned === cleaned.toLowerCase()) {
+    return cleaned.replace(/\b[a-z]/g, (letter) => letter.toUpperCase())
+  }
+  return cleaned
+}
+
+function launchProjectName(text: string, projects: any[]) {
+  const existing = projectMatchesRequest(projects, text)
+  if (existing.length === 1) return { name: String(existing[0].name), project: existing[0] }
+
+  const patterns = [
+    /\blaunch\s*\(\s*([^)]{1,80})\s*\)/i,
+    /\b(?:add|put)\s+(.{1,80}?)\s+(?:to|on)\s+(?:the\s+)?launch\s+calendar\b/i,
+    /\b(?:schedule|set|move|reschedule)\s+(.{1,80}?)\s+(?:for\s+)?(?:a\s+)?launch\b/i,
+    /^(.{1,80}?)\s+(?:launch|launches|launching)\b/i,
+    /\blaunch(?:\s+(?:for|of))?\s+(.{1,80}?)(?=\s+(?:today|tomorrow|tonight|next|on|at)\b|$)/i,
+  ]
+  for (const pattern of patterns) {
+    const name = cleanNaturalProjectName(text.match(pattern)?.[1])
+    if (!name || /^(?:a|the|our|new|project|launch)$/i.test(name)) continue
+    const project = projects.find((item: any) => sameName(item.name, name)) || null
+    return { name: project?.name || name, project }
+  }
+  return null
+}
+
+function inferCapabilityAction(text: string, projects: any[], timeZone: string, now: Date) {
+  if (!/\b(?:launch|launches|launching|launch\s+calendar)\b/i.test(text)) return null
+  if (!isActionRequest(text)) return null
+  const launchAt = parseNaturalTeamDateTime(text, timeZone, now)
+  const target = launchProjectName(text, projects)
+  if (!launchAt || !target?.name) return null
+
+  if (target.project) {
+    return {
+      actionType: "update_project",
+      summary: `Schedule ${target.project.name} to launch ${formatTeamDateTime(launchAt, timeZone)}`,
+      payload: { projectName: target.project.name, launchDate: launchAt.toISOString() },
+      warnings: [],
+    }
+  }
+  return {
+    actionType: "create_project",
+    summary: `Add ${target.name} to the launch calendar for ${formatTeamDateTime(launchAt, timeZone)}`,
+    payload: { name: target.name, launchDate: launchAt.toISOString() },
+    warnings: [],
+  }
+}
+
+function normalizeActionDates(actionType: string, payload: any, text: string, timeZone: string, now: Date) {
+  const next = { ...(payload || {}) }
+  if (actionType === "create_project" || actionType === "update_project") {
+    const launchSource = next.launchDate ?? next.startDate
+    const launchAt = parseNaturalTeamDateTime(launchSource, timeZone, now)
+      || (/\b(?:launch|launches|launching|launch\s+calendar)\b/i.test(text) ? parseNaturalTeamDateTime(text, timeZone, now) : null)
+    if (launchAt) {
+      next.launchDate = launchAt.toISOString()
+      next.startDate = launchAt.toISOString()
+    }
+    if (next.endDate) {
+      const endAt = parseNaturalTeamDateTime(next.endDate, timeZone, now)
+      if (endAt) next.endDate = endAt.toISOString()
+    }
+  }
+  if (actionType === "create_payroll" && next.date) {
+    const payrollDate = parseNaturalTeamDateTime(next.date, timeZone, now)
+    if (payrollDate) next.date = dateKeyInTimeZone(payrollDate, timeZone)
+  }
+  return next
+}
+
 function sortNewestFirst(rows: any[]) {
   return [...rows].sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt || b.launchDate || 0).getTime() - new Date(a.updatedAt || a.createdAt || a.launchDate || 0).getTime())
 }
@@ -645,7 +755,7 @@ function candidateDate(value: any) {
   return Number.isNaN(date.getTime()) ? "No date" : date.toLocaleDateString()
 }
 
-async function resolveActionPreview(actionType: string, payload: any, context: { request: string; projects: any[]; sheets: any[] }) {
+async function resolveActionPreview(actionType: string, payload: any, context: { request: string; projects: any[]; sheets: any[]; timeZone?: string }) {
   const db = await getDb()
   const preview: string[] = []
   const warnings: string[] = []
@@ -656,6 +766,24 @@ async function resolveActionPreview(actionType: string, payload: any, context: {
 
   if (project && !nextPayload.projectName) nextPayload.projectName = project.name
   if (project) preview.push(`📁 Project: ${project.name}`)
+
+  if (actionType === "create_project") {
+    const name = String(nextPayload.name || "").trim()
+    if (name && !project) preview.push(`📁 New project: ${name}`)
+    if (project) warnings.push(`${project.name} already exists. Use an update instead of creating a duplicate.`)
+  }
+
+  if (actionType === "update_project" && !project) {
+    warnings.push("I could not identify the project to update.")
+  }
+
+  if ((actionType === "create_project" || actionType === "update_project") && (nextPayload.launchDate || nextPayload.startDate)) {
+    const launchDate = new Date(nextPayload.launchDate || nextPayload.startDate)
+    if (!Number.isNaN(launchDate.getTime())) {
+      const timeZone = context.timeZone || detectExplicitTimeZone(context.request) || TEAM_TIME_ZONE
+      preview.push(`📅 Launch: ${formatTeamDateTime(launchDate, timeZone)}`)
+    }
+  }
 
   if (actionType === "delete_project") {
     const requested = String(nextPayload.projectName || nextPayload.name || "").trim()
@@ -820,12 +948,29 @@ async function aiChat(messages: Array<{ role: "system" | "user" | "assistant"; c
 
 export async function proposeOpsAiAction(textInput: string, telegramId?: number | null, options: OpsAiOptions = {}) {
   const text = String(textInput || "").trim()
-  if (!text || !isActionRequest(text)) return null
+  const continuingAction = !isFollowUpMessage(text) && (options.conversation?.recentTurns || []).slice(-2).some((turn) =>
+    isActionRequest(turn.user) && /\b(action|add|create|update|schedule|confirm|details|need)\b/i.test(turn.assistant)
+  )
+  if (!text || (!isActionRequest(text) && !continuingAction)) return null
 
   const db = await getDb()
   const explicitTimeZone = detectExplicitTimeZone(text)
-  const memberTimeZone = await getMemberTimeZone(telegramId)
-  const requestTimeZone = explicitTimeZone || memberTimeZone || TEAM_TIME_ZONE
+  const memberTimeZone = options.requestTimeZone || await getMemberTimeZone(telegramId)
+  const requestTimeZone = explicitTimeZone || options.requestTimeZone || memberTimeZone || TEAM_TIME_ZONE
+  const requestNow = referenceDate(options)
+  const conflict = temporalDateConflict(text, requestTimeZone, requestNow)
+  if (conflict) {
+    return {
+      actionId: "",
+      message: formatBotText([
+        "📅 I see two different dates in that request.",
+        "",
+        `In ${requestTimeZone}, ${conflict.relativeLabel} is ${conflict.expectedKey}, but you also wrote ${conflict.explicitKey}.`,
+        "Which date should I use?",
+      ].join("\n"), { allowEmoji: true }),
+      needsChoice: false,
+    }
+  }
   const [projects, sheets] = await Promise.all([
     db.collection("opsProjects").find({}).toArray(),
     db.collection("opsSheets").find({}).toArray(),
@@ -838,64 +983,75 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
     headers: valuesForKind(sheet.sheetType || "custom", sheet.values || [])[0] || getSheetSchema(sheet.sheetType || "custom").headers,
   }))
 
-  const raw = await aiChat([
-    {
-      role: "system",
-      content: [
-        "You turn Ghost Team user requests into one safe pending action.",
-        "Return JSON only. No markdown.",
-        "If the user is only asking a question or asking to show/list/summarize data, return {\"actionType\":\"none\"}.",
-        "Supported actionType values: create_project, update_project, create_reminder, create_payroll, add_sheet_row, delete_project, delete_reminder, delete_payroll, delete_sheet, delete_sheet_row, none.",
-        "Payload shapes:",
-        "create_project: {name, referrer, referrerWallet, status, service, startDate, endDate, currentProfitLoss, notes, tags}",
-        "update_project: {projectName, name, referrer, referrerWallet, status, service, startDate, endDate, currentProfitLoss, notes, tags}",
-        "create_reminder: {title, message, dueAt, timeZone?}",
-        "create_payroll: {member, amount, projectName, date, status, currency, notes}",
-        "add_sheet_row: {projectName, sheetType, row}",
-        "delete_project: {projectName}",
-        "delete_reminder: {title, dueAt}",
-        "delete_payroll: {member, projectName, date, amount}",
-        "delete_sheet: {projectName, sheetType, title}",
-        "delete_sheet_row: {projectName, sheetType, match}",
-        `The requester's timezone is ${requestTimeZone}. Interpret reminder times without an explicit timezone in that timezone.`,
-        "For create_reminder dueAt, return a local datetime string WITHOUT a Z suffix, e.g. 2026-07-07T23:00:00 for 11:00 PM in the requester's timezone on July 7.",
-        "If the user names another timezone (PT, UTC, London, etc.), include timeZone in the payload using an IANA name like America/Los_Angeles.",
-        "Use exact existing project names when possible. Do not invent missing required values.",
-        "For delete actions, identify the most specific target possible and add warnings if more than one item may match.",
-        "Return: {actionType, summary, payload, warnings}.",
-      ].join("\n"),
-    },
-    {
-      role: "user",
-      content: JSON.stringify({
-        request: text,
-        nowUtc: new Date().toISOString(),
-        nowEt: formatTeamDateTime(new Date()),
-        nowForRequester: formatTeamDateTime(new Date(), requestTimeZone),
-        requesterTimeZone: requestTimeZone,
-        teamTimeZone: TEAM_TIME_ZONE,
-        teamNow: teamNowParts(),
-        projects: projectNames,
-        sheets: sheetRefs,
-      }),
-    },
-  ], 0)
+  let plan: any = inferCapabilityAction(text, projects, requestTimeZone, requestNow)
+  if (!plan) {
+    const raw = await aiChat([
+      {
+        role: "system",
+        content: [
+          "You are the capability planner for Ghost Team's Telegram operations bot.",
+          "Decide whether the user wants to invoke one supported capability or is only asking a question.",
+          "Return JSON only. No markdown.",
+          "If the user is only asking to show, list, explain, summarize, or calculate data, return {\"actionType\":\"none\"}.",
+          "Supported actionType values: create_project, update_project, create_reminder, create_payroll, add_sheet_row, delete_project, delete_reminder, delete_payroll, delete_sheet, delete_sheet_row, none.",
+          "Capability semantics:",
+          "• The launch calendar is backed by a project's launchDate. Requests to add, schedule, move, or reschedule a launch update an existing project, or create a minimally populated project when the named project does not exist.",
+          "• Reminders create scheduled Telegram deliveries. They are different from project launches.",
+          "• Payroll actions add or remove payroll rows. Data-row actions modify a project's existing data file.",
+          "Payload shapes:",
+          "create_project: {name, referrer, referrerWallet, status, service, startDate, launchDate, endDate, currentProfitLoss, notes, tags}",
+          "update_project: {projectName, name, referrer, referrerWallet, status, service, startDate, launchDate, endDate, currentProfitLoss, notes, tags}",
+          "create_reminder: {title, message, dueAt, timeZone?}",
+          "create_payroll: {member, amount, projectName, date, status, currency, notes}",
+          "add_sheet_row: {projectName, sheetType, row}",
+          "delete_project: {projectName}",
+          "delete_reminder: {title, dueAt}",
+          "delete_payroll: {member, projectName, date, amount}",
+          "delete_sheet: {projectName, sheetType, title}",
+          "delete_sheet_row: {projectName, sheetType, match}",
+          `The reference time is ${requestNow.toISOString()} and the requester's timezone is ${requestTimeZone}.`,
+          "Resolve today, tomorrow, tonight, weekdays, and relative durations against that reference time.",
+          "Return local date-time values without a Z suffix when the user supplied a local timezone; the application will normalize them safely.",
+          "Use the conversation context to resolve pronouns and concise follow-ups, but never repeat or execute a prior action unless the current message requests it.",
+          "Use exact existing project names when possible. Only ask for information required by the target capability; optional project metadata must not block scheduling a launch.",
+          "For destructive actions, identify the most specific target possible and add warnings if more than one item may match.",
+          "Return: {actionType, summary, payload, warnings}.",
+        ].join("\n"),
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          request: text,
+          conversation: options.conversation || null,
+          nowUtc: requestNow.toISOString(),
+          nowEt: formatTeamDateTime(requestNow),
+          nowForRequester: formatTeamDateTime(requestNow, requestTimeZone),
+          requesterTimeZone: requestTimeZone,
+          teamTimeZone: TEAM_TIME_ZONE,
+          teamNow: partsInTimeZone(requestNow, TEAM_TIME_ZONE),
+          projects: projectNames,
+          sheets: sheetRefs,
+        }),
+      },
+    ], 0)
 
-  let plan: any
-  try {
-    plan = extractJson(raw)
-  } catch {
-    return null
+    try {
+      plan = extractJson(raw)
+    } catch {
+      console.error("[ops-ai] capability planner returned invalid JSON")
+      return null
+    }
   }
 
   const actionType = String(plan?.actionType || "none")
   if (actionType === "none") return null
   if (!["create_project", "update_project", "create_reminder", "create_payroll", "add_sheet_row", "delete_project", "delete_reminder", "delete_payroll", "delete_sheet", "delete_sheet_row"].includes(actionType)) return null
 
-  const payload = plan?.payload && typeof plan.payload === "object" ? plan.payload : {}
+  const rawPayload = plan?.payload && typeof plan.payload === "object" ? plan.payload : {}
+  const payload = normalizeActionDates(actionType, rawPayload, text, requestTimeZone, requestNow)
   if (actionType === "create_reminder") {
     payload.timeZone = explicitTimeZone || payload.timeZone || memberTimeZone || TEAM_TIME_ZONE
-    const normalized = normalizeReminderDueAt(payload)
+    const normalized = normalizeReminderDueAt(payload, requestNow)
     if (normalized) {
       payload.dueAt = normalized.dueAt
       payload.timeZone = normalized.timeZone
@@ -906,7 +1062,7 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
       payload.targetChatTitle = String(options.chatTitle || options.chatId)
     }
   }
-  const resolved = await resolveActionPreview(actionType, payload, { request: text, projects, sheets })
+  const resolved = await resolveActionPreview(actionType, payload, { request: text, projects, sheets, timeZone: requestTimeZone })
   const summary = String(plan?.summary || actionLabel(actionType)).trim()
   const warnings = [
     ...(Array.isArray(plan?.warnings) ? plan.warnings.map(String).filter(Boolean) : []),
@@ -1056,7 +1212,7 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
     }
     const result = await db.collection("opsProjects").insertOne(project)
     await createDefaultSheetsForProject(String(result.insertedId), name)
-    done = `✅ Project created: ${name}`
+    done = startDate ? `✅ Launch added successfully: ${name}` : `✅ Project created: ${name}`
   }
 
   if (action.actionType === "update_project") {
@@ -1082,7 +1238,9 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
     if (payload.notes !== undefined) update.notes = String(payload.notes || "").trim()
     if (Array.isArray(payload.tags)) update.tags = payload.tags.map(String)
     await db.collection("opsProjects").updateOne({ _id: project._id }, { $set: update })
-    done = `✅ Project updated: ${project.name}`
+    done = (payload.startDate !== undefined || payload.launchDate !== undefined)
+      ? `✅ Launch updated successfully: ${project.name}`
+      : `✅ Project updated: ${project.name}`
   }
 
   if (action.actionType === "create_reminder") {
@@ -1282,6 +1440,7 @@ export async function answerOpsBot(textInput: string, telegramId?: number | null
       scopeLabel: aiScoped.hasScope ? aiScoped.label : "tracked projects",
       hasScope: aiScoped.hasScope,
       conversation: options.conversation,
+      requestContext: options,
     }).catch(aiUnavailable)
   } else if (!scoped.hasScope && wantsLedgerFinancialQuestion(text)) {
     const period = parseFinancialPeriod(text, todayKey)
@@ -1414,6 +1573,7 @@ export async function answerOpsBot(textInput: string, telegramId?: number | null
       scopeLabel: scoped.hasScope ? scoped.label : "tracked projects",
       hasScope: scoped.hasScope,
       conversation: options.conversation,
+      requestContext: options,
     }).catch(aiUnavailable)
   }
 
@@ -1445,6 +1605,7 @@ export async function answerOpsAi(textInput: string, telegramId?: number | null,
     scopeLabel: scoped.hasScope ? scoped.label : "tracked projects",
     hasScope: scoped.hasScope,
     conversation: options.conversation,
+    requestContext: options,
   }).catch(aiUnavailable)
   await logBotExchange({ text: `/ai ${text}`, answer, telegramId, chatId: options.chatId })
   return formatAiText(answer)
@@ -1460,8 +1621,10 @@ async function answerWithAi(
     scopeLabel?: string
     hasScope?: boolean
     conversation?: OpsConversationContext
+    requestContext?: OpsAiOptions
   },
 ) {
+  const temporal = temporalContext(text, context.requestContext || {})
   const sourceDocs = await getOpsSourceDocs()
   const compactSheets = context.sheets.slice(0, 12).map((sheet: any) => ({
     title: cleanSheetTitle(sheet),
@@ -1474,6 +1637,9 @@ async function answerWithAi(
 
   const systemPrompt = [
     "You are Ghost Team System's operations assistant inside Telegram.",
+    `The reference time for this message is ${temporal.nowUtc}. The requester's timezone is ${temporal.timeZone}; their local time is ${temporal.nowForRequester}.`,
+    "Always resolve words such as today, tomorrow, tonight, and weekdays from that reference time. Never ask the user for an exact date merely because they used a relative date.",
+    "If relative and explicit dates conflict, state both resolved dates and ask one concise clarification question.",
     "Answer questions using the provided project data, payrollLedger summaries, sheet previews, and source documents.",
     "For revenue, profit, income, payroll, referrals, and misc income numbers, payrollLedger is authoritative.",
     "Use payrollLedger.byMonth, payrollLedger.thisMonth, payrollLedger.recentDays, and payrollLedger.today for financial answers.",
@@ -1504,6 +1670,13 @@ async function answerWithAi(
   ].join("\n")
   const userContent = JSON.stringify({
     question: text,
+    temporalContext: {
+      referenceTimeUtc: temporal.nowUtc,
+      requesterTimeZone: temporal.timeZone,
+      requesterLocalTime: temporal.nowForRequester,
+      requesterLocalDate: temporal.dateForRequester,
+      teamTimeZone: TEAM_TIME_ZONE,
+    },
     scope: {
       label: context.scopeLabel || "tracked projects",
       scoped: Boolean(context.hasScope),

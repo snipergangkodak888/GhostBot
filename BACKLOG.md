@@ -264,62 +264,134 @@ targetChatTitle?: string             // display label
 
 ---
 
-### 10. Treasury expense logging (outflows from SYSTEM_TREASURY)
+### 10. Treasury expense ledger and live USDC balance
 
-**Problem:** Treasury accounts (`SYSTEM_TREASURY` in `payrollAccounts`) receive profit-share **inflows** via the daily ledger, but there is no first-class way to log **outflows** when money leaves treasury (tools, ads, infra, payouts, etc.). Sheet expense tabs are generic and not tied to treasury balance.
+**Problem:** Treasury allocations are already recorded through payroll. What is missing is a simple ledger of USDC spent from treasury and a way to see the treasury wallet's current on-chain USDC balance.
 
-**Desired behavior:**
+Treasury inflows must not be duplicated in this feature. Payroll remains the source of truth for treasury allocations, the treasury expense ledger records labeled USDC expenses, and Solana RPC is the source of truth for the current USDC balance and transaction verification.
 
-- Log an expense: date, amount, payee/vendor, category, notes, optional project link.
-- See **treasury balance**: inflows (ledger distributions to treasury) − outflows (expenses).
-- View expense history in admin + dashboard + bot.
+The current balance must not be calculated as payroll allocations minus expenses because starting funds, deposits, and unrecorded transfers can make that calculation inaccurate.
 
-**Data model (new collection `treasuryExpenses` or `treasuryTransactions`):**
+**Data model (new standalone collection `treasuryExpenses`):**
 
 ```ts
 {
-  type: "expense",                    // future: "adjustment"
   treasuryAccountId: string,          // FK to payrollAccounts SYSTEM_TREASURY
-  amount: number,                     // positive number = money out
+  wallet: string,                     // treasury wallet when the expense was recorded
   date: "YYYY-MM-DD",
-  category: string,                   // e.g. Ads, Software, Payout, Ops
-  vendor: string,
-  notes: string,
-  projectId?: string | null,
+  label: string,                      // e.g. "Volume bot" or "Server renewal"
+  amountUsdc: number,
+  transactionSignature?: string | null,
+  transactionUrl?: string | null,
+  verificationStatus: "verified" | "manual",
   createdFrom: "bot" | "admin" | "app",
   createdByTelegramId?: number,
-  createdAt, updatedAt
+  createdAt: Date,
+  updatedAt: Date
 }
 ```
 
-**Balance helper (`lib/treasury-ledger.ts`):**
+Store USDC values with six-decimal precision and use integer base units internally where calculations require exact arithmetic. Enforce transaction-signature uniqueness so a transaction cannot be imported twice.
 
-```ts
-treasuryInflows = sum(ledgerTransactions where accountType=SYSTEM_TREASURY and source in profit-share types)
-treasuryOutflows = sum(treasuryExpenses.amount)
-balance = inflows - outflows
+**Treasury service:**
+
+- Find the configured `SYSTEM_TREASURY` account and owner wallet.
+- Fetch and sum that wallet's token-account balances for the configured USDC mint through `SOLANA_RPC_URL`.
+- Accept a Solscan transaction URL or raw Solana transaction signature.
+- Verify through RPC that the configured treasury wallet sent the configured USDC mint.
+- Extract the transaction date, net USDC outflow, signature, and Solscan URL.
+- Reject SOL transfers, other tokens, duplicate signatures, swaps, and transactions that cannot be confidently interpreted as a straightforward outbound USDC transfer.
+- Create and list expenses, grouped by day with daily USDC totals.
+- Keep expense history available if RPC is unavailable; show the live balance as temporarily unavailable rather than zero.
+
+**Expense entry:**
+
+- **Verified import:** User submits a Solscan transaction URL or signature. RPC prefills the date and USDC amount; the user supplies only a short label.
+- **Manual entry:** User supplies a date, USDC amount, and label. A signature may be attached for reference, but the record remains `manual` unless RPC verification succeeds.
+- USDC is fixed for this feature. There is no asset or currency selector, and SOL network fees are not treasury expenses.
+
+**Bot commands:**
+
+| Command | Behavior |
+|---------|----------|
+| `/treasury` | Show live USDC balance, today's logged expense total, and recent expenses |
+| `/treasury expenses` | Show recent expenses grouped by day |
+| `/treasury expenses today` | Show today's expenses and total |
+| `/treasury expenses YYYY-MM-DD` | Show expenses for a specific day |
+| `/treasury expense` | Start a guided manual-entry or transaction-import flow |
+
+The guided import flow accepts either a Solscan URL or raw signature, previews the verified USDC transfer, asks for a label, and requires confirmation before saving.
+
+**Chat gating:**
+
+- Gate every treasury command, callback, and in-progress expense flow to an explicit allowlist of Telegram chat IDs.
+- Use the existing `opsHostedGroups` records to identify active group chat IDs.
+- Keep the treasury allowlist separate from general bot/team access so other bot commands continue to work normally in other chats.
+- Return a short "Treasury commands are not enabled in this chat" response when `/treasury` is used elsewhere; do not reveal the balance or expense data.
+- Decide separately whether authorized direct-message chat IDs are permitted. Do not assume that general bot access grants treasury access.
+
+**Dashboard and admin:**
+
+Add a Treasury panel with:
+
+- Live USDC balance, clearly labeled as on-chain.
+- Today's and this month's logged USDC expense totals.
+- Expense history grouped by date.
+- Manual-entry and transaction-import actions.
+- Date, label, USDC amount, verification status, and Solscan link on each row.
+- Label editing and authorized deletion. Verified on-chain facts must not be editable.
+
+**API:**
+
+- Fetch the live USDC balance and expense summary.
+- List expenses by date.
+- Create a manual expense.
+- Preview and verify a submitted transaction.
+- Confirm and save a verified import.
+- Edit an expense label.
+- Delete an expense with appropriate authorization.
+
+Do not store treasury expenses in `ledgerTransactions`. Resaving a payroll day currently rebuilds that date's payroll transactions, so the expense ledger must remain isolated and payroll behavior must remain unchanged.
+
+**Configuration:**
+
+```text
+SOLANA_RPC_URL=
+USDC_MINT_ADDRESS=
+TREASURY_ALLOWED_TELEGRAM_CHAT_IDS=
 ```
 
-**Surfaces:**
+The treasury owner wallet continues to come from the existing `SYSTEM_TREASURY` payroll account. If the account, wallet, RPC endpoint, USDC mint, or allowed chat configuration is missing, return a clear setup message rather than a zero balance or unrestricted access.
 
-| Surface | UX |
-|---------|-----|
-| Bot | `/treasury` list balance + recent; `/treasury expense <amount> <vendor> \| category \| notes` or guided form |
-| Admin payroll page | "Treasury" panel: balance card + expense log + add expense |
-| Dashboard payroll | Same (read/add for team) |
-| Daily cron report | Optional line: `Treasury balance: $X (after $Y expenses today)` |
+**Authorization and audit rules:**
 
-**Integration options (pick one for v1):**
+- Only authorized team members in an allowed chat can create or import expenses.
+- Bot-created records store the Telegram user ID.
+- Imported transaction facts cannot be changed after verification; only the label may be edited.
+- Duplicate transaction signatures are rejected.
+- Deleting an expense removes only the internal ledger record and never affects the on-chain transaction.
 
-- **Standalone** — new collection only; fastest to ship.
-- **Ledger-linked** — also write a `ledgerTransactions` row with `source: "treasury_expense"` (keeps one money trail; more migration work later).
+**Out of scope for v1:**
+
+- Duplicating treasury inflows from payroll.
+- Calculating wallet balance from internal records.
+- Automatically syncing complete wallet history.
+- Tracking SOL or tokens other than the configured USDC mint.
+- Parsing swaps, routed transfers, or complex DeFi transactions.
+- Payroll-to-wallet reconciliation.
+- Vendor, category, notes, project, or currency fields.
+- Counting generic project expense-sheet rows as treasury expenses.
 
 **Acceptance criteria:**
 
-- Admin can log a $500 ads expense against treasury and see balance decrease.
-- Bot command logs expense and confirms new balance.
-- Expenses appear in admin list filterable by date/category.
-- Does not double-count sheet expense rows unless explicitly linked (v2).
+- `/treasury` shows the live USDC balance for the configured treasury wallet only in allowed chats.
+- Treasury data is not disclosed and treasury actions cannot continue through commands or callbacks in other chats.
+- An authorized user can record a manual expense using a USDC amount and label.
+- A straightforward outbound USDC transfer can be imported from a Solscan URL or signature and verified through RPC.
+- Other token mints and duplicate signatures are rejected.
+- Expenses are displayed by day with daily USDC totals in the bot and Treasury panel.
+- Payroll calculations and storage remain unchanged, and resaving payroll cannot delete treasury expenses.
+- RPC failures do not prevent access to previously recorded expense history.
 
 ---
 

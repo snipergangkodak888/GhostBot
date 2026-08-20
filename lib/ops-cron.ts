@@ -2,8 +2,10 @@ import { getDb } from "@/lib/db"
 import { calculateSheetFinancials } from "@/lib/ops-sheets"
 import { getTelegramBotToken, sendTelegramText } from "@/lib/telegram-bot"
 import { formatTeamDateTime, nextRecurringDueAt, TEAM_TIME_ZONE } from "@/lib/team-timezone"
+import { getSubscribedChats } from "@/lib/chat-subscriptions"
+import { formatLaunchDaySchedule, getLaunchesForDay, launchDateKey, LAUNCH_TIME_ZONE } from "@/lib/launch-calendar"
 
-const EST_TIME_ZONE = "America/New_York"
+const EST_TIME_ZONE = LAUNCH_TIME_ZONE
 
 type CronRecipient = {
   chatId: number | string
@@ -30,24 +32,6 @@ function estDateLabel(date = new Date()) {
     month: "long",
     day: "numeric",
   }).format(date)
-}
-
-function estTimeLabel(date: string | Date) {
-  const value = new Date(date)
-  if (Number.isNaN(value.getTime())) return "No date"
-  return new Intl.DateTimeFormat("en-US", {
-    timeZone: EST_TIME_ZONE,
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(value)
-}
-
-function tomorrowEstKey() {
-  const next = new Date()
-  next.setUTCDate(next.getUTCDate() + 1)
-  return estDateKey(next)
 }
 
 function money(value: number) {
@@ -191,44 +175,54 @@ async function processDueReminders(token: string, now: Date) {
   return { due: due.length, sent, failed, skipped }
 }
 
-async function processCalendarReminders(token: string) {
-  const db = await getDb()
-  const projects = await db.collection("opsProjects").find({}).toArray()
-  const today = estDateKey()
-  const tomorrow = tomorrowEstKey()
-  const recipients = await getRecipients()
-  let events = 0
+function hourInTimeZone(now: Date, timeZone: string) {
+  return Number(new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "2-digit",
+    hourCycle: "h23",
+  }).format(now))
+}
+
+async function processLaunchMorningDigest(token: string, now: Date) {
+  const configuredHour = Number(process.env.LAUNCH_DIGEST_HOUR_ET || 8)
+  const digestHour = Number.isInteger(configuredHour) && configuredHour >= 0 && configuredHour <= 23 ? configuredHour : 8
+  if (hourInTimeZone(now, EST_TIME_ZONE) !== digestHour) {
+    return { events: 0, recipients: 0, sent: 0, failed: 0, skipped: 0, waiting: true, hourEt: digestHour }
+  }
+
+  const today = launchDateKey(now)
+  const recipients = await getSubscribedChats("launches")
+  const launches = await getLaunchesForDay(now)
+  const text = await formatLaunchDaySchedule(now, { morning: true })
   let sent = 0
   let failed = 0
   let skipped = 0
 
-  for (const project of projects) {
-    if (project.status === "inactive" || !project.launchDate) continue
-    const launchKey = estDateKey(new Date(project.launchDate))
-    const timing = launchKey === today ? "today" : launchKey === tomorrow ? "tomorrow" : ""
-    if (!timing) continue
-
-    const key = `calendar:${project._id}:${launchKey}:${timing}`
-    if (!(await claimDelivery(key, "calendar"))) {
+  for (const recipient of recipients) {
+    const key = `launch-digest:${recipient.chatId}:${today}`
+    if (!(await claimDelivery(key, "launch-digest"))) {
       skipped += 1
       continue
     }
-
-    events += 1
-    const text = [
-      timing === "today" ? "📅 <b>Launch Today</b>" : "📅 <b>Launch Tomorrow</b>",
-      "",
-      `<b>${escapeHtml(project.name || "Project")}</b>`,
-      project.owner ? `Owner: ${escapeHtml(project.owner)}` : "",
-      `Date: ${escapeHtml(estTimeLabel(project.launchDate))} EST`,
-      project.notes ? `Notes: ${escapeHtml(project.notes)}` : "",
-    ].filter(Boolean).join("\n")
-    const result = await sendToRecipients(token, recipients, text)
-    sent += result.sent
-    failed += result.failed
+    const ok = await sendTelegramText(token, recipient.chatId, text)
+    if (ok) sent += 1
+    else failed += 1
   }
 
-  return { events, sent, failed, skipped }
+  return { events: launches.length, recipients: recipients.length, sent, failed, skipped, waiting: false, hourEt: digestHour }
+}
+
+export async function runLaunchScheduleCron(now = new Date()) {
+  const token = await getTelegramBotToken()
+  if (!token) return { ok: false, error: "Telegram bot token is not configured" }
+  const calendar = await processLaunchMorningDigest(token, now)
+  return {
+    ok: true,
+    timezone: EST_TIME_ZONE,
+    estDate: estDateKey(now),
+    calendar,
+    runAt: now.toISOString(),
+  }
 }
 
 async function processDailyPerformance(token: string, now: Date) {
@@ -281,7 +275,7 @@ export async function runOpsSuperCron() {
   }
 
   const reminders = await processDueReminders(token, startedAt)
-  const calendar = await processCalendarReminders(token)
+  const calendar = await processLaunchMorningDigest(token, startedAt)
   const dailyPerformance = await processDailyPerformance(token, startedAt)
   const finishedAt = new Date()
   const result = {
