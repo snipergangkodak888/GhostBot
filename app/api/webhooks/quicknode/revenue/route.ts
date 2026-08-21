@@ -8,6 +8,18 @@ import { notifyFeeInboxReceipt } from "@/lib/revenue-telegram"
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
+const MAX_REJECTED_SAMPLE_BYTES = 200_000
+
+function rejectedPayloadSample(payload: unknown, body: string, rejected: number) {
+  if (!rejected) return null
+  if (Buffer.byteLength(body, "utf8") <= MAX_REJECTED_SAMPLE_BYTES) return payload
+  return {
+    truncated: true,
+    originalBytes: Buffer.byteLength(body, "utf8"),
+    rawPrefix: body.slice(0, MAX_REJECTED_SAMPLE_BYTES),
+  }
+}
+
 export async function POST(req: NextRequest) {
   const body = await req.text()
   const secret = process.env.QUICKNODE_WEBHOOK_SECRET || ""
@@ -57,6 +69,7 @@ export async function POST(req: NextRequest) {
     inserted,
     duplicates,
     rejected: normalized.rejected,
+    rejectedPayloadSample: rejectedPayloadSample(payload, body, normalized.rejected),
     savedIds,
     verified: verification.ok,
     metadata: payload?.metadata || null,

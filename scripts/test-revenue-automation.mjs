@@ -18,7 +18,11 @@ function loadTypeScriptModule(path) {
   return module.exports
 }
 
-process.env.REVENUE_EVM_WALLET = "0xwallet"
+const evmWallet = "0x00000000000000000000000000000000000000aa"
+const evmSender = "0x00000000000000000000000000000000000000bb"
+const solanaWallet = "FPTgwwoMC4Qdc3DvDdz8PaNovn6hkQAdPH2nGRfsxiHh"
+process.env.REVENUE_EVM_WALLET = evmWallet
+process.env.REVENUE_SOLANA_WALLET = solanaWallet
 const parser = loadTypeScriptModule("lib/revenue-parser.ts")
 const matching = loadTypeScriptModule("lib/revenue-matching.ts")
 const quicknode = loadTypeScriptModule("lib/quicknode-revenue.ts")
@@ -46,7 +50,7 @@ const receipts = [300, 100, 200].map((amount, index) => ({ _id: `r${index}`, dir
 const match = matching.findReceiptCombination(receipts, { chain: "base", asset: "USDC", expectedAmount: 500, occurredAt: now })
 assert.deepEqual(Array.from(match.receiptIds).sort(), ["r0", "r2"])
 
-const body = JSON.stringify({ data: [{ transactionHash: "0xabc", from: "0xsender", to: "0xwallet", rawAmount: "500000000", decimals: 6, asset: "USDC", eventIndex: 0 }] })
+const body = JSON.stringify({ data: [{ transactionHash: "0xabc", from: evmSender, to: evmWallet, rawAmount: "500000000", decimals: 6, asset: "USDC", eventIndex: 0 }] })
 const secret = "test-secret"
 const nonce = "nonce"
 const timestamp = String(Math.floor(Date.now() / 1000))
@@ -56,5 +60,114 @@ assert.equal(quicknode.verifyQuickNodeSignature({ body, secret, nonce, timestamp
 const normalized = quicknode.normalizeQuickNodeRevenuePayload(JSON.parse(body), "base")
 assert.equal(normalized.receipts.length, 1)
 assert.equal(normalized.receipts[0].amount, 500)
+
+// Literal minimized form of the live QuickNode evmWalletFilter transaction payload.
+const evmNative = quicknode.normalizeQuickNodeRevenuePayload({
+  matchingReceipts: null,
+  matchingTransactions: [{
+    to: evmWallet,
+    from: evmSender,
+    hash: "0xnative",
+    value: "0x0de0b6b3a7640000",
+    blockNumber: "0x10",
+    blockTimestamp: "0x6a879a33",
+    transactionIndex: "0x1",
+  }],
+}, "ethereum")
+assert.equal(evmNative.receipts.length, 1)
+assert.equal(evmNative.rejected, 0)
+assert.equal(evmNative.receipts[0].asset, "ETH")
+assert.equal(evmNative.receipts[0].amount, 1)
+assert.equal(evmNative.receipts[0].direction, "incoming")
+assert.equal(evmNative.receipts[0].counterparty, evmSender)
+assert.equal(evmNative.receipts[0].blockTime, "2026-08-21T00:22:11.000Z")
+
+// Literal minimized form of the live QuickNode evmWalletFilter receipt payload.
+const addressTopic = (address) => `0x${address.slice(2).padStart(64, "0")}`
+const erc20Topic = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+const evmUsdc = quicknode.normalizeQuickNodeRevenuePayload({
+  matchingTransactions: null,
+  matchingReceipts: [{
+    from: evmSender,
+    to: "0x00000000000000000000000000000000000000cc",
+    status: "0x1",
+    transactionHash: "0xusdc",
+    blockNumber: "0x11",
+    logs: [{
+      address: "0x833589fCD6EDb6E08f4c7C32D4f71b54bdA02913",
+      topics: [erc20Topic, addressTopic(evmSender), addressTopic(evmWallet)],
+      data: "0x000000000000000000000000000000000000000000000000000000001dcd6500",
+      logIndex: "0x3",
+      blockNumber: "0x11",
+      blockTimestamp: "0x6a879a33",
+      transactionHash: "0xusdc",
+    }],
+  }],
+}, "base")
+assert.equal(evmUsdc.receipts.length, 1)
+assert.equal(evmUsdc.rejected, 0)
+assert.equal(evmUsdc.receipts[0].asset, "USDC")
+assert.equal(evmUsdc.receipts[0].amount, 500)
+assert.equal(evmUsdc.receipts[0].tokenAddress, "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913")
+
+const unknownToken = quicknode.normalizeQuickNodeRevenuePayload({
+  matchingTransactions: null,
+  matchingReceipts: [{
+    status: "0x1",
+    transactionHash: "0xspam",
+    logs: [{
+      address: "0x00000000000000000000000000000000000000dd",
+      topics: [erc20Topic, addressTopic(evmSender), addressTopic(evmWallet)],
+      data: "0x1",
+      logIndex: "0x4",
+      transactionHash: "0xspam",
+    }],
+  }],
+}, "ethereum")
+assert.equal(unknownToken.receipts.length, 0)
+assert.equal(unknownToken.rejected, 1)
+
+// Literal minimized form of the live QuickNode solanaWalletFilter block payload.
+const solana = quicknode.normalizeQuickNodeRevenuePayload([{
+  block: { slot: 440576613, blockTime: 1787272012 },
+  transactions: [{
+    wallets: [solanaWallet],
+    raw: {
+      meta: {
+        err: null,
+        fee: 5000,
+        preBalances: [1_000_000_000, 0],
+        postBalances: [999_995_000, 2_000_000_000],
+        preTokenBalances: [{
+          mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          owner: solanaWallet,
+          accountIndex: 1,
+          uiTokenAmount: { amount: "0", decimals: 6, uiAmount: 0, uiAmountString: "0" },
+        }],
+        postTokenBalances: [{
+          mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          owner: solanaWallet,
+          accountIndex: 1,
+          uiTokenAmount: { amount: "500000000", decimals: 6, uiAmount: 500, uiAmountString: "500" },
+        }],
+      },
+      transaction: {
+        message: { accountKeys: [{ pubkey: evmSender }, { pubkey: solanaWallet }] },
+        signatures: ["sol-signature"],
+      },
+    },
+  }],
+}], "solana")
+assert.equal(solana.receipts.length, 2)
+assert.equal(solana.rejected, 0)
+assert.deepEqual(Array.from(solana.receipts.map((receipt) => [receipt.asset, receipt.amount])), [["SOL", 2], ["USDC", 500]])
+assert.ok(solana.receipts.every((receipt) => receipt.direction === "incoming"))
+
+const failedSolana = quicknode.normalizeQuickNodeRevenuePayload([{
+  block: { slot: 1, blockTime: 1787272012 },
+  transactions: [{ wallets: [solanaWallet], raw: { meta: { err: { InstructionError: [0, "Custom"] } }, transaction: { signatures: ["failed"] } } }],
+}], "solana")
+assert.equal(failedSolana.receipts.length, 0)
+assert.equal(failedSolana.rejected, 1)
 
 console.log("Revenue automation tests passed")
