@@ -28,6 +28,90 @@
     "expectIncludes": ["Ghost Team bot is ready"]
   },
   {
+    "name": "starts the launch capital calculator",
+    "text": "/launchcalc",
+    "resetBefore": true,
+    "expectIncludes": ["Launch capital calculator", "Choose the blockchain"]
+  },
+  {
+    "name": "selects BNB Chain for a launch quote",
+    "callbackData": "launch:chain:bsc",
+    "expectIncludes": ["BNB Chain", "launchpad or DEX"]
+  },
+  {
+    "name": "selects Flap for a launch quote",
+    "callbackData": "launch:venue:flap",
+    "expectIncludes": ["Flap", "calculator solve for"]
+  },
+  {
+    "name": "selects supply control as the launch target",
+    "callbackData": "launch:metric:supply:flap",
+    "expectIncludes": ["desired total supply control", "67.37%"]
+  },
+  {
+    "name": "calculates a forwardable Flap launch quote",
+    "text": "67.37%",
+    "expectIncludes": ["Capital requirement", "16.55 BNB total", "9.55 BNB for supply accumulation", "67.37% supply control", "aged wallets + Husher funding", "initial MM trading liquidity"],
+    "expectExcludes": ["Flap launch estimate", "Estimated using a live", "Bundle + migration snipe"]
+  },
+  {
+    "name": "starts a Pump.fun launch quote",
+    "text": "/launchcalc",
+    "resetBefore": true,
+    "expectIncludes": ["Choose the blockchain"]
+  },
+  {
+    "name": "selects Solana for a launch quote",
+    "callbackData": "launch:chain:sol",
+    "expectIncludes": ["Solana", "launchpad or DEX"]
+  },
+  {
+    "name": "selects Pump.fun for a launch quote",
+    "callbackData": "launch:venue:pumpfun",
+    "expectIncludes": ["Pump.fun", "calculator solve for"]
+  },
+  {
+    "name": "selects Pump.fun supply control",
+    "callbackData": "launch:metric:supply:pumpfun",
+    "expectIncludes": ["desired total supply control"]
+  },
+  {
+    "name": "calculates the Pump.fun curve and migration quote",
+    "text": "87.26%",
+    "expectIncludes": ["197.6 SOL total", "86.93 SOL to capture the full Pump.fun bonding curve", "53.17 SOL migration snipe", "17.5 SOL for initial/pass-through"]
+  },
+  {
+    "name": "starts a Robinhood Chain launch quote",
+    "text": "/launchcalc",
+    "resetBefore": true,
+    "expectIncludes": ["Choose the blockchain"]
+  },
+  {
+    "name": "selects Robinhood Chain for a launch quote",
+    "callbackData": "launch:chain:rh",
+    "expectIncludes": ["Robinhood Chain", "launchpad or DEX"]
+  },
+  {
+    "name": "selects Uniswap V2 on Robinhood Chain",
+    "callbackData": "launch:venue:uni-rh-v2",
+    "expectIncludes": ["Uniswap V2", "calculator solve for"]
+  },
+  {
+    "name": "selects Robinhood supply control and requests LP",
+    "callbackData": "launch:metric:supply:uni-rh-v2",
+    "expectIncludes": ["What initial LP", "suggested default"]
+  },
+  {
+    "name": "uses the default Robinhood LP",
+    "callbackData": "launch:lp:default:uni-rh-v2",
+    "expectIncludes": ["desired total supply control"]
+  },
+  {
+    "name": "calculates a forwardable Robinhood launch quote",
+    "text": "93%",
+    "expectIncludes": ["Assuming a 0.5 ETH initial LP", "11.14 ETH total", "0.5 ETH for initial LP", "6.64 ETH for supply accumulation", "1.5 ETH for aged wallets"]
+  },
+  {
     "name": "shows timezone setup",
     "text": "/timezone",
     "resetBefore": true,

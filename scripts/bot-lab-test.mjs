@@ -38,10 +38,12 @@ try {
       : { text: scenario.text })
     const text = responseText(data)
     const missing = (scenario.expectIncludes || []).filter((expected) => !text.includes(expected))
-    if (missing.length) {
+    const unexpected = (scenario.expectExcludes || []).filter((expected) => text.includes(expected))
+    if (missing.length || unexpected.length) {
       failed++
       console.log(`FAIL  ${scenario.name}`)
-      console.log(`      Missing: ${missing.join(", ")}`)
+      if (missing.length) console.log(`      Missing: ${missing.join(", ")}`)
+      if (unexpected.length) console.log(`      Unexpected: ${unexpected.join(", ")}`)
       console.log(`      Response: ${text.replace(/\n/g, " ").slice(0, 240)}`)
     } else {
       console.log(`PASS  ${scenario.name}`)

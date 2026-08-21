@@ -16,6 +16,8 @@ import { projectFeeConfig } from "@/lib/revenue-projects"
 import { acceptReceiptMatch, assignFeeProject, confirmFeeExpectation, createForwardedFeeEvent, getRevenueReceipt, listRevenueDay, setFeeQuoteAsset, setFeeType, updateReceiptClassification } from "@/lib/revenue-service"
 import { feeProjectButtons, formatFeeExpectation, isFeeInboxChat } from "@/lib/revenue-telegram"
 import type { FeeType } from "@/lib/revenue-types"
+import { LAUNCH_CHAINS, launchPad, padsForChain, type LaunchChainId } from "@/lib/launch-math"
+import { calculateLaunchQuote, defaultMmLiquidity, formatLaunchQuote, getLaunchAssetPrice, parseLaunchNumber, type LaunchTargetMetric } from "@/lib/launch-calculator"
 
 type InlineButton = { text: string; callback_data?: string; url?: string; web_app?: { url: string } }
 
@@ -28,8 +30,9 @@ function replyKeyboard() {
     keyboard: [
       [{ text: "🏠 Home" }, { text: "📁 Projects" }],
       [{ text: "📈 Profit" }, { text: "💸 Payroll" }],
-      [{ text: "📅 Calendar" }, { text: "🔔 Reminders" }],
-      [{ text: "📝 Notes" }, { text: "🧠 AI" }],
+      [{ text: "📅 Calendar" }, { text: "🚀 Launch Calc" }],
+      [{ text: "🔔 Reminders" }, { text: "📝 Notes" }],
+      [{ text: "🧠 AI" }],
     ],
     resize_keyboard: true,
     is_persistent: true,
@@ -98,6 +101,7 @@ async function setBotCommands(token: string) {
       { command: "profit", description: "Show today profit" },
       { command: "projects", description: "Show active projects" },
       { command: "calendar", description: "Show launches and reminders" },
+      { command: "launchcalc", description: "Build a client launch-capital quote" },
       { command: "reminders", description: "Manage reminders" },
       { command: "payroll", description: "Manage payroll" },
       { command: "fees", description: "Show today’s revenue inbox" },
@@ -133,6 +137,7 @@ function helpMessage() {
     "📈 /profit",
     "📁 /projects",
     "📅 /calendar",
+    "🚀 /launchcalc - build a launch-capital quote",
     "🔔 /reminders",
     "💸 /payroll",
     "📊 /report [today|yesterday|YYYY-MM-DD]",
@@ -263,6 +268,7 @@ const GROUP_MENU_TEXTS = new Set([
   "💸 Payroll",
   "📅 Calendar",
   "🟠 Calendar",
+  "🚀 Launch Calc",
   "🔔 Reminders",
   "📝 Notes",
   "🧠 AI",
@@ -416,6 +422,76 @@ function estDateKey() {
   }).formatToParts(new Date())
   const value = (type: string) => parts.find((part) => part.type === type)?.value || ""
   return `${value("year")}-${value("month")}-${value("day")}`
+}
+
+function launchTargetPrompt(metric: LaunchTargetMetric, venueName: string) {
+  return metric === "supply"
+    ? `🎯 Enter the desired total supply control for ${venueName}.\n\nExample: 67.37%\n\nSend /cancel to stop.`
+    : `🎯 Enter the desired launch market cap for ${venueName} in USD.\n\nExamples: $81.4K or 81400\n\nSend /cancel to stop.`
+}
+
+async function sendLaunchCalculatorStart(token: string, chatId: number | string, telegramId: number) {
+  await clearState(telegramId)
+  return sendMessage(token, chatId, "🚀 Launch capital calculator\n\nChoose the blockchain for this launch:", [
+    ...LAUNCH_CHAINS.map((chain) => [{ text: chain.name, callback_data: `launch:chain:${chain.id}` }]),
+    [{ text: "⬅️ Back", callback_data: "main:menu" }],
+  ])
+}
+
+async function sendLaunchVenuePicker(token: string, chatId: number | string, chainId: LaunchChainId) {
+  const chain = LAUNCH_CHAINS.find((item) => item.id === chainId)
+  const pads = padsForChain(chainId)
+  if (!chain || !pads.length) return sendMessage(token, chatId, "No launch venues are configured for that chain yet.")
+  return sendMessage(token, chatId, `Choose the ${chain.name} launchpad or DEX:`, [
+    ...pads.map((pad) => [{ text: pad.name, callback_data: `launch:venue:${pad.id}` }]),
+    [{ text: "⬅️ Chains", callback_data: "launch:start" }],
+  ])
+}
+
+async function sendLaunchMetricPicker(token: string, chatId: number | string, venueId: string) {
+  const pad = launchPad(venueId)
+  if (!pad) return sendMessage(token, chatId, "That launch venue is not supported.")
+  return sendMessage(token, chatId, `${pad.name}\n\nWhat should the calculator solve for?`, [
+    [{ text: "🎯 Desired supply control", callback_data: `launch:metric:supply:${pad.id}` }],
+    [{ text: "💵 Desired launch MC", callback_data: `launch:metric:market_cap:${pad.id}` }],
+    [{ text: "⬅️ Venues", callback_data: `launch:chain:${pad.chainId}` }],
+  ])
+}
+
+async function sendCalculatedLaunchQuote(
+  token: string,
+  chatId: number | string,
+  telegramId: number,
+  state: Record<string, any>,
+  overrides: { target?: number; mmLiquidity?: number } = {},
+) {
+  const pad = launchPad(String(state.launchVenueId || ""))
+  if (!pad) throw new Error("That launch venue is not supported.")
+  const metric = String(state.launchMetric || "") as LaunchTargetMetric
+  if (!(["supply", "market_cap"] as string[]).includes(metric)) throw new Error("Choose a target type first.")
+  const target = overrides.target ?? Number(state.launchTarget)
+  const mmLiquidity = overrides.mmLiquidity ?? (state.launchMmLiquidity == null ? undefined : Number(state.launchMmLiquidity))
+  const valuation = await getLaunchAssetPrice(pad, { testFixtureOnly: isTelegramCaptureActive() })
+  const quote = calculateLaunchQuote({
+    venueId: pad.id,
+    metric,
+    target,
+    assetPriceUsd: valuation.price,
+    ...(pad.type === "amm" ? { initialLp: Number(state.launchInitialLp) } : {}),
+    ...(mmLiquidity == null ? {} : { mmLiquidity }),
+  })
+  await setState(telegramId, {
+    action: "launch_calc_result",
+    launchVenueId: pad.id,
+    launchMetric: metric,
+    launchTarget: target,
+    ...(pad.type === "amm" ? { launchInitialLp: quote.initialLp } : {}),
+    launchMmLiquidity: quote.lines.find((line) => line.key === "mm")?.amount ?? defaultMmLiquidity(pad.id),
+  })
+  return sendMessage(token, chatId, formatLaunchQuote(quote), [
+    [{ text: "🎯 Change target", callback_data: "launch:adjust:target" }, { text: "💧 Change MM reserve", callback_data: "launch:adjust:mm" }],
+    [{ text: "🆕 New launch quote", callback_data: "launch:start" }],
+  ])
 }
 
 async function sendProjects(token: string, chatId: number | string) {
@@ -790,6 +866,52 @@ async function processState(token: string, chatId: number | string, telegramId: 
     return true
   }
 
+  if (state.action === "launch_calc_lp") {
+    const initialLp = parseLaunchNumber(text)
+    if (!(Number(initialLp) > 0)) {
+      await sendMessage(token, chatId, "Enter an initial LP greater than zero, such as 0.5. Send /cancel to stop.")
+      return true
+    }
+    const pad = launchPad(String(state.launchVenueId || ""))
+    if (!pad) {
+      await clearState(telegramId)
+      await sendMessage(token, chatId, "That launch venue is no longer available.")
+      return true
+    }
+    await setState(telegramId, { action: "launch_calc_value", launchInitialLp: initialLp })
+    await sendMessage(token, chatId, launchTargetPrompt(state.launchMetric as LaunchTargetMetric, pad.name))
+    return true
+  }
+
+  if (state.action === "launch_calc_value") {
+    const target = parseLaunchNumber(text)
+    if (!(Number(target) > 0)) {
+      const metric = state.launchMetric as LaunchTargetMetric
+      await sendMessage(token, chatId, metric === "supply" ? "Enter a valid percentage, such as 67.37%." : "Enter a valid USD market cap, such as $81.4K.")
+      return true
+    }
+    try {
+      await sendCalculatedLaunchQuote(token, chatId, telegramId, state, { target: Number(target) })
+    } catch (error) {
+      await sendMessage(token, chatId, `⚠️ ${error instanceof Error ? error.message : "I could not calculate that launch."}\n\nTry another target or send /cancel.`)
+    }
+    return true
+  }
+
+  if (state.action === "launch_calc_mm") {
+    const mmLiquidity = parseLaunchNumber(text)
+    if (mmLiquidity == null || mmLiquidity < 0) {
+      await sendMessage(token, chatId, "Enter the MM reserve in the native asset, such as 5 or 30. Send /cancel to stop.")
+      return true
+    }
+    try {
+      await sendCalculatedLaunchQuote(token, chatId, telegramId, state, { mmLiquidity })
+    } catch (error) {
+      await sendMessage(token, chatId, `⚠️ ${error instanceof Error ? error.message : "I could not recalculate that launch."}`)
+    }
+    return true
+  }
+
   if (state.action === "ai") {
     const startedAt = Number(state.startedAt || 0)
     if (startedAt && messageDateMs && messageDateMs <= startedAt) return true
@@ -825,6 +947,46 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   }
 
   if (data === "main:menu") return sendMessage(token, chatId, helpMessage())
+
+  if (area === "launch" && action === "start") return sendLaunchCalculatorStart(token, chatId, telegramId)
+  if (area === "launch" && action === "chain") return sendLaunchVenuePicker(token, chatId, id as LaunchChainId)
+  if (area === "launch" && action === "venue") return sendLaunchMetricPicker(token, chatId, id)
+  if (area === "launch" && action === "metric") {
+    const pad = launchPad(extra)
+    const metric = id as LaunchTargetMetric
+    if (!pad || !(["supply", "market_cap"] as string[]).includes(metric)) return sendLaunchCalculatorStart(token, chatId, telegramId)
+    if (pad.type === "amm") {
+      await setState(telegramId, { action: "launch_calc_lp", launchVenueId: pad.id, launchMetric: metric })
+      return sendMessage(token, chatId, `💧 What initial LP should ${pad.name} use?\n\nThis sets the opening price. Type another amount or use the suggested default.`, [
+        [{ text: `Use ${pad.defaultLp} ${pad.symbol}`, callback_data: `launch:lp:default:${pad.id}` }],
+        [{ text: "⬅️ Target type", callback_data: `launch:venue:${pad.id}` }],
+      ])
+    }
+    await setState(telegramId, { action: "launch_calc_value", launchVenueId: pad.id, launchMetric: metric })
+    return sendMessage(token, chatId, launchTargetPrompt(metric, pad.name))
+  }
+  if (area === "launch" && action === "lp") {
+    const pad = launchPad(extra)
+    const state = await takeState(telegramId)
+    if (!pad || state?.launchVenueId !== pad.id || state?.action !== "launch_calc_lp") return sendLaunchCalculatorStart(token, chatId, telegramId)
+    if (id === "default") {
+      await setState(telegramId, { action: "launch_calc_value", launchInitialLp: pad.defaultLp })
+      return sendMessage(token, chatId, launchTargetPrompt(state.launchMetric as LaunchTargetMetric, pad.name))
+    }
+  }
+  if (area === "launch" && action === "adjust") {
+    const state = await takeState(telegramId)
+    const pad = launchPad(String(state?.launchVenueId || ""))
+    if (!pad || state?.action !== "launch_calc_result") return sendLaunchCalculatorStart(token, chatId, telegramId)
+    if (id === "target") {
+      await setState(telegramId, { action: "launch_calc_value" })
+      return sendMessage(token, chatId, launchTargetPrompt(state.launchMetric as LaunchTargetMetric, pad.name))
+    }
+    if (id === "mm") {
+      await setState(telegramId, { action: "launch_calc_mm" })
+      return sendMessage(token, chatId, `💧 Enter the ${pad.symbol} amount to reserve for initial MM trading.\n\nCurrent reserve: ${state.launchMmLiquidity} ${pad.symbol}\n\nSend /cancel to stop.`)
+    }
+  }
 
   if (area === "fee" && action === "type") {
     const fee = await setFeeType(id, extra as FeeType)
@@ -1046,6 +1208,9 @@ async function routeText(token: string, chatId: number | string, telegramId: num
     return sendMessage(token, chatId, `✅ Your timezone is now ${saved.timeZone} (${teamZoneLabel(saved.timeZone)}).`)
   }
   const aiCommand = aiCommandText(commandText)
+  if (text === "🚀 Launch Calc" || isBotCommand(text, "launchcalc")) {
+    return sendLaunchCalculatorStart(token, chatId, telegramId)
+  }
   if (aiCommand !== null) {
     await clearState(telegramId)
     if (aiCommand) return sendAiResponse(token, chatId, telegramId, aiCommand, message)
