@@ -1,5 +1,6 @@
 import { getDb } from "@/lib/db"
 import { teamDateKey } from "@/lib/team-timezone"
+import type { RevenueReceipt } from "@/lib/revenue-types"
 
 const FEES = "revenueFeeEvents"
 const RECEIPTS = "revenueReceipts"
@@ -10,18 +11,82 @@ function originalUsd(fee: any) {
   return Number(fee.preConsolidationUsd ?? fee.recognizedUsd ?? 0)
 }
 
+export function consolidationPairMatches(left: Pick<RevenueReceipt, "chain" | "asset" | "direction" | "transactionHash" | "amount" | "walletRole">, right: Pick<RevenueReceipt, "chain" | "asset" | "direction" | "transactionHash" | "amount" | "walletRole">) {
+  const revenue = (left.walletRole || "revenue") === "revenue" ? left : right
+  const treasury = left.walletRole === "treasury" ? left : right
+  const tolerance = Math.max(0.000001, Math.max(Number(left.amount || 0), Number(right.amount || 0)) * 0.000000001)
+  return left.chain === "solana"
+    && right.chain === "solana"
+    && left.asset === "USDC"
+    && right.asset === "USDC"
+    && (revenue.walletRole || "revenue") === "revenue"
+    && treasury.walletRole === "treasury"
+    && revenue.direction === "outgoing"
+    && treasury.direction === "incoming"
+    && left.transactionHash === right.transactionHash
+    && Math.abs(Number(left.amount || 0) - Number(right.amount || 0)) <= tolerance
+}
+
+export async function reconcileConsolidationReceipt(receipt: RevenueReceipt) {
+  if (receipt.chain !== "solana" || receipt.asset !== "USDC") return { matched: false as const }
+  const role = receipt.walletRole || "revenue"
+  if (!((role === "treasury" && receipt.direction === "incoming") || (role === "revenue" && receipt.direction === "outgoing"))) return { matched: false as const }
+  const db = await getDb()
+  const partner = await db.collection(RECEIPTS).findOne({
+    chain: "solana",
+    asset: "USDC",
+    transactionHash: receipt.transactionHash,
+    walletRole: role === "treasury" ? "revenue" : "treasury",
+    direction: role === "treasury" ? "outgoing" : "incoming",
+  }) as RevenueReceipt | null
+  if (!partner || !consolidationPairMatches(receipt, partner)) return { matched: false as const }
+  const treasury = role === "treasury" ? receipt : partner
+  const revenue = role === "revenue" ? receipt : partner
+  const date = treasury.date || revenue.date || teamDateKey(0)
+  const now = new Date().toISOString()
+  await Promise.all([
+    db.collection(RECEIPTS).updateOne({ _id: treasury._id }, { $set: { status: "internal", consolidationMatched: true, pairedReceiptId: String(revenue._id || ""), consolidationDate: date, amountUsd: Number(treasury.amount), valuationStatus: "valued", updatedAt: now } }),
+    db.collection(RECEIPTS).updateOne({ _id: revenue._id }, { $set: { status: "internal", consolidationMatched: true, pairedReceiptId: String(treasury._id || ""), consolidationDate: date, updatedAt: now } }),
+  ])
+  return { matched: true as const, date, amount: Number(treasury.amount), treasuryReceiptId: String(treasury._id || ""), revenueReceiptId: String(revenue._id || ""), transactionHash: treasury.transactionHash }
+}
+
+async function detectedTreasuryConsolidation(date: string) {
+  const db = await getDb()
+  const receipts = await db.collection(RECEIPTS).find({
+    date,
+    chain: "solana",
+    walletRole: "treasury",
+    direction: "incoming",
+    asset: "USDC",
+    status: "internal",
+    consolidationMatched: true,
+  }).toArray()
+  return {
+    detectedTreasuryUsdc: round(receipts.reduce((sum: number, receipt: any) => sum + Number(receipt.amount || 0), 0)),
+    detectedTreasuryReceiptIds: receipts.map((receipt: any) => String(receipt._id)),
+    detectedTreasuryTransactions: Array.from(new Set(receipts.map((receipt: any) => String(receipt.transactionHash || "")).filter(Boolean))),
+  }
+}
+
 export async function getConsolidation(date = teamDateKey(0)) {
   const db = await getDb()
-  return db.collection(BATCHES).findOne({ date })
+  const [batch, detected] = await Promise.all([
+    db.collection(BATCHES).findOne({ date }),
+    detectedTreasuryConsolidation(date),
+  ])
+  if (!batch && !detected.detectedTreasuryReceiptIds.length) return null
+  return { date, status: "detected", ...(batch || {}), ...detected }
 }
 
 export async function previewConsolidation(date: string, finalUsdcInput: number) {
   const finalUsdc = round(Number(finalUsdcInput))
   if (!Number.isFinite(finalUsdc) || finalUsdc < 0) throw new Error("Final Solana USDC amount must be zero or greater")
   const db = await getDb()
-  const [allFees, receipts] = await Promise.all([
+  const [allFees, receipts, detected] = await Promise.all([
     db.collection(FEES).find({ date }).toArray(),
     db.collection(RECEIPTS).find({ date, direction: "incoming" }).toArray(),
+    detectedTreasuryConsolidation(date),
   ])
   const fees = allFees.filter((fee: any) => fee.status === "confirmed")
   const unresolvedFees = allFees.filter((fee: any) => !["confirmed", "waived", "ignored"].includes(fee.status))
@@ -55,6 +120,7 @@ export async function previewConsolidation(date: string, finalUsdcInput: number)
     liquidationUsd,
     adjustedLiquidationUsd,
     discrepancyUsd,
+    ...detected,
     pendingValuation: pendingValuation.length,
     unresolvedFees: unresolvedFees.length,
     unclassifiedIncomingReceipts: unclassifiedIncomingReceipts.length,

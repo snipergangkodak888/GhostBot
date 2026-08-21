@@ -2,6 +2,10 @@ export const REVENUE_CHAINS = ["ethereum", "base", "bnb", "robinhood", "solana"]
 
 export type RevenueChain = (typeof REVENUE_CHAINS)[number]
 
+export const REVENUE_WALLET_ROLES = ["revenue", "treasury"] as const
+
+export type RevenueWalletRole = (typeof REVENUE_WALLET_ROLES)[number]
+
 export const FEE_TYPES = ["liquidation", "daily_trading", "launch", "dev_allocation", "fee_collector", "fee_rebate", "other"] as const
 
 export type FeeType = (typeof FEE_TYPES)[number]
@@ -53,6 +57,7 @@ export type RevenueReceipt = {
   eventKey: string
   provider: "quicknode" | "manual"
   chain: RevenueChain
+  walletRole?: RevenueWalletRole
   wallet: string
   direction: "incoming" | "outgoing"
   transactionHash: string
@@ -69,6 +74,9 @@ export type RevenueReceipt = {
   status: RevenueReceiptStatus
   proposedFeeEventId?: string | null
   allocations: RevenueAllocation[]
+  date?: string
+  consolidationMatched?: boolean
+  pairedReceiptId?: string | null
   raw?: unknown
   createdAt: string
   updatedAt: string

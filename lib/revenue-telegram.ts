@@ -83,3 +83,27 @@ export async function notifyFeeInboxReceipt(receipt: RevenueReceipt) {
   }
   return { sent }
 }
+
+export async function notifyFeeInboxTreasuryReceipt(receipt: RevenueReceipt, reconciliation?: { matched?: boolean } | null) {
+  const [token, subscribed] = await Promise.all([getTelegramBotToken(), getSubscribedChats("fees")])
+  const chats = [...subscribed]
+  const configured = String(process.env.FEE_INBOX_CHAT_ID || "").trim()
+  if (configured && !chats.some((chat) => String(chat.chatId) === configured)) chats.push({ chatId: configured, kind: configured.startsWith("-") ? "group" : "direct", label: "Fee Inbox" })
+  if (!token || !chats.length) return { sent: 0 }
+  const text = [
+    "<b>Treasury consolidation received</b>",
+    "",
+    `Amount: <b>${escapeHtml(amount(receipt.amount, receipt.asset))}</b>`,
+    `Chain: <b>${escapeHtml(CHAIN_LABELS[receipt.chain])}</b>`,
+    `Revenue-wallet send matched: <b>${reconciliation?.matched ? "yes" : "waiting"}</b>`,
+    `Transaction: <code>${escapeHtml(receipt.transactionHash.slice(0, 16))}…</code>`,
+    "",
+    "This is an internal arrival, not new client revenue. No funds were moved by the bot.",
+  ].join("\n")
+  let sent = 0
+  for (const chat of chats) {
+    const response = await telegramApi(token, "sendMessage", { chat_id: chat.chatId, text, parse_mode: "HTML" }).catch(() => null)
+    if (response) sent += 1
+  }
+  return { sent }
+}

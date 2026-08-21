@@ -11,9 +11,12 @@ function loadTypeScriptModule(path) {
   const source = fs.readFileSync(path, "utf8")
   const output = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
   const module = { exports: {} }
-  const localRequire = (id) => id === "@/lib/revenue-types"
-    ? { REVENUE_CHAINS: ["ethereum", "base", "bnb", "robinhood", "solana"] }
-    : require(id)
+  const localRequire = (id) => {
+    if (id === "@/lib/revenue-types") return { REVENUE_CHAINS: ["ethereum", "base", "bnb", "robinhood", "solana"], REVENUE_WALLET_ROLES: ["revenue", "treasury"] }
+    if (id === "@/lib/db") return { getDb: async () => { throw new Error("Database access is not used by this unit test") } }
+    if (id === "@/lib/team-timezone") return { teamDateKey: () => "2026-08-20" }
+    return require(id)
+  }
   vm.runInNewContext(`(function (exports, require, module, process, Buffer) { ${output}\n})(module.exports, require, module, process, Buffer)`, { module, require: localRequire, process, Buffer })
   return module.exports
 }
@@ -21,11 +24,14 @@ function loadTypeScriptModule(path) {
 const evmWallet = "0x00000000000000000000000000000000000000aa"
 const evmSender = "0x00000000000000000000000000000000000000bb"
 const solanaWallet = "FPTgwwoMC4Qdc3DvDdz8PaNovn6hkQAdPH2nGRfsxiHh"
+const treasuryWallet = "7u6Wj3VCLYfqW4qDw6jn4sGtNM5uv6CNX7FFiuhJomiA"
 process.env.REVENUE_EVM_WALLET = evmWallet
 process.env.REVENUE_SOLANA_WALLET = solanaWallet
+process.env.REVENUE_SOLANA_TREASURY_WALLET = treasuryWallet
 const parser = loadTypeScriptModule("lib/revenue-parser.ts")
 const matching = loadTypeScriptModule("lib/revenue-matching.ts")
 const quicknode = loadTypeScriptModule("lib/quicknode-revenue.ts")
+const consolidation = loadTypeScriptModule("lib/revenue-consolidation.ts")
 
 const liquidation = parser.parseFeeMessage(`Cashout Summary:\nA total of 212,574 USDC was withdrawn from the MM balance\n200,050 USDC was sent here.\n12,524 USDC was taken for our 5% liquidations fee + privacy swap fee.`)
 assert.equal(liquidation.feeType, "liquidation")
@@ -108,6 +114,7 @@ assert.equal(evmUsdc.receipts.length, 1)
 assert.equal(evmUsdc.rejected, 0)
 assert.equal(evmUsdc.receipts[0].asset, "USDC")
 assert.equal(evmUsdc.receipts[0].amount, 500)
+assert.equal(evmUsdc.receipts[0].amountUsd, 500)
 assert.equal(evmUsdc.receipts[0].tokenAddress, "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913")
 
 const unknownToken = quicknode.normalizeQuickNodeRevenuePayload({
@@ -162,6 +169,7 @@ assert.equal(solana.receipts.length, 2)
 assert.equal(solana.rejected, 0)
 assert.deepEqual(Array.from(solana.receipts.map((receipt) => [receipt.asset, receipt.amount])), [["SOL", 2], ["USDC", 500]])
 assert.ok(solana.receipts.every((receipt) => receipt.direction === "incoming"))
+assert.equal(solana.receipts.find((receipt) => receipt.asset === "USDC").amountUsd, 500)
 
 const failedSolana = quicknode.normalizeQuickNodeRevenuePayload([{
   block: { slot: 1, blockTime: 1787272012 },
@@ -169,5 +177,58 @@ const failedSolana = quicknode.normalizeQuickNodeRevenuePayload([{
 }], "solana")
 assert.equal(failedSolana.receipts.length, 0)
 assert.equal(failedSolana.rejected, 1)
+
+const treasuryIncoming = quicknode.normalizeQuickNodeRevenuePayload([{
+  block: { slot: 440576614, blockTime: 1787272013 },
+  transactions: [{
+    wallets: [treasuryWallet],
+    raw: {
+      meta: {
+        err: null,
+        preBalances: [1_000_000, 1_000_000],
+        postBalances: [995_000, 1_000_000],
+        preTokenBalances: [{ mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", owner: treasuryWallet, accountIndex: 1, uiTokenAmount: { amount: "0", decimals: 6 } }],
+        postTokenBalances: [{ mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", owner: treasuryWallet, accountIndex: 1, uiTokenAmount: { amount: "1000000000", decimals: 6 } }],
+      },
+      transaction: { message: { accountKeys: [{ pubkey: evmSender }, { pubkey: treasuryWallet }] }, signatures: ["treasury-signature"] },
+    },
+  }],
+}], "solana", "treasury")
+assert.equal(treasuryIncoming.walletRole, "treasury")
+assert.equal(treasuryIncoming.receipts.length, 1)
+assert.equal(treasuryIncoming.receipts[0].wallet, treasuryWallet)
+assert.equal(treasuryIncoming.receipts[0].walletRole, "treasury")
+assert.equal(treasuryIncoming.receipts[0].status, "internal")
+assert.equal(treasuryIncoming.receipts[0].asset, "USDC")
+assert.equal(treasuryIncoming.receipts[0].amount, 1000)
+assert.equal(treasuryIncoming.receipts[0].amountUsd, 1000)
+
+const treasuryOutgoing = quicknode.normalizeQuickNodeRevenuePayload([{
+  block: { slot: 440576615, blockTime: 1787272014 },
+  transactions: [{
+    wallets: [treasuryWallet],
+    raw: {
+      meta: {
+        err: null,
+        preBalances: [1_000_000],
+        postBalances: [995_000],
+        preTokenBalances: [{ mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", owner: treasuryWallet, accountIndex: 0, uiTokenAmount: { amount: "1000000000", decimals: 6 } }],
+        postTokenBalances: [{ mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", owner: treasuryWallet, accountIndex: 0, uiTokenAmount: { amount: "500000000", decimals: 6 } }],
+      },
+      transaction: { message: { accountKeys: [{ pubkey: treasuryWallet }] }, signatures: ["payroll-signature"] },
+    },
+  }],
+}], "solana", "treasury")
+assert.equal(treasuryOutgoing.receipts.length, 0)
+assert.equal(treasuryOutgoing.rejected, 0)
+
+assert.equal(consolidation.consolidationPairMatches(
+  { chain: "solana", asset: "USDC", direction: "outgoing", transactionHash: "same-tx", amount: 1000, walletRole: "revenue" },
+  { chain: "solana", asset: "USDC", direction: "incoming", transactionHash: "same-tx", amount: 1000, walletRole: "treasury" },
+), true)
+assert.equal(consolidation.consolidationPairMatches(
+  { chain: "solana", asset: "USDC", direction: "outgoing", transactionHash: "tx-a", amount: 1000, walletRole: "revenue" },
+  { chain: "solana", asset: "USDC", direction: "incoming", transactionHash: "tx-b", amount: 1000, walletRole: "treasury" },
+), false)
 
 console.log("Revenue automation tests passed")

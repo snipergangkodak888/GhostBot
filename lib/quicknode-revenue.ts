@@ -1,11 +1,12 @@
 import { createHmac, timingSafeEqual } from "node:crypto"
-import type { RevenueChain, RevenueReceipt } from "@/lib/revenue-types"
-import { REVENUE_CHAINS } from "@/lib/revenue-types"
+import type { RevenueChain, RevenueReceipt, RevenueReceiptStatus, RevenueWalletRole } from "@/lib/revenue-types"
+import { REVENUE_CHAINS, REVENUE_WALLET_ROLES } from "@/lib/revenue-types"
 
 type ReceiptInput = Omit<RevenueReceipt, "_id" | "createdAt" | "updatedAt">
 
 const EVM_REVENUE_WALLET = String(process.env.REVENUE_EVM_WALLET || "").trim().toLowerCase()
 const SOLANA_REVENUE_WALLET = String(process.env.REVENUE_SOLANA_WALLET || "").trim()
+const SOLANA_TREASURY_WALLET = String(process.env.REVENUE_SOLANA_TREASURY_WALLET || "").trim()
 const ERC20_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 
 type TokenMetadata = { asset: string; decimals: number }
@@ -76,6 +77,11 @@ export function cleanWebhookChain(value: unknown): RevenueChain | null {
     "solana-mainnet": "solana",
   }
   return aliases[normalized] || (REVENUE_CHAINS.includes(normalized as RevenueChain) ? normalized as RevenueChain : null)
+}
+
+export function cleanRevenueWalletRole(value: unknown): RevenueWalletRole | null {
+  const normalized = String(value || "revenue").trim().toLowerCase()
+  return REVENUE_WALLET_ROLES.includes(normalized as RevenueWalletRole) ? normalized as RevenueWalletRole : null
 }
 
 function asArray(value: unknown): any[] {
@@ -176,12 +182,14 @@ function normalizedAddress(value: unknown, chain: RevenueChain) {
   return chain === "solana" ? address : address.toLowerCase()
 }
 
-function monitoredWallet(chain: RevenueChain) {
+function monitoredWallet(chain: RevenueChain, walletRole: RevenueWalletRole = "revenue") {
+  if (walletRole === "treasury") return chain === "solana" ? SOLANA_TREASURY_WALLET : ""
   return chain === "solana" ? SOLANA_REVENUE_WALLET : EVM_REVENUE_WALLET
 }
 
 function receiptInput(params: {
   chain: RevenueChain
+  walletRole?: RevenueWalletRole
   wallet: string
   direction: "incoming" | "outgoing"
   transactionHash: string
@@ -194,15 +202,17 @@ function receiptInput(params: {
   decimals: number
   amount: number
   amountUsd?: number | null
+  status?: RevenueReceiptStatus
   raw: unknown
 }): ReceiptInput {
   const tokenAddress = String(params.tokenAddress || "").trim() || null
   const tokenKey = tokenAddress ? normalizedAddress(tokenAddress, params.chain) : "native"
-  const amountUsd = params.amountUsd == null ? null : params.amountUsd
+  const amountUsd = params.amountUsd == null ? params.asset === "USDC" ? params.amount : null : params.amountUsd
   return {
     eventKey: `${params.chain}:${params.transactionHash.toLowerCase()}:${params.eventIndex}:${params.direction}:${params.asset}:${tokenKey}:${params.wallet}`,
     provider: "quicknode",
     chain: params.chain,
+    walletRole: params.walletRole || "revenue",
     wallet: params.wallet,
     direction: params.direction,
     transactionHash: params.transactionHash,
@@ -215,7 +225,7 @@ function receiptInput(params: {
     decimals: params.decimals,
     amount: params.amount,
     amountUsd,
-    status: "unclassified",
+    status: params.status || "unclassified",
     allocations: [],
     raw: params.raw,
     valuationStatus: amountUsd == null ? "pending" : "valued",
@@ -235,8 +245,8 @@ function topicAddress(value: unknown) {
   return /^0x[0-9a-f]{64}$/.test(topic) ? `0x${topic.slice(-40)}` : ""
 }
 
-function normalizeEvmTemplatePayload(payload: any, chain: RevenueChain) {
-  const wallet = monitoredWallet(chain)
+function normalizeEvmTemplatePayload(payload: any, chain: RevenueChain, walletRole: RevenueWalletRole) {
+  const wallet = monitoredWallet(chain, walletRole)
   const receipts: ReceiptInput[] = []
   let rejected = 0
 
@@ -251,6 +261,7 @@ function normalizeEvmTemplatePayload(payload: any, chain: RevenueChain) {
     }
     receipts.push(receiptInput({
       chain,
+      walletRole,
       wallet,
       ...match,
       transactionHash,
@@ -289,6 +300,7 @@ function normalizeEvmTemplatePayload(payload: any, chain: RevenueChain) {
       }
       receipts.push(receiptInput({
         chain,
+        walletRole,
         wallet,
         ...match,
         transactionHash,
@@ -330,10 +342,14 @@ function addTokenBalances(target: Map<string, { amount: bigint; decimals: number
   }
 }
 
-function normalizeSolanaTemplatePayload(payload: any, chain: RevenueChain) {
-  const wallet = monitoredWallet(chain)
+function normalizeSolanaTemplatePayload(payload: any, chain: RevenueChain, walletRole: RevenueWalletRole) {
+  const wallet = monitoredWallet(chain, walletRole)
   const receipts: ReceiptInput[] = []
   let rejected = 0
+  const recordReceipt = (receipt: ReceiptInput) => {
+    if (walletRole === "treasury" && (receipt.direction !== "incoming" || receipt.asset !== "USDC")) return
+    receipts.push(receipt)
+  }
   for (const batch of asArray(payload)) {
     const block = batch?.block || {}
     for (const transactionEntry of asArray(batch?.transactions)) {
@@ -350,6 +366,7 @@ function normalizeSolanaTemplatePayload(payload: any, chain: RevenueChain) {
       }
 
       let transactionReceipts = 0
+      let handledMovements = 0
       const keys = solanaAccountKeys(raw)
       const preBalances = asArray(raw?.meta?.preBalances)
       const postBalances = asArray(raw?.meta?.postBalances)
@@ -362,10 +379,12 @@ function normalizeSolanaTemplatePayload(payload: any, chain: RevenueChain) {
         if (before != null && after != null) lamportDelta += after - before
       }
       if (lamportDelta !== BigInt(0)) {
+        handledMovements += 1
         const amount = scaledInteger(lamportDelta, 9)
         if (amount != null && amount > 0) {
-          receipts.push(receiptInput({
+          recordReceipt(receiptInput({
             chain,
+            walletRole,
             wallet,
             direction: lamportDelta > BigInt(0) ? "incoming" : "outgoing",
             transactionHash,
@@ -376,6 +395,7 @@ function normalizeSolanaTemplatePayload(payload: any, chain: RevenueChain) {
             decimals: 9,
             amount,
             raw: { walletDelta: lamportDelta.toString(), transaction: raw },
+            status: walletRole === "treasury" ? "internal" : "unclassified",
           }))
           transactionReceipts += 1
         }
@@ -386,6 +406,7 @@ function normalizeSolanaTemplatePayload(payload: any, chain: RevenueChain) {
       addTokenBalances(tokenDeltas, raw?.meta?.postTokenBalances, BigInt(1), wallet)
       for (const [mint, delta] of Array.from(tokenDeltas.entries())) {
         if (delta.amount === BigInt(0)) continue
+        handledMovements += 1
         const metadata = tokenMetadata(chain, mint)
         if (!metadata || (delta.decimals != null && delta.decimals !== metadata.decimals)) {
           rejected += 1
@@ -397,8 +418,9 @@ function normalizeSolanaTemplatePayload(payload: any, chain: RevenueChain) {
           continue
         }
         const eventIndex = delta.indices.length ? Math.min(...delta.indices) : 0
-        receipts.push(receiptInput({
+        recordReceipt(receiptInput({
           chain,
+          walletRole,
           wallet,
           direction: delta.amount > BigInt(0) ? "incoming" : "outgoing",
           transactionHash,
@@ -409,18 +431,19 @@ function normalizeSolanaTemplatePayload(payload: any, chain: RevenueChain) {
           tokenAddress: mint,
           decimals: metadata.decimals,
           amount,
+          status: walletRole === "treasury" ? "internal" : "unclassified",
           raw: { tokenDelta: delta.amount.toString(), mint, transaction: raw },
         }))
         transactionReceipts += 1
       }
-      if (!transactionReceipts && tokenDeltas.size === 0) rejected += 1
+      if (!transactionReceipts && !handledMovements && tokenDeltas.size === 0) rejected += 1
     }
   }
   return { receipts, rejected }
 }
 
-function itemReceipt(item: any, chain: RevenueChain, fallbackIndex: number): ReceiptInput | null {
-  const configuredWallet = normalizedAddress(monitoredWallet(chain), chain)
+function itemReceipt(item: any, chain: RevenueChain, walletRole: RevenueWalletRole, fallbackIndex: number): ReceiptInput | null {
+  const configuredWallet = normalizedAddress(monitoredWallet(chain, walletRole), chain)
   if (!configuredWallet) return null
   const wallet = normalizedAddress(item.wallet ?? item.account ?? item.monitoredWallet ?? configuredWallet, chain)
   if (wallet !== configuredWallet) return null
@@ -445,6 +468,7 @@ function itemReceipt(item: any, chain: RevenueChain, fallbackIndex: number): Rec
   const tokenAddress = String(item.tokenAddress ?? item.contractAddress ?? item.mint ?? "").trim() || null
   return receiptInput({
     chain,
+    walletRole,
     wallet,
     direction,
     transactionHash,
@@ -466,20 +490,22 @@ function itemReceipt(item: any, chain: RevenueChain, fallbackIndex: number): Rec
  * common wallet-webhook transfer shapes. Unknown shapes are retained in the
  * delivery audit but intentionally do not become accounting receipts.
  */
-export function normalizeQuickNodeRevenuePayload(payload: any, chainInput?: unknown) {
+export function normalizeQuickNodeRevenuePayload(payload: any, chainInput?: unknown, walletRoleInput?: unknown) {
   const chain = cleanWebhookChain(chainInput ?? payload?.metadata?.chain ?? payload?.metadata?.network ?? payload?.network)
   if (!chain) return { chain: null, receipts: [] as ReceiptInput[], rejected: eventItems(payload).length }
+  const walletRole = cleanRevenueWalletRole(walletRoleInput)
+  if (!walletRole || (walletRole === "treasury" && chain !== "solana")) return { chain, walletRole: null, receipts: [] as ReceiptInput[], rejected: eventItems(payload).length }
   if (chain === "solana" && asArray(payload).some((item) => item?.block && Array.isArray(item?.transactions))) {
-    return { chain, ...normalizeSolanaTemplatePayload(payload, chain) }
+    return { chain, walletRole, ...normalizeSolanaTemplatePayload(payload, chain, walletRole) }
   }
   if (chain !== "solana" && payload && (Object.hasOwn(payload, "matchingTransactions") || Object.hasOwn(payload, "matchingReceipts"))) {
-    return { chain, ...normalizeEvmTemplatePayload(payload, chain) }
+    return { chain, walletRole, ...normalizeEvmTemplatePayload(payload, chain, walletRole) }
   }
   const items = eventItems(payload)
-  const receipts = items.map((item, index) => itemReceipt(item, chain, index)).filter(Boolean) as ReceiptInput[]
-  return { chain, receipts, rejected: items.length - receipts.length }
+  const receipts = items.map((item, index) => itemReceipt(item, chain, walletRole, index)).filter(Boolean) as ReceiptInput[]
+  return { chain, walletRole, receipts, rejected: items.length - receipts.length }
 }
 
 export function revenueWalletsConfigured() {
-  return { evm: EVM_REVENUE_WALLET, solana: SOLANA_REVENUE_WALLET }
+  return { evm: EVM_REVENUE_WALLET, solana: SOLANA_REVENUE_WALLET, solanaTreasury: SOLANA_TREASURY_WALLET }
 }
