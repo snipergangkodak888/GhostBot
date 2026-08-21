@@ -47,6 +47,29 @@ function explicitFixedFee(text: string, feeWords: RegExp) {
   return { amount, asset: normalizeAsset(match[2]) || "USD" }
 }
 
+function looseAmount(text: string) {
+  const match = text.match(/([$]?\s*[\d,.]+(?:\s*[kmb])?)\s*(USDC|USD|SOL|ETH|BNB|dollars?)/i)
+    || text.match(/(\$\s*[\d,.]+(?:\s*[kmb])?)/i)
+    || text.match(/([\d,.]+(?:\s*[kmb])?)/i)
+  if (!match) return null
+  const amount = parseCompactNumber(match[1])
+  if (amount == null) return null
+  return { amount, asset: normalizeAsset(match[2]) || "USD" }
+}
+
+function directMmRevenue(text: string) {
+  const action = "(?:have\\s+)?(?:taken|took|removed|withdrew|withdrawn)"
+  const amount = "([$]?\\s*[\\d,.]+(?:\\s*[kmb])?)\\s*(USDC|USD|SOL|ETH|BNB|dollars?)?"
+  const balance = "(?:from\\s+)?(?:the\\s+)?(?:mm|market\\s+maker)(?:\\s+balance)?"
+  const before = text.match(new RegExp(`${action}[^\\n.]{0,36}?${amount}[^\\n.]{0,48}?${balance}`, "i"))
+  const after = text.match(new RegExp(`${amount}[^\\n.]{0,48}?${action}[^\\n.]{0,48}?${balance}`, "i"))
+  const match = before || after
+  if (!match) return null
+  const value = parseCompactNumber(match[1])
+  if (value == null) return null
+  return { amount: value, asset: normalizeAsset(match[2]) || "USD" }
+}
+
 export function parseFeeMessage(input: string): ParsedFeeMessage {
   const text = String(input || "").trim()
   const warnings: string[] = []
@@ -113,15 +136,15 @@ export function parseFeeMessage(input: string): ParsedFeeMessage {
   }
 
   if (isDevAllocation) {
-    const match = amountMatches(text) || text.match(/([$]?\s*[\d,.]+(?:\s*[kmb])?)\s*(USDC|USD|SOL|ETH|BNB|dollars?)/i)
-    const amount = match ? parseCompactNumber(match[1]) : null
-    const asset = match ? normalizeAsset(match[2]) : null
+    const direct = looseAmount(text)
+    const amount = direct?.amount ?? null
+    const asset = direct?.asset ?? null
     if (amount === null) warnings.push("Dev-allocation proceeds were not found")
     return {
       feeType: "dev_allocation",
       grossAmount: null,
-      grossAsset: null,
-      expectedAssetAmount: amount,
+      grossAsset: asset,
+      expectedAssetAmount: asset === "USD" ? null : amount,
       expectedUsd: amount !== null && (asset === "USD" || asset === "USDC") ? amount : null,
       ignoredSupplyPercentage,
       confidence: amount !== null && asset ? "high" : "low",
@@ -130,18 +153,33 @@ export function parseFeeMessage(input: string): ParsedFeeMessage {
   }
 
   if (isFeeCollector || isFeeRebate) {
-    const match = text.match(/([$]?\s*[\d,.]+(?:\s*[kmb])?)\s*(USDC|USD|SOL|ETH|BNB|dollars?)/i)
-    const amount = match ? parseCompactNumber(match[1]) : null
-    const asset = match ? normalizeAsset(match[2]) : null
+    const direct = looseAmount(text)
+    const amount = direct?.amount ?? null
+    const asset = direct?.asset ?? null
     return {
       feeType: isFeeRebate ? "fee_rebate" : "fee_collector",
       grossAmount: null,
-      grossAsset: null,
-      expectedAssetAmount: amount,
+      grossAsset: asset,
+      expectedAssetAmount: asset === "USD" ? null : amount,
       expectedUsd: amount !== null && (asset === "USD" || asset === "USDC") ? amount : null,
       ignoredSupplyPercentage,
       confidence: amount !== null && asset ? "high" : "medium",
       warnings: amount == null ? ["Receipt amount is required"] : [],
+    }
+  }
+
+  const mmRevenue = directMmRevenue(text)
+  if (mmRevenue) {
+    const stable = mmRevenue.asset === "USD" || mmRevenue.asset === "USDC"
+    return {
+      feeType: "other",
+      grossAmount: null,
+      grossAsset: mmRevenue.asset,
+      expectedAssetAmount: mmRevenue.asset === "USD" ? null : mmRevenue.amount,
+      expectedUsd: stable ? mmRevenue.amount : null,
+      ignoredSupplyPercentage,
+      confidence: "high",
+      warnings,
     }
   }
 

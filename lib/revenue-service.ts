@@ -11,6 +11,7 @@ import type {
   RevenueReceiptStatus,
 } from "@/lib/revenue-types"
 import { getConsolidation } from "@/lib/revenue-consolidation"
+import { valueRevenueReceipt } from "@/lib/revenue-pricing"
 
 const FEES = "revenueFeeEvents"
 const RECEIPTS = "revenueReceipts"
@@ -47,9 +48,10 @@ export async function createForwardedFeeEvent(params: {
   if (existing) return { fee: existing as RevenueFeeEvent, duplicate: true }
 
   const now = new Date()
+  const occurredAt = params.messageDate || now
   const parsed = parseFeeMessage(params.text)
   const fee: RevenueFeeEvent = {
-    date: dateKeyInTimeZone(params.messageDate || now),
+    date: dateKeyInTimeZone(occurredAt),
     source: "telegram_forward",
     sourceKey,
     telegram: {
@@ -57,7 +59,9 @@ export async function createForwardedFeeEvent(params: {
       messageId: params.messageId,
       forwardedByTelegramId: params.telegramId || null,
       originalText: params.text,
+      originalDate: occurredAt.toISOString(),
     },
+    occurredAt: occurredAt.toISOString(),
     projectId: null,
     projectName: null,
     chain: null,
@@ -101,6 +105,10 @@ export async function assignFeeProject(feeId: string, projectId: string) {
   const config = projectFeeConfig(project)
   if (!config.chain) throw new Error("Set the project's revenue chain before assigning fees")
   if (!fee.feeType) throw new Error("The fee type was not recognized; classify it from Revenue Inbox")
+  const explicitAsset = String(fee.grossAsset || fee.quoteAsset || "").toUpperCase()
+  if (explicitAsset && explicitAsset !== "USD" && !config.quoteAssets.includes(explicitAsset)) {
+    throw new Error(`${project.name || "This project"} is not configured to receive ${explicitAsset} revenue`)
+  }
   if (fee.source === "telegram_forward" && fee.feeType === "daily_trading") {
     const scheduled = await db.collection(FEES).findOne({ sourceKey: `daily:${fee.date}:${project._id}` })
     if (scheduled) {
@@ -201,15 +209,20 @@ export async function resolveFeeWithoutRevenue(feeId: string, status: "ignored" 
   }
   await db.collection(FEES).updateOne(
     { _id: feeId },
-    { $set: { status, proposedReceiptIds: [], resolvedWithoutRevenueAt: iso(), updatedAt: iso() } },
+    { $set: { status, proposedReceiptIds: [], matchAlternatives: [], resolvedWithoutRevenueAt: iso(), updatedAt: iso() } },
   )
   return db.collection(FEES).findOne({ _id: feeId }) as Promise<RevenueFeeEvent>
 }
 
-export async function createFeeFromReceipt(params: { receiptId: string; feeType: FeeType; projectId?: string | null; amount?: number | null }) {
+export async function createFeeFromReceipts(params: { receiptIds: string[]; feeType: FeeType; projectId?: string | null; amount?: number | null }) {
   const db = await getDb()
-  const receipt = await db.collection(RECEIPTS).findOne({ _id: params.receiptId })
-  if (!receipt || receipt.direction !== "incoming") throw new Error("Incoming receipt was not found")
+  const receiptIds = Array.from(new Set((params.receiptIds || []).map(String).filter(Boolean)))
+  if (!receiptIds.length) throw new Error("Choose at least one incoming receipt")
+  const receipts = await Promise.all(receiptIds.map((receiptId) => db.collection(RECEIPTS).findOne({ _id: receiptId })))
+  if (receipts.some((receipt) => !receipt || receipt.direction !== "incoming")) throw new Error("One or more incoming receipts were not found")
+  const [receipt] = receipts as any[]
+  if (receipts.some((row: any) => row.chain !== receipt.chain || row.asset !== receipt.asset)) throw new Error("Grouped receipts must use the same chain and asset")
+  if (receipts.some((row: any) => row.status !== "unclassified")) throw new Error("One or more receipts are already classified or reserved")
   if (!["dev_allocation", "fee_collector", "fee_rebate", "other"].includes(params.feeType)) throw new Error("Use a forwarded message or daily schedule for this fee type")
   const projectRequired = params.feeType !== "fee_rebate"
   const project = params.projectId ? await db.collection("opsProjects").findOne({ _id: params.projectId }) : null
@@ -218,17 +231,28 @@ export async function createFeeFromReceipt(params: { receiptId: string; feeType:
     const config = projectFeeConfig(project)
     if (config.chain !== receipt.chain || !config.quoteAssets.includes(receipt.asset)) throw new Error("Project chain or quote asset does not match this receipt")
   }
-  const available = receiptAvailableAmount(receipt)
+  const available = receipts.reduce((sum: number, row: any) => sum + receiptAvailableAmount(row), 0)
   const expectedAssetAmount = params.amount == null ? available : Number(params.amount)
-  if (!Number.isFinite(expectedAssetAmount) || expectedAssetAmount <= 0 || expectedAssetAmount > available + 0.00000001) throw new Error("Classified amount must fit within the available receipt")
-  const expectedUsd = receipt.amountUsd == null ? null : round(Number(receipt.amountUsd) * expectedAssetAmount / Math.max(Number(receipt.amount || 0), Number.EPSILON), 2)
-  const sourceKey = `receipt:${receipt._id}:${params.feeType}:${project?._id || "global"}:${round(expectedAssetAmount)}`
+  if (!Number.isFinite(expectedAssetAmount) || expectedAssetAmount <= 0 || expectedAssetAmount > available + 0.00000001) throw new Error("Classified amount must fit within the selected receipts")
+  let remaining = expectedAssetAmount
+  let expectedUsd = 0
+  let fullyValued = true
+  for (const row of receipts as any[]) {
+    const take = Math.min(receiptAvailableAmount(row), remaining)
+    if (take <= 0) continue
+    if (row.amountUsd == null) fullyValued = false
+    else expectedUsd += Number(row.amountUsd) * take / Math.max(Number(row.amount || 0), Number.EPSILON)
+    remaining -= take
+  }
+  const receiptFingerprint = createHash("sha256").update(receiptIds.slice().sort().join(":")).digest("hex").slice(0, 16)
+  const sourceKey = `receipts:${receiptFingerprint}:${params.feeType}:${project?._id || "global"}:${round(expectedAssetAmount)}`
   const existing = await db.collection(FEES).findOne({ sourceKey })
   if (existing) return existing as RevenueFeeEvent
   const now = iso()
   const parsed = parseFeeMessage(`${expectedAssetAmount} ${receipt.asset} ${params.feeType.replace(/_/g, " ")}`)
   const fee: RevenueFeeEvent = {
     date: receipt.date || dateKeyInTimeZone(new Date(receipt.blockTime || now)),
+    occurredAt: receipt.blockTime || receipt.createdAt || now,
     source: "manual",
     sourceKey,
     projectId: project ? String(project._id) : null,
@@ -237,20 +261,26 @@ export async function createFeeFromReceipt(params: { receiptId: string; feeType:
     quoteAsset: receipt.asset,
     feeType: params.feeType,
     expectedAssetAmount,
-    expectedUsd,
-    recognizedUsd: expectedUsd,
-    valuationStatus: expectedUsd == null ? "pending" : "valued",
+    expectedUsd: fullyValued ? round(expectedUsd, 2) : null,
+    recognizedUsd: fullyValued ? round(expectedUsd, 2) : null,
+    valuationStatus: fullyValued ? "valued" : "pending",
     status: "match_proposed",
     matchedReceiptIds: [],
-    proposedReceiptIds: [String(receipt._id)],
+    proposedReceiptIds: receiptIds,
     parse: parsed,
     createdAt: now,
     updatedAt: now,
   }
   const result = await db.collection(FEES).insertOne(fee)
   const feeId = String(result.insertedId)
-  await db.collection(RECEIPTS).updateOne({ _id: receipt._id }, { $set: { status: "match_proposed", proposedFeeEventId: feeId, updatedAt: now } })
+  for (const row of receipts as any[]) {
+    await db.collection(RECEIPTS).updateOne({ _id: row._id }, { $set: { status: "match_proposed", proposedFeeEventId: feeId, updatedAt: now } })
+  }
   return { ...fee, _id: feeId }
+}
+
+export async function createFeeFromReceipt(params: { receiptId: string; feeType: FeeType; projectId?: string | null; amount?: number | null }) {
+  return createFeeFromReceipts({ ...params, receiptIds: [params.receiptId] })
 }
 
 export async function confirmFeeExpectation(feeId: string, telegramId?: number | null) {
@@ -269,24 +299,27 @@ export async function proposeReceiptMatch(feeId: string) {
   const db = await getDb()
   const fee = await db.collection(FEES).findOne({ _id: feeId }) as RevenueFeeEvent | null
   if (!fee || !fee.chain || !fee.quoteAsset) return fee
+  if (["confirmed", "ignored", "waived"].includes(fee.status)) return fee
   for (const receiptId of fee.proposedReceiptIds || []) {
     const previous = await db.collection(RECEIPTS).findOne({ _id: receiptId })
     if (previous?.proposedFeeEventId === feeId && !(previous.allocations || []).length) {
       await db.collection(RECEIPTS).updateOne({ _id: receiptId }, { $set: { status: "unclassified", proposedFeeEventId: null, updatedAt: iso() } })
     }
   }
-  const receipts = await db.collection(RECEIPTS).find({}).sort({ blockTime: -1 }).limit(100).toArray() as RevenueReceipt[]
+  await db.collection(FEES).updateOne({ _id: feeId }, { $set: { proposedReceiptIds: [], matchAlternatives: [], status: "awaiting_receipt", updatedAt: iso() } })
+  const receipts = await db.collection(RECEIPTS).find({ date: fee.date }).sort({ blockTime: -1 }).limit(500).toArray() as RevenueReceipt[]
   const match = findReceiptCombination(receipts, {
     chain: fee.chain,
     asset: fee.quoteAsset,
     expectedAmount: fee.expectedAssetAmount,
     expectedUsd: fee.expectedUsd,
-    occurredAt: fee.createdAt,
+    occurredAt: fee.occurredAt || fee.telegram?.originalDate || fee.createdAt,
+    date: fee.date,
   })
-  if (!match?.receiptIds.length) return fee
+  if (!match?.receiptIds.length) return db.collection(FEES).findOne({ _id: feeId }) as Promise<RevenueFeeEvent>
   await db.collection(FEES).updateOne(
     { _id: feeId },
-    { $set: { proposedReceiptIds: match.receiptIds, matchConfidence: match.confidence, matchDelta: match.delta, status: "match_proposed", updatedAt: iso() } },
+    { $set: { proposedReceiptIds: match.receiptIds, matchAlternatives: match.alternatives || [], matchConfidence: match.confidence, matchDelta: match.delta, status: "match_proposed", updatedAt: iso() } },
   )
   for (const receiptId of match.receiptIds) {
     await db.collection(RECEIPTS).updateOne({ _id: receiptId }, { $set: { status: "match_proposed", proposedFeeEventId: feeId, updatedAt: iso() } })
@@ -352,6 +385,15 @@ export async function acceptReceiptMatch(feeId: string, telegramId?: number | nu
       { $set: { allocations, status: stillAvailable > 0.00000001 ? "unclassified" : "allocated", proposedFeeEventId: null, updatedAt: now } },
     )
   }
+  for (const receipt of receipts) {
+    if (usedReceiptIds.includes(String(receipt._id))) continue
+    if (receipt.proposedFeeEventId === feeId && !(receipt.allocations || []).length) {
+      await db.collection(RECEIPTS).updateOne(
+        { _id: receipt._id },
+        { $set: { status: "unclassified", proposedFeeEventId: null, updatedAt: now } },
+      )
+    }
+  }
 
   let recognizedUsd = fee.expectedUsd == null ? null : Number(fee.expectedUsd)
   if (recognizedUsd == null && usedReceiptIds.length && allocatedUsd > 0) recognizedUsd = round(allocatedUsd, 2)
@@ -362,6 +404,7 @@ export async function acceptReceiptMatch(feeId: string, telegramId?: number | nu
       $set: {
         matchedReceiptIds: usedReceiptIds,
         proposedReceiptIds: [],
+        matchAlternatives: [],
         status: "confirmed",
         recognizedUsd,
         valuationStatus: recognizedUsd == null ? "pending" : "valued",
@@ -403,10 +446,18 @@ export async function updateReceiptClassification(receiptId: string, status: Rev
   if (!["unclassified", "internal", "ignored", "match_proposed", "allocated"].includes(status)) throw new Error("Unsupported receipt classification")
   if (["match_proposed", "allocated"].includes(status) && amountUsd === undefined) throw new Error("Matched receipt status cannot be changed here")
   const db = await getDb()
+  const existing = await db.collection(RECEIPTS).findOne({ _id: receiptId })
+  if (!existing) throw new Error("Revenue receipt was not found")
   const update: Record<string, any> = { status, updatedAt: iso() }
   if (amountUsd !== undefined) {
-    update.amountUsd = amountUsd == null ? null : Math.max(0, Number(amountUsd))
+    const normalizedAmountUsd = amountUsd == null ? null : Number(amountUsd)
+    if (normalizedAmountUsd != null && (!Number.isFinite(normalizedAmountUsd) || normalizedAmountUsd < 0)) throw new Error("USD value must be a positive number")
+    update.amountUsd = normalizedAmountUsd
     update.valuationStatus = amountUsd == null ? "pending" : "manual"
+    update.priceUsd = normalizedAmountUsd == null ? null : normalizedAmountUsd / Math.max(Number(existing.amount || 0), Number.EPSILON)
+    update.priceSource = amountUsd == null ? null : "manual"
+    update.priceTimestamp = amountUsd == null ? null : iso()
+    update.priceFetchedAt = amountUsd == null ? null : iso()
   }
   await db.collection(RECEIPTS).updateOne({ _id: receiptId }, { $set: update })
   const saved = await db.collection(RECEIPTS).findOne({ _id: receiptId }) as RevenueReceipt | null
@@ -425,6 +476,36 @@ export async function updateReceiptClassification(receiptId: string, status: Rev
     }
   }
   return saved as RevenueReceipt
+}
+
+export async function valuePendingRevenueReceipts(date = teamDateKey(0)) {
+  const db = await getDb()
+  const receipts = (await db.collection(RECEIPTS).find({ date, direction: "incoming" }).toArray())
+    .filter((receipt: any) => receipt.amountUsd == null && ["ETH", "SOL", "BNB"].includes(String(receipt.asset || "").toUpperCase()))
+  let valued = 0
+  let pending = 0
+  for (const receipt of receipts) {
+    try {
+      const next = await valueRevenueReceipt(receipt)
+      if (next.amountUsd == null) {
+        pending += 1
+        continue
+      }
+      await updateReceiptClassification(String(receipt._id), receipt.status, Number(next.amountUsd))
+      await db.collection(RECEIPTS).updateOne({ _id: receipt._id }, { $set: { priceUsd: next.priceUsd, priceSource: next.priceSource, priceTimestamp: next.priceTimestamp, priceFetchedAt: next.priceFetchedAt, valuationStatus: "valued", updatedAt: iso() } })
+      valued += 1
+    } catch (error) {
+      console.error("[revenue] pending receipt valuation failed", receipt._id, error instanceof Error ? error.message : error)
+      pending += 1
+    }
+  }
+  const waitingFees = await db.collection(FEES).find({ date, status: "awaiting_receipt" }).toArray()
+  let proposed = 0
+  for (const fee of waitingFees) {
+    const result = await proposeReceiptMatch(String(fee._id))
+    if (result?.status === "match_proposed") proposed += 1
+  }
+  return { date, checked: receipts.length, valued, pending, retried: waitingFees.length, proposed }
 }
 
 function projectEligibleForDailyFee(project: any, date: string) {
@@ -503,7 +584,7 @@ export async function listRevenueDay(date = teamDateKey(0)) {
       confirmedFees: fees.filter((fee: any) => fee.status === "confirmed").length,
       unresolvedFees: fees.filter((fee: any) => !["confirmed", "waived", "ignored"].includes(fee.status)).length,
       receipts: dayReceipts.length,
-      unclassifiedReceipts: dayReceipts.filter((receipt: any) => receipt.status === "unclassified").length,
+      unclassifiedReceipts: dayReceipts.filter((receipt: any) => receipt.status === "unclassified" && receipt.direction === "incoming").length,
       recognizedUsd: round(fees.filter((fee: any) => fee.status === "confirmed").reduce((sum: number, fee: any) => sum + Number(fee.recognizedUsd || 0), 0), 2),
       pendingValuation: fees.filter((fee: any) => fee.status === "confirmed" && fee.valuationStatus === "pending").length,
     },

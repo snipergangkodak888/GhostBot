@@ -6,7 +6,24 @@ export type MatchTarget = {
   expectedAmount?: number | null
   expectedUsd?: number | null
   occurredAt?: string | null
+  date?: string | null
 }
+
+export type ReceiptMatchCandidate = {
+  receiptIds: string[]
+  total: number
+  delta: number
+  confidence: "high" | "medium"
+  receiptCount: number
+  firstReceiptAt?: string | null
+  lastReceiptAt?: string | null
+}
+
+const MATCH_WINDOW_MS = 30 * 60 * 60 * 1_000
+const CLUSTER_GAP_MS = 20 * 60 * 1_000
+const MAX_CANDIDATE_RECEIPTS = 250
+const MAX_RECEIPTS_PER_MATCH = 50
+const MAX_DP_STATES = 20_000
 
 function availableAmount(receipt: RevenueReceipt) {
   const used = (receipt.allocations || []).reduce((sum, allocation) => sum + Number(allocation.amount || 0), 0)
@@ -31,49 +48,117 @@ function tolerance(expected: number, usesUsd: boolean) {
   return Math.max(usesUsd ? 2 : 0.000001, Math.abs(expected) * 0.005)
 }
 
-export function findReceiptCombination(receipts: RevenueReceipt[], target: MatchTarget) {
+function receiptTime(receipt: RevenueReceipt) {
+  const value = new Date(receipt.blockTime || receipt.createdAt || 0).getTime()
+  return Number.isFinite(value) ? value : 0
+}
+
+function clusterReceipts(receipts: RevenueReceipt[]) {
+  const clusters: RevenueReceipt[][] = []
+  for (const receipt of [...receipts].sort((a, b) => receiptTime(a) - receiptTime(b))) {
+    const current = clusters[clusters.length - 1]
+    if (!current || receiptTime(receipt) - receiptTime(current[current.length - 1]) > CLUSTER_GAP_MS) clusters.push([receipt])
+    else current.push(receipt)
+  }
+  return clusters
+}
+
+function subsetCandidate(receipts: RevenueReceipt[], values: number[], desired: number, allowed: number) {
+  type State = { total: number; indices: number[] }
+  const quantum = Math.max(allowed / 4, Math.abs(desired) / 100_000, 0.00000001)
+  let states = new Map<number, State>([[0, { total: 0, indices: [] }]])
+
+  for (let index = 0; index < receipts.length; index += 1) {
+    const value = values[index]
+    if (!(value > 0)) continue
+    const next = new Map(states)
+    for (const state of Array.from(states.values())) {
+      if (state.indices.length >= MAX_RECEIPTS_PER_MATCH) continue
+      const total = state.total + value
+      if (total > desired + allowed) continue
+      const candidate = { total, indices: [...state.indices, index] }
+      const bucket = Math.round(total / quantum)
+      const existing = next.get(bucket)
+      if (!existing || Math.abs(total - desired) < Math.abs(existing.total - desired) || (Math.abs(total - desired) === Math.abs(existing.total - desired) && candidate.indices.length < existing.indices.length)) {
+        next.set(bucket, candidate)
+      }
+    }
+    if (next.size > MAX_DP_STATES) {
+      const trimmed = Array.from(next.entries())
+        .sort(([, a], [, b]) => Math.abs(a.total - desired) - Math.abs(b.total - desired) || a.indices.length - b.indices.length)
+        .slice(0, MAX_DP_STATES - 1)
+      states = new Map([[0, { total: 0, indices: [] }], ...trimmed])
+    } else states = next
+  }
+
+  const best = Array.from(states.values())
+    .filter((state) => state.indices.length > 0 && Math.abs(state.total - desired) <= allowed)
+    .sort((a, b) => Math.abs(a.total - desired) - Math.abs(b.total - desired) || a.indices.length - b.indices.length)[0]
+  if (!best) return null
+  return { receipts: best.indices.map((index: number) => receipts[index]), total: best.total }
+}
+
+function candidateKey(receipts: RevenueReceipt[]) {
+  return receipts.map((receipt) => String(receipt._id || "")).filter(Boolean).sort().join(":")
+}
+
+export function findReceiptMatchCandidates(receipts: RevenueReceipt[], target: MatchTarget, limit = 3): ReceiptMatchCandidate[] {
   const expected = expectedValue(target)
-  if (typeof expected !== "number" || expected <= 0 || !target.chain) return null
-  const desired = expected
+  if (typeof expected !== "number" || expected <= 0 || !target.chain) return []
   const eventTime = target.occurredAt ? new Date(target.occurredAt).getTime() : 0
-  const candidates = receipts
+  const usesUsd = target.expectedAmount == null
+  const allowed = tolerance(expected, usesUsd)
+  const eligible = receipts
     .filter((receipt) => receipt.direction === "incoming")
     .filter((receipt) => receipt.chain === target.chain)
     .filter((receipt) => !target.asset || target.asset === "USD" || receipt.asset === target.asset)
     .filter((receipt) => receipt.status === "unclassified")
     .filter((receipt) => availableAmount(receipt) > 0)
-    .filter((receipt) => {
-      if (!eventTime || !receipt.blockTime) return true
-      return Math.abs(new Date(receipt.blockTime).getTime() - eventTime) <= 18 * 60 * 60 * 1000
+    .filter((receipt) => !target.date || !receipt.date || receipt.date === target.date)
+    .filter((receipt) => !eventTime || !receiptTime(receipt) || Math.abs(receiptTime(receipt) - eventTime) <= MATCH_WINDOW_MS)
+    .sort((a, b) => {
+      if (!eventTime) return receiptTime(b) - receiptTime(a)
+      return Math.abs(receiptTime(a) - eventTime) - Math.abs(receiptTime(b) - eventTime)
     })
-    .slice(0, 18)
+    .slice(0, MAX_CANDIDATE_RECEIPTS)
 
-  const values = candidates.map((receipt) => targetValue(receipt, target))
-  const usesUsd = target.expectedAmount == null
-  const allowed = tolerance(desired, usesUsd)
-  const best: { value: { indices: number[]; total: number; delta: number } | null } = { value: null }
+  const groups = [...clusterReceipts(eligible), eligible]
+  const found = new Map<string, { receipts: RevenueReceipt[]; total: number }>()
+  for (const group of groups) {
+    if (!group.length) continue
+    const values = group.map((receipt) => targetValue(receipt, target) ?? 0)
+    const result = subsetCandidate(group, values, expected, allowed)
+    if (!result) continue
+    const key = candidateKey(result.receipts)
+    if (key && !found.has(key)) found.set(key, result)
+  }
 
-  function visit(index: number, indices: number[], total: number) {
-    const delta = Math.abs(total - desired)
-    if (indices.length && delta <= allowed && (!best.value || delta < best.value.delta || (delta === best.value.delta && indices.length < best.value.indices.length))) {
-      best.value = { indices: [...indices], total, delta }
+  const ranked = Array.from(found.values()).sort((a: { receipts: RevenueReceipt[]; total: number }, b: { receipts: RevenueReceipt[]; total: number }) => {
+    const delta = Math.abs(a.total - expected) - Math.abs(b.total - expected)
+    if (delta) return delta
+    const aDistance = eventTime ? Math.min(...a.receipts.map((receipt: RevenueReceipt) => Math.abs(receiptTime(receipt) - eventTime))) : 0
+    const bDistance = eventTime ? Math.min(...b.receipts.map((receipt: RevenueReceipt) => Math.abs(receiptTime(receipt) - eventTime))) : 0
+    return aDistance - bDistance || a.receipts.length - b.receipts.length
+  })
+  const bestDelta = ranked[0] ? Math.abs(ranked[0].total - expected) : Infinity
+  const ambiguous = ranked.slice(1).some((candidate: { receipts: RevenueReceipt[]; total: number }) => Math.abs(Math.abs(candidate.total - expected) - bestDelta) <= allowed / 5)
+
+  return ranked.slice(0, Math.max(1, limit)).map((candidate, index) => {
+    const times = candidate.receipts.map((receipt: RevenueReceipt) => receiptTime(receipt)).filter(Boolean).sort((a: number, b: number) => a - b)
+    const delta = Math.abs(candidate.total - expected)
+    return {
+      receiptIds: candidate.receipts.map((receipt) => String(receipt._id || "")).filter(Boolean),
+      total: candidate.total,
+      delta,
+      confidence: index === 0 && delta <= allowed / 5 && !ambiguous ? "high" : "medium",
+      receiptCount: candidate.receipts.length,
+      firstReceiptAt: times[0] ? new Date(times[0]).toISOString() : null,
+      lastReceiptAt: times[times.length - 1] ? new Date(times[times.length - 1]).toISOString() : null,
     }
-    if (index >= candidates.length || indices.length >= 10 || total > desired + allowed) return
-    visit(index + 1, indices, total)
-    const value = values[index]
-    if (value == null) return
-    indices.push(index)
-    visit(index + 1, indices, total + value)
-    indices.pop()
-  }
+  })
+}
 
-  visit(0, [], 0)
-  const result = best.value
-  if (!result) return null
-  return {
-    receiptIds: result.indices.map((index: number) => String(candidates[index]._id || "")).filter(Boolean),
-    total: result.total,
-    delta: result.delta,
-    confidence: result.delta <= allowed / 5 ? "high" as const : "medium" as const,
-  }
+export function findReceiptCombination(receipts: RevenueReceipt[], target: MatchTarget) {
+  const [best, ...alternatives] = findReceiptMatchCandidates(receipts, target, 3)
+  return best ? { ...best, alternatives } : null
 }

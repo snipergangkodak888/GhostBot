@@ -6,6 +6,7 @@ import {
   assignFeeProject,
   confirmFeeExpectation,
   createFeeFromReceipt,
+  createFeeFromReceipts,
   ensureDailyTradingFeeExpectations,
   listRevenueDay,
   proposeReceiptMatch,
@@ -14,6 +15,7 @@ import {
   setFeeQuoteAsset,
   setFeeType,
   updateReceiptClassification,
+  valuePendingRevenueReceipts,
 } from "@/lib/revenue-service"
 import { teamDateKey } from "@/lib/team-timezone"
 import type { FeeType, RevenueReceiptStatus } from "@/lib/revenue-types"
@@ -46,6 +48,7 @@ export async function POST(req: Request) {
     let result: any
     switch (body.action) {
       case "ensure_daily": result = await ensureDailyTradingFeeExpectations(body.date || teamDateKey(0)); break
+      case "value_pending": result = await valuePendingRevenueReceipts(body.date || teamDateKey(0)); break
       case "assign_project": result = await assignFeeProject(String(body.feeId), String(body.projectId)); break
       case "set_asset": result = await setFeeQuoteAsset(String(body.feeId), String(body.asset)); break
       case "set_fee_type": result = await setFeeType(String(body.feeId), String(body.feeType) as FeeType); break
@@ -56,6 +59,7 @@ export async function POST(req: Request) {
       case "waive_fee": result = await resolveFeeWithoutRevenue(String(body.feeId), "waived"); break
       case "classify_receipt": result = await updateReceiptClassification(String(body.receiptId), String(body.status) as RevenueReceiptStatus, body.amountUsd === undefined ? undefined : body.amountUsd == null ? null : Number(body.amountUsd)); break
       case "create_receipt_fee": result = await createFeeFromReceipt({ receiptId: String(body.receiptId), feeType: String(body.feeType) as FeeType, projectId: body.projectId ? String(body.projectId) : null, amount: body.amount == null || body.amount === "" ? null : Number(body.amount) }); break
+      case "create_grouped_receipt_fee": result = await createFeeFromReceipts({ receiptIds: Array.isArray(body.receiptIds) ? body.receiptIds.map(String) : [], feeType: String(body.feeType) as FeeType, projectId: body.projectId ? String(body.projectId) : null, amount: body.amount == null || body.amount === "" ? null : Number(body.amount) }); break
       case "preview_consolidation": result = await saveConsolidationPreview(String(body.date || teamDateKey(0)), Number(body.finalUsdc)); break
       case "confirm_consolidation": result = await confirmConsolidation(String(body.date || teamDateKey(0))); break
       default: return NextResponse.json({ error: "Unknown revenue action" }, { status: 400 })

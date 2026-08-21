@@ -71,6 +71,10 @@ export type RevenueReceipt = {
   amount: number
   amountUsd?: number | null
   valuationStatus?: "valued" | "pending" | "manual"
+  priceUsd?: number | null
+  priceSource?: "stablecoin" | "coingecko" | "defillama" | "manual" | null
+  priceTimestamp?: string | null
+  priceFetchedAt?: string | null
   status: RevenueReceiptStatus
   proposedFeeEventId?: string | null
   allocations: RevenueAllocation[]
@@ -92,7 +96,9 @@ export type RevenueFeeEvent = {
     messageId: number
     forwardedByTelegramId?: number | null
     originalText: string
+    originalDate?: string | null
   }
+  occurredAt?: string | null
   projectId?: string | null
   projectName?: string | null
   chain?: RevenueChain | null
@@ -108,6 +114,15 @@ export type RevenueFeeEvent = {
   status: FeeEventStatus
   matchedReceiptIds: string[]
   proposedReceiptIds: string[]
+  matchAlternatives?: Array<{
+    receiptIds: string[]
+    total: number
+    delta: number
+    confidence: "high" | "medium"
+    receiptCount: number
+    firstReceiptAt?: string | null
+    lastReceiptAt?: string | null
+  }>
   parse: ParsedFeeMessage
   createdByTelegramId?: number | null
   confirmedByTelegramId?: number | null

@@ -5,6 +5,7 @@ import { cleanRevenueWalletRole, normalizeQuickNodeRevenuePayload, verifyQuickNo
 import { saveRevenueReceipt } from "@/lib/revenue-service"
 import { notifyFeeInboxReceipt, notifyFeeInboxTreasuryReceipt } from "@/lib/revenue-telegram"
 import { reconcileConsolidationReceipt } from "@/lib/revenue-consolidation"
+import { valueRevenueReceipt } from "@/lib/revenue-pricing"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -57,7 +58,11 @@ export async function POST(req: NextRequest) {
   let duplicates = 0
   const savedIds: string[] = []
   for (const receipt of normalized.receipts) {
-    const saved = await saveRevenueReceipt(receipt)
+    const valuedReceipt = await valueRevenueReceipt(receipt).catch((error) => {
+      console.error("[revenue] receipt valuation pending", error instanceof Error ? error.message : error)
+      return receipt
+    })
+    const saved = await saveRevenueReceipt(valuedReceipt)
     const reconciliation = await reconcileConsolidationReceipt(saved.receipt).catch((error) => {
       console.error("[revenue] consolidation pairing failed", error)
       return { matched: false as const }
@@ -68,8 +73,8 @@ export async function POST(req: NextRequest) {
       savedIds.push(String(saved.receipt._id || ""))
       const notification = walletRole === "treasury"
         ? notifyFeeInboxTreasuryReceipt(saved.receipt, reconciliation)
-        : notifyFeeInboxReceipt(saved.receipt)
-      await notification.catch((error) => console.error("[revenue] fee inbox notification failed", error))
+        : saved.receipt.direction === "incoming" ? notifyFeeInboxReceipt(saved.receipt) : null
+      if (notification) await notification.catch((error) => console.error("[revenue] fee inbox notification failed", error))
     }
   }
 

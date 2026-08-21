@@ -25,8 +25,15 @@ export async function isFeeInboxChat(chatId: number | string) {
 
 export async function feeProjectButtons(feeId: string, limit = 8) {
   const db = await getDb()
-  const projects = await db.collection("opsProjects").find({ status: { $ne: "inactive" } }).sort({ updatedAt: -1 }).toArray()
-  const configured = projects.filter((project: any) => projectFeeConfig(project).chain).slice(0, limit)
+  const [fee, projects] = await Promise.all([
+    db.collection("revenueFeeEvents").findOne({ _id: feeId }),
+    db.collection("opsProjects").find({ status: { $ne: "inactive" } }).sort({ updatedAt: -1 }).toArray(),
+  ])
+  const explicitAsset = String(fee?.grossAsset || fee?.quoteAsset || "").toUpperCase()
+  const configured = projects.filter((project: any) => {
+    const config = projectFeeConfig(project)
+    return config.chain && (!explicitAsset || explicitAsset === "USD" || config.quoteAssets.includes(explicitAsset))
+  }).slice(0, limit)
   const rows = configured.map((project: any) => [{
     text: `${project.name} · ${CHAIN_LABELS[projectFeeConfig(project).chain as keyof typeof CHAIN_LABELS]}`.slice(0, 60),
     callback_data: `fee:project:${feeId}:${project._id}`,

@@ -32,6 +32,7 @@ const parser = loadTypeScriptModule("lib/revenue-parser.ts")
 const matching = loadTypeScriptModule("lib/revenue-matching.ts")
 const quicknode = loadTypeScriptModule("lib/quicknode-revenue.ts")
 const consolidation = loadTypeScriptModule("lib/revenue-consolidation.ts")
+const pricing = loadTypeScriptModule("lib/revenue-pricing.ts")
 
 const liquidation = parser.parseFeeMessage(`Cashout Summary:\nA total of 212,574 USDC was withdrawn from the MM balance\n200,050 USDC was sent here.\n12,524 USDC was taken for our 5% liquidations fee + privacy swap fee.`)
 assert.equal(liquidation.feeType, "liquidation")
@@ -48,13 +49,53 @@ assert.equal(daily.feeType, "daily_trading")
 assert.equal(daily.expectedUsd, 500)
 
 assert.equal(parser.parseFeeMessage("2.5 SOL dev allocation").feeType, "dev_allocation")
+assert.equal(parser.parseFeeMessage("$400 dev allocation for prime").expectedUsd, 400)
 assert.equal(parser.parseFeeMessage("750 USDC fee collector").feeType, "fee_collector")
 assert.equal(parser.parseFeeMessage("125 USDC fee rebate").feeType, "fee_rebate")
+const exactMmRevenue = parser.parseFeeMessage("We have taken $725 from the MM balance")
+assert.equal(exactMmRevenue.feeType, "other")
+assert.equal(exactMmRevenue.expectedUsd, 725)
+assert.equal(exactMmRevenue.expectedAssetAmount, null)
+
+const exactAssetMmRevenue = parser.parseFeeMessage("We took 2.5 SOL from the market maker balance")
+assert.equal(exactAssetMmRevenue.feeType, "other")
+assert.equal(exactAssetMmRevenue.expectedAssetAmount, 2.5)
+assert.equal(exactAssetMmRevenue.grossAsset, "SOL")
 
 const now = new Date().toISOString()
 const receipts = [300, 100, 200].map((amount, index) => ({ _id: `r${index}`, direction: "incoming", chain: "base", asset: "USDC", amount, amountUsd: amount, status: "unclassified", allocations: [], blockTime: now }))
 const match = matching.findReceiptCombination(receipts, { chain: "base", asset: "USDC", expectedAmount: 500, occurredAt: now })
 assert.deepEqual(Array.from(match.receiptIds).sort(), ["r0", "r2"])
+
+const eventTime = new Date("2026-08-21T12:40:00.000Z")
+const privacyReceipts = Array.from({ length: 10 }, (_, index) => ({
+  _id: `privacy-${index}`,
+  direction: "incoming",
+  chain: "bnb",
+  asset: "BNB",
+  amount: 0.05,
+  amountUsd: 72.5,
+  status: "unclassified",
+  allocations: [],
+  date: "2026-08-21",
+  blockTime: new Date(eventTime.getTime() - (40 - index) * 60_000).toISOString(),
+}))
+const noiseReceipts = Array.from({ length: 120 }, (_, index) => ({
+  _id: `noise-${index}`,
+  direction: "incoming",
+  chain: "bnb",
+  asset: "BNB",
+  amount: 0.001,
+  amountUsd: 3.141,
+  status: "unclassified",
+  allocations: [],
+  date: "2026-08-21",
+  blockTime: new Date(eventTime.getTime() - (index + 1) * 5 * 60_000).toISOString(),
+}))
+const privacyMatch = matching.findReceiptCombination([...noiseReceipts, ...privacyReceipts], { chain: "bnb", asset: "BNB", expectedUsd: 725, occurredAt: eventTime.toISOString(), date: "2026-08-21" })
+assert.equal(privacyMatch.receiptIds.length, 10)
+assert.deepEqual(Array.from(privacyMatch.receiptIds).sort(), privacyReceipts.map((receipt) => receipt._id).sort())
+assert.equal(privacyMatch.total, 725)
 
 const body = JSON.stringify({ data: [{ transactionHash: "0xabc", from: evmSender, to: evmWallet, rawAmount: "500000000", decimals: 6, asset: "USDC", eventIndex: 0 }] })
 const secret = "test-secret"
@@ -133,6 +174,31 @@ const unknownToken = quicknode.normalizeQuickNodeRevenuePayload({
 }, "ethereum")
 assert.equal(unknownToken.receipts.length, 0)
 assert.equal(unknownToken.rejected, 1)
+
+const unrelatedLogs = Array.from({ length: 50 }, (_, index) => ({
+  address: "0x00000000000000000000000000000000000000dd",
+  topics: [erc20Topic, addressTopic(evmSender), addressTopic(`0x${String(index + 100).padStart(40, "0")}`)],
+  data: "0x1",
+  logIndex: `0x${index.toString(16)}`,
+  transactionHash: "0xspam-batch",
+}))
+const noisyUnknownToken = quicknode.normalizeQuickNodeRevenuePayload({
+  matchingTransactions: null,
+  matchingReceipts: [{ status: "0x1", transactionHash: "0xspam-batch", logs: [...unrelatedLogs, unknownToken ? {
+    address: "0x00000000000000000000000000000000000000dd",
+    topics: [erc20Topic, addressTopic(evmSender), addressTopic(evmWallet)],
+    data: "0x1",
+    logIndex: "0xff",
+    transactionHash: "0xspam-batch",
+  } : null].filter(Boolean) }],
+}, "robinhood")
+assert.equal(noisyUnknownToken.receipts.length, 0)
+assert.equal(noisyUnknownToken.rejected, 1)
+
+const valuedUsdc = await pricing.valueRevenueReceipt({ asset: "USDC", amount: 321.45, blockTime: now })
+assert.equal(valuedUsdc.amountUsd, 321.45)
+assert.equal(valuedUsdc.priceUsd, 1)
+assert.equal(valuedUsdc.priceSource, "stablecoin")
 
 // Literal minimized form of the live QuickNode solanaWalletFilter block payload.
 const solana = quicknode.normalizeQuickNodeRevenuePayload([{

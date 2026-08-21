@@ -288,13 +288,14 @@ function normalizeEvmTemplatePayload(payload: any, chain: RevenueChain, walletRo
       if (String(topics[0] || "").toLowerCase() !== ERC20_TRANSFER_TOPIC || topics.length !== 3) continue
       sawTransfer = true
       const match = evmDirection(wallet, topicAddress(topics[1]), topicAddress(topics[2]))
+      if (!match) continue
       const transactionHash = String(log?.transactionHash || receipt?.transactionHash || "").trim()
       const tokenAddress = normalizedAddress(log?.address, chain)
       const metadata = tokenMetadata(chain, tokenAddress)
       const rawAmount = integer(log?.data)
       const amount = rawAmount == null || !metadata ? null : scaledInteger(rawAmount, metadata.decimals)
       const eventIndex = integerNumber(log?.logIndex) ?? logPosition
-      if (!wallet || !match || !transactionHash || !tokenAddress || !metadata || rawAmount == null || rawAmount <= BigInt(0) || amount == null || amount <= 0) {
+      if (!wallet || !transactionHash || !tokenAddress || !metadata || rawAmount == null || rawAmount <= BigInt(0) || amount == null || amount <= 0) {
         rejected += 1
         continue
       }

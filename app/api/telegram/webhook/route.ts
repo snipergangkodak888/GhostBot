@@ -823,8 +823,15 @@ async function processState(token: string, chatId: number | string, telegramId: 
 
   if (state.action === "fee_project_search") {
     const term = text.trim().toLowerCase()
-    const projects = await db.collection("opsProjects").find({ status: { $ne: "inactive" } }).sort({ name: 1 }).toArray()
-    const matches = projects.filter((project: any) => projectFeeConfig(project).chain && String(project.name || "").toLowerCase().includes(term)).slice(0, 10)
+    const [fee, projects] = await Promise.all([
+      db.collection("revenueFeeEvents").findOne({ _id: state.feeId }),
+      db.collection("opsProjects").find({ status: { $ne: "inactive" } }).sort({ name: 1 }).toArray(),
+    ])
+    const explicitAsset = String(fee?.grossAsset || fee?.quoteAsset || "").toUpperCase()
+    const matches = projects.filter((project: any) => {
+      const config = projectFeeConfig(project)
+      return config.chain && String(project.name || "").toLowerCase().includes(term) && (!explicitAsset || explicitAsset === "USD" || config.quoteAssets.includes(explicitAsset))
+    }).slice(0, 10)
     if (!matches.length) {
       await sendMessage(token, chatId, "No configured active project matched that name. Try another search or /cancel.")
       return true
@@ -1275,6 +1282,7 @@ export async function POST(req: NextRequest) {
   const message = update.message || update.edited_message || callback?.message
   const text = String(update.message?.text || update.message?.caption || update.edited_message?.text || update.edited_message?.caption || "").trim()
   const messageDateMs = Number(update.message?.date || update.edited_message?.date || 0) * 1000 || Date.now()
+  const forwardedDateMs = Number(update.message?.forward_origin?.date || update.message?.forward_date || 0) * 1000 || messageDateMs
   const chatId = message?.chat?.id
   const from = update.message?.from || update.edited_message?.from || callback?.from
   const telegramId = from?.id ? Number(from.id) : null
@@ -1284,7 +1292,13 @@ export async function POST(req: NextRequest) {
     await answerCallback(token, callback.id)
     const ok = await ensureAccess({ token, chatId, telegramId, text: "", profile: from, req })
     if (ok) await hostGroupIfAllowed(message?.chat, from)
-    if (ok && telegramId) await handleCallback(token, chatId, telegramId, String(callback.data || ""), req)
+    if (ok && telegramId) {
+      try {
+        await handleCallback(token, chatId, telegramId, String(callback.data || ""), req)
+      } catch (error) {
+        await sendMessage(token, chatId, `⚠️ ${error instanceof Error ? error.message : "That revenue action could not be completed."}`)
+      }
+    }
     return NextResponse.json({ ok: true })
   }
 
@@ -1307,7 +1321,7 @@ export async function POST(req: NextRequest) {
       const ok = await ensureAccess({ token, chatId, telegramId, text, profile: from, req })
       if (ok) await hostGroupIfAllowed(chat, from)
       if (ok && telegramId) {
-        const created = await createForwardedFeeEvent({ chatId, messageId: Number(message.message_id), text, telegramId, messageDate: new Date(messageDateMs) })
+        const created = await createForwardedFeeEvent({ chatId, messageId: Number(message.message_id), text, telegramId, messageDate: new Date(forwardedDateMs) })
         const fee = created.fee
         if (created.duplicate) await sendMessage(token, chatId, "This forwarded message is already in Revenue Inbox.")
         else if (!fee.feeType) await sendMessage(token, chatId, `I saved the message but could not classify the fee. Choose the type:`, [[{ text: "Liquidation", callback_data: `fee:type:${fee._id}:liquidation` }], [{ text: "Daily trading", callback_data: `fee:type:${fee._id}:daily_trading` }, { text: "Launch / TGE cash", callback_data: `fee:type:${fee._id}:launch` }], [{ text: "Dev allocation", callback_data: `fee:type:${fee._id}:dev_allocation` }]])
