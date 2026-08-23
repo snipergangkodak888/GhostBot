@@ -223,13 +223,47 @@ export async function createFeeFromReceipts(params: { receiptIds: string[]; feeT
   const [receipt] = receipts as any[]
   if (receipts.some((row: any) => row.chain !== receipt.chain || row.asset !== receipt.asset)) throw new Error("Grouped receipts must use the same chain and asset")
   if (receipts.some((row: any) => row.status !== "unclassified")) throw new Error("One or more receipts are already classified or reserved")
-  if (!["dev_allocation", "fee_collector", "fee_rebate", "other"].includes(params.feeType)) throw new Error("Use a forwarded message or daily schedule for this fee type")
+  if (!["daily_trading", "dev_allocation", "fee_collector", "fee_rebate", "other"].includes(params.feeType)) throw new Error("Use a forwarded message for this fee type")
   const projectRequired = params.feeType !== "fee_rebate"
   const project = params.projectId ? await db.collection("opsProjects").findOne({ _id: params.projectId }) : null
   if (projectRequired && !project) throw new Error("Choose an existing project")
   if (project) {
     const config = projectFeeConfig(project)
     if (config.chain !== receipt.chain || !config.quoteAssets.includes(receipt.asset)) throw new Error("Project chain or quote asset does not match this receipt")
+  }
+  if (params.feeType === "daily_trading") {
+    const date = receipt.date || dateKeyInTimeZone(new Date(receipt.blockTime || iso()))
+    if (receipts.some((row: any) => (row.date || dateKeyInTimeZone(new Date(row.blockTime || iso()))) !== date)) throw new Error("Daily fee receipts must be from the same accounting day")
+    await ensureDailyTradingFeeExpectations(date)
+    const dailyFee = await db.collection(FEES).findOne({ sourceKey: `daily:${date}:${project?._id}` })
+    if (!dailyFee) throw new Error("This project is not eligible for a daily trading fee on this date")
+    if (dailyFee.status === "confirmed") throw new Error(`${project?.name || "This project"}'s $500 daily trading fee is already confirmed for ${date}`)
+    if (["ignored", "waived"].includes(dailyFee.status)) throw new Error("This daily trading fee was already ignored or waived")
+    if (dailyFee.quoteAsset && dailyFee.quoteAsset !== receipt.asset) throw new Error(`This daily trading fee is waiting for ${dailyFee.quoteAsset}, not ${receipt.asset}`)
+    const selectedUsd = receipts.reduce((sum: number, row: any) => {
+      const available = receiptAvailableAmount(row)
+      return sum + (row.amountUsd == null ? 0 : Number(row.amountUsd) * available / Math.max(Number(row.amount || 0), Number.EPSILON))
+    }, 0)
+    if (receipts.some((row: any) => row.amountUsd == null)) throw new Error("Value the selected receipt(s) in USD before applying the daily fee")
+    const expectedUsd = Number(dailyFee.expectedUsd || projectFeeConfig(project).dailyTradingFeeUsd || 500)
+    const allowedUsdVariance = Math.max(2, expectedUsd * 0.05)
+    if (Math.abs(selectedUsd - expectedUsd) > allowedUsdVariance) throw new Error(`Selected receipts must be within ${allowedUsdVariance.toLocaleString("en-US", { style: "currency", currency: "USD" })} of the $${expectedUsd.toFixed(0)} daily fee`)
+    for (const previousId of dailyFee.proposedReceiptIds || []) {
+      const previous = await db.collection(RECEIPTS).findOne({ _id: previousId })
+      if (previous?.proposedFeeEventId === String(dailyFee._id) && !(previous.allocations || []).length) {
+        await db.collection(RECEIPTS).updateOne({ _id: previousId }, { $set: { status: "unclassified", proposedFeeEventId: null, updatedAt: iso() } })
+      }
+    }
+    const now = iso()
+    const feeId = String(dailyFee._id)
+    await db.collection(FEES).updateOne(
+      { _id: feeId },
+      { $set: { quoteAsset: receipt.asset, expectedAssetAmount: receipt.asset === "USDC" ? expectedUsd : null, proposedReceiptIds: receiptIds, matchAlternatives: [], matchConfidence: Math.abs(selectedUsd - expectedUsd) <= Math.max(2, expectedUsd * 0.005) ? "high" : "medium", matchDelta: round(Math.abs(selectedUsd - expectedUsd), 2), manualReceiptSelection: true, status: "match_proposed", updatedAt: now } },
+    )
+    for (const row of receipts as any[]) {
+      await db.collection(RECEIPTS).updateOne({ _id: row._id }, { $set: { status: "match_proposed", proposedFeeEventId: feeId, updatedAt: now } })
+    }
+    return db.collection(FEES).findOne({ _id: feeId }) as Promise<RevenueFeeEvent>
   }
   const available = receipts.reduce((sum: number, row: any) => sum + receiptAvailableAmount(row), 0)
   const expectedAssetAmount = params.amount == null ? available : Number(params.amount)
@@ -306,7 +340,7 @@ export async function proposeReceiptMatch(feeId: string) {
       await db.collection(RECEIPTS).updateOne({ _id: receiptId }, { $set: { status: "unclassified", proposedFeeEventId: null, updatedAt: iso() } })
     }
   }
-  await db.collection(FEES).updateOne({ _id: feeId }, { $set: { proposedReceiptIds: [], matchAlternatives: [], status: "awaiting_receipt", updatedAt: iso() } })
+  await db.collection(FEES).updateOne({ _id: feeId }, { $set: { proposedReceiptIds: [], matchAlternatives: [], manualReceiptSelection: false, status: "awaiting_receipt", updatedAt: iso() } })
   const receipts = await db.collection(RECEIPTS).find({ date: fee.date }).sort({ blockTime: -1 }).limit(500).toArray() as RevenueReceipt[]
   const match = findReceiptCombination(receipts, {
     chain: fee.chain,
@@ -373,7 +407,11 @@ export async function acceptReceiptMatch(feeId: string, telegramId?: number | nu
   }
 
   const unresolved = remainingAmount ?? remainingUsd
-  const allowedDelta = remainingAmount != null ? Math.max(0.000001, Number(fee.expectedAssetAmount || 0) * 0.005) : Math.max(2, Number(fee.expectedUsd || 0) * 0.005)
+  const normalAllowedDelta = remainingAmount != null ? Math.max(0.000001, Number(fee.expectedAssetAmount || 0) * 0.005) : Math.max(2, Number(fee.expectedUsd || 0) * 0.005)
+  const manualDailyAllowedDelta = fee.feeType === "daily_trading" && fee.manualReceiptSelection
+    ? (remainingAmount != null ? Math.max(0.000001, Number(fee.expectedAssetAmount || 0) * 0.05) : Math.max(2, Number(fee.expectedUsd || 0) * 0.05))
+    : 0
+  const allowedDelta = Math.max(normalAllowedDelta, manualDailyAllowedDelta)
   if (unresolved != null && unresolved > allowedDelta) throw new Error("Selected receipts do not add up to the expected fee")
   if (!usedReceiptIds.length) throw new Error("Selected receipts have no available amount")
 

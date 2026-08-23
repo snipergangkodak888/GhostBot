@@ -125,6 +125,7 @@ export type RevenueFeeEvent = {
     firstReceiptAt?: string | null
     lastReceiptAt?: string | null
   }>
+  manualReceiptSelection?: boolean
   parse: ParsedFeeMessage
   createdByTelegramId?: number | null
   confirmedByTelegramId?: number | null
