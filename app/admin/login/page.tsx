@@ -6,7 +6,7 @@ import { APP_NAME, MAIN_LOGO_URL } from '@/lib/branding'
 
 export default function AdminLoginPage() {
   const router = useRouter()
-  const [email, setEmail] = useState('')
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -34,7 +34,7 @@ export default function AdminLoginPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ username, password }),
       })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
@@ -72,12 +72,12 @@ export default function AdminLoginPage() {
         <p className="text-center text-gray-400 mt-1 text-xs sm:text-sm">Manage {platformName || 'your platform'}</p>
         <form onSubmit={onSubmit} className="mt-6 space-y-4">
           <div>
-            <label className="block text-sm text-gray-300 mb-1">Email</label>
-            <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" required className="w-full rounded-lg bg-[#146efc]/5 border border-[#146efc]/20 px-3 py-2 text-white outline-none focus:border-[#146efc] transition-colors" />
+            <label className="block text-sm text-gray-300 mb-1">Username</label>
+            <input value={username} onChange={(e) => setUsername(e.target.value)} type="text" autoComplete="username" required className="w-full rounded-lg bg-[#146efc]/5 border border-[#146efc]/20 px-3 py-2 text-white outline-none focus:border-[#146efc] transition-colors" />
           </div>
           <div>
             <label className="block text-sm text-gray-300 mb-1">Password</label>
-            <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" required className="w-full rounded-lg bg-[#146efc]/5 border border-[#146efc]/20 px-3 py-2 text-white outline-none focus:border-[#146efc] transition-colors" />
+            <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" autoComplete="current-password" required className="w-full rounded-lg bg-[#146efc]/5 border border-[#146efc]/20 px-3 py-2 text-white outline-none focus:border-[#146efc] transition-colors" />
           </div>
           {error && <div className="text-red-400 text-sm">{error}</div>}
           <button disabled={loading} className="w-full font-bold py-2.5 rounded-xl disabled:opacity-60 transition-all text-white" style={{ background: '#146efc' }}>

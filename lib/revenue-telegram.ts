@@ -3,6 +3,7 @@ import { getSubscribedChats } from "@/lib/chat-subscriptions"
 import { getTelegramBotToken, telegramApi } from "@/lib/telegram-bot"
 import { CHAIN_LABELS, projectFeeConfig } from "@/lib/revenue-projects"
 import type { RevenueFeeEvent, RevenueReceipt } from "@/lib/revenue-types"
+import { revenueTransactionUrl } from "@/lib/revenue-explorer"
 
 function escapeHtml(value: unknown) {
   return String(value || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -62,6 +63,7 @@ export async function notifyFeeInboxReceipt(receipt: RevenueReceipt) {
   const configured = String(process.env.FEE_INBOX_CHAT_ID || "").trim()
   if (configured && !chats.some((chat) => String(chat.chatId) === configured)) chats.push({ chatId: configured, kind: configured.startsWith("-") ? "group" : "direct", label: "Fee Inbox" })
   if (!token || !chats.length) return { sent: 0 }
+  const transactionUrl = revenueTransactionUrl(receipt.chain, receipt.transactionHash)
   const text = [
     `<b>New revenue-wallet ${receipt.direction === "incoming" ? "receipt" : "movement"}</b>`,
     "",
@@ -69,7 +71,7 @@ export async function notifyFeeInboxReceipt(receipt: RevenueReceipt) {
     `Amount: <b>${escapeHtml(amount(receipt.amount, receipt.asset))}</b>`,
     `Direction: <b>${escapeHtml(receipt.direction)}</b>`,
     `USD value: <b>${escapeHtml(usd(receipt.amountUsd))}</b>`,
-    `Transaction: <code>${escapeHtml(receipt.transactionHash.slice(0, 16))}…</code>`,
+    transactionUrl ? `Transaction: <a href="${escapeHtml(transactionUrl)}">${escapeHtml(receipt.transactionHash.slice(0, 16))}…</a>` : `Transaction: <code>${escapeHtml(receipt.transactionHash.slice(0, 16))}…</code>`,
     "",
     "This receipt is unclassified until it is matched or reviewed.",
   ].join("\n")
@@ -79,9 +81,10 @@ export async function notifyFeeInboxReceipt(receipt: RevenueReceipt) {
       chat_id: chat.chatId,
       text,
       parse_mode: "HTML",
+      disable_web_page_preview: true,
       reply_markup: {
         inline_keyboard: [
-          [{ text: "🔎 Review", callback_data: `fee:receipt:${receipt._id}` }],
+          [{ text: "🔎 Review", callback_data: `fee:receipt:${receipt._id}` }, ...(transactionUrl ? [{ text: "↗️ View transaction", url: transactionUrl }] : [])],
           [{ text: "↔️ Internal transfer", callback_data: `fee:internal:${receipt._id}` }, { text: "Ignore", callback_data: `fee:ignore:${receipt._id}` }],
         ],
       },
@@ -97,19 +100,20 @@ export async function notifyFeeInboxTreasuryReceipt(receipt: RevenueReceipt, rec
   const configured = String(process.env.FEE_INBOX_CHAT_ID || "").trim()
   if (configured && !chats.some((chat) => String(chat.chatId) === configured)) chats.push({ chatId: configured, kind: configured.startsWith("-") ? "group" : "direct", label: "Fee Inbox" })
   if (!token || !chats.length) return { sent: 0 }
+  const transactionUrl = revenueTransactionUrl(receipt.chain, receipt.transactionHash)
   const text = [
     "<b>Treasury consolidation received</b>",
     "",
     `Amount: <b>${escapeHtml(amount(receipt.amount, receipt.asset))}</b>`,
     `Chain: <b>${escapeHtml(CHAIN_LABELS[receipt.chain])}</b>`,
     `Revenue-wallet send matched: <b>${reconciliation?.matched ? "yes" : "waiting"}</b>`,
-    `Transaction: <code>${escapeHtml(receipt.transactionHash.slice(0, 16))}…</code>`,
+    transactionUrl ? `Transaction: <a href="${escapeHtml(transactionUrl)}">${escapeHtml(receipt.transactionHash.slice(0, 16))}…</a>` : `Transaction: <code>${escapeHtml(receipt.transactionHash.slice(0, 16))}…</code>`,
     "",
     "This is an internal arrival, not new client revenue. No funds were moved by the bot.",
   ].join("\n")
   let sent = 0
   for (const chat of chats) {
-    const response = await telegramApi(token, "sendMessage", { chat_id: chat.chatId, text, parse_mode: "HTML" }).catch(() => null)
+    const response = await telegramApi(token, "sendMessage", { chat_id: chat.chatId, text, parse_mode: "HTML", disable_web_page_preview: true, ...(transactionUrl ? { reply_markup: { inline_keyboard: [[{ text: "↗️ View transaction", url: transactionUrl }]] } } : {}) }).catch(() => null)
     if (response) sent += 1
   }
   return { sent }

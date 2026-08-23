@@ -75,6 +75,8 @@ export type RevenueReceipt = {
   priceSource?: "stablecoin" | "coingecko" | "defillama" | "manual" | null
   priceTimestamp?: string | null
   priceFetchedAt?: string | null
+  notificationSuppressedReason?: "dust" | null
+  autoClassification?: "dust" | null
   status: RevenueReceiptStatus
   proposedFeeEventId?: string | null
   allocations: RevenueAllocation[]

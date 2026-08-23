@@ -6,11 +6,12 @@ import { createAdminToken } from '@/lib/auth'
 
 export async function POST(req: Request) {
   try {
-    const { email, password } = await req.json()
-    if (!email || !password) return NextResponse.json({ error: 'Missing credentials' }, { status: 400 })
+    const { username, email, password } = await req.json()
+    const login = String(username || email || '').trim().toLowerCase()
+    if (!login || !password) return NextResponse.json({ error: 'Missing credentials' }, { status: 400 })
 
     const db = await getDb()
-    let admin = await db.collection('admins').findOne({ email }, { projection: { email: 1, password: 1, role: 1 } })
+    let admin = await db.collection('admins').findOne({ email: login }, { projection: { email: 1, password: 1, role: 1 } })
 
     if (!admin) {
       const adminCount = await db.collection('admins').countDocuments({})
@@ -21,7 +22,7 @@ export async function POST(req: Request) {
         adminCount === 0 &&
         seedEmail &&
         seedPassword &&
-        String(email).trim().toLowerCase() === seedEmail.trim().toLowerCase() &&
+        login === seedEmail.trim().toLowerCase() &&
         password === seedPassword
       ) {
         const hashedPassword = await bcrypt.hash(seedPassword, 10)
@@ -44,7 +45,7 @@ export async function POST(req: Request) {
     const ok = await bcrypt.compare(password, admin.password)
     if (!ok) return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 })
 
-    const token = await createAdminToken({ sub: String(admin._id), email, role: 'admin' })
+    const token = await createAdminToken({ sub: String(admin._id), email: String(admin.email || login), role: 'admin' })
     const url = new URL(req.url)
     const isHttps = url.protocol === 'https:'
     cookies().set('admin_token', token, {
@@ -92,7 +93,7 @@ export async function POST(req: Request) {
       }
 
       await db.collection('adminLoginHistory').insertOne({
-        email,
+        email: String(admin.email || login),
         ip,
         browser: getBrowser(ua),
         os: getOS(ua),

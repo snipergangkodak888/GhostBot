@@ -6,6 +6,7 @@ import { saveRevenueReceipt } from "@/lib/revenue-service"
 import { notifyFeeInboxReceipt, notifyFeeInboxTreasuryReceipt } from "@/lib/revenue-telegram"
 import { reconcileConsolidationReceipt } from "@/lib/revenue-consolidation"
 import { valueRevenueReceipt } from "@/lib/revenue-pricing"
+import { isRevenueReceiptDust, revenueNotificationMinimumUsd } from "@/lib/revenue-dust"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -56,13 +57,16 @@ export async function POST(req: NextRequest) {
 
   let inserted = 0
   let duplicates = 0
+  let suppressedDust = 0
   const savedIds: string[] = []
   for (const receipt of normalized.receipts) {
     const valuedReceipt = await valueRevenueReceipt(receipt).catch((error) => {
       console.error("[revenue] receipt valuation pending", error instanceof Error ? error.message : error)
       return receipt
     })
-    const saved = await saveRevenueReceipt(valuedReceipt)
+    const dust = isRevenueReceiptDust(valuedReceipt)
+    const storedReceipt = dust ? { ...valuedReceipt, status: "ignored" as const, notificationSuppressedReason: "dust" as const, autoClassification: "dust" as const } : valuedReceipt
+    const saved = await saveRevenueReceipt(storedReceipt)
     const reconciliation = await reconcileConsolidationReceipt(saved.receipt).catch((error) => {
       console.error("[revenue] consolidation pairing failed", error)
       return { matched: false as const }
@@ -70,8 +74,9 @@ export async function POST(req: NextRequest) {
     if (saved.duplicate) duplicates += 1
     else {
       inserted += 1
+      if (dust) suppressedDust += 1
       savedIds.push(String(saved.receipt._id || ""))
-      const notification = walletRole === "treasury"
+      const notification = dust ? null : walletRole === "treasury"
         ? notifyFeeInboxTreasuryReceipt(saved.receipt, reconciliation)
         : saved.receipt.direction === "incoming" ? notifyFeeInboxReceipt(saved.receipt) : null
       if (notification) await notification.catch((error) => console.error("[revenue] fee inbox notification failed", error))
@@ -85,6 +90,8 @@ export async function POST(req: NextRequest) {
     payloadHash: createHash("sha256").update(body).digest("hex"),
     inserted,
     duplicates,
+    suppressedDust,
+    notificationMinimumUsd: revenueNotificationMinimumUsd(),
     rejected: normalized.rejected,
     rejectedPayloadSample: rejectedPayloadSample(payload, body, normalized.rejected),
     savedIds,
@@ -93,7 +100,7 @@ export async function POST(req: NextRequest) {
     createdAt: new Date(),
   })
 
-  return NextResponse.json({ ok: true, chain: normalized.chain, walletRole, inserted, duplicates, rejected: normalized.rejected })
+  return NextResponse.json({ ok: true, chain: normalized.chain, walletRole, inserted, duplicates, suppressedDust, rejected: normalized.rejected })
 }
 
 export async function GET() {

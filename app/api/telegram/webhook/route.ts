@@ -13,6 +13,7 @@ import { miscIncomeCategoryLabel, parseIncomeLogCommand } from "@/lib/payroll-mi
 import { chatPurposeLabel, listChatSubscriptions, normalizeChatPurpose, setChatSubscription } from "@/lib/chat-subscriptions"
 import { formatLaunchDaySchedule } from "@/lib/launch-calendar"
 import { projectFeeConfig } from "@/lib/revenue-projects"
+import { revenueTransactionUrl } from "@/lib/revenue-explorer"
 import { acceptReceiptMatch, assignFeeProject, confirmFeeExpectation, createForwardedFeeEvent, getRevenueReceipt, listRevenueDay, setFeeQuoteAsset, setFeeType, updateReceiptClassification } from "@/lib/revenue-service"
 import { feeProjectButtons, formatFeeExpectation, isFeeInboxChat } from "@/lib/revenue-telegram"
 import type { FeeType } from "@/lib/revenue-types"
@@ -1029,7 +1030,8 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   if (area === "fee" && action === "receipt") {
     const receipt = await getRevenueReceipt(id)
     if (!receipt) return sendMessage(token, chatId, "Receipt was not found.")
-    return sendMessage(token, chatId, `Revenue receipt\n\n${receipt.amount} ${receipt.asset}\nChain: ${receipt.chain}\nStatus: ${receipt.status}\nTransaction: ${receipt.transactionHash}\n\nSelect it with the matching fee in Revenue Inbox.`, [[{ text: "Open Revenue Inbox", url: `${appBaseUrl(req)}/admin/revenue` }], [{ text: "↔️ Internal transfer", callback_data: `fee:internal:${id}` }, { text: "Ignore", callback_data: `fee:ignore:${id}` }]])
+    const transactionUrl = revenueTransactionUrl(receipt.chain, receipt.transactionHash)
+    return sendMessage(token, chatId, `Revenue receipt\n\n${receipt.amount} ${receipt.asset}\nChain: ${receipt.chain}\nStatus: ${receipt.status}\nTransaction: ${receipt.transactionHash}\n\nSelect it with the matching fee in Revenue Inbox.`, [[{ text: "Open Revenue Inbox", url: `${appBaseUrl(req)}/admin/revenue` }, ...(transactionUrl ? [{ text: "↗️ View transaction", url: transactionUrl }] : [])], [{ text: "↔️ Internal transfer", callback_data: `fee:internal:${id}` }, { text: "Ignore", callback_data: `fee:ignore:${id}` }]])
   }
   if (area === "fee" && (action === "internal" || action === "ignore")) {
     await updateReceiptClassification(id, action === "internal" ? "internal" : "ignored")
