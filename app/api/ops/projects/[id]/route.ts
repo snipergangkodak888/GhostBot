@@ -42,6 +42,12 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   }
 
   await db.collection('opsProjects').updateOne(idFilter(params.id), { $set: update })
+  if (typeof update.name === 'string' && update.name) {
+    await db.collection('revenueFeeEvents').updateMany(
+      { projectId: String(existing._id) },
+      { $set: { projectName: update.name, updatedAt: new Date().toISOString() } },
+    )
+  }
   const project = await db.collection('opsProjects').findOne(idFilter(params.id))
   return NextResponse.json({ project })
 }
