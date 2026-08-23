@@ -229,10 +229,8 @@ export async function runLaunchScheduleCron(now = new Date()) {
 async function processDailyPerformance(token: string, now: Date) {
   const db = await getDb()
   const today = estDateKey(now)
-  const key = `daily-performance:${today}`
-  if (!(await claimDelivery(key, "daily-performance"))) {
-    return { sent: 0, failed: 0, skipped: 1 }
-  }
+  const recipients = await getSubscribedChats("performance")
+  if (!recipients.length) return { recipients: 0, sent: 0, failed: 0, skipped: 0 }
 
   const [projects, reminders, payroll, sheets] = await Promise.all([
     db.collection("opsProjects").find({}).toArray(),
@@ -244,7 +242,6 @@ async function processDailyPerformance(token: string, now: Date) {
   const activeProjects = projects.filter((project: any) => project.status !== "inactive")
   const pendingPayroll = payroll.filter((row: any) => row.status !== "paid")
   const scheduledReminders = reminders.filter((reminder: any) => reminder.status !== "done")
-  const recipients = await getRecipients()
 
   const text = [
     "<b>Daily Project Performance</b>",
@@ -262,11 +259,25 @@ async function processDailyPerformance(token: string, now: Date) {
     `🔔 Scheduled reminders: <b>${scheduledReminders.length}</b>`,
   ].join("\n")
 
-  return sendToRecipients(token, recipients, text)
+  let sent = 0
+  let failed = 0
+  let skipped = 0
+  for (const recipient of recipients) {
+    const key = `daily-performance:${recipient.chatId}:${today}`
+    if (!(await claimDelivery(key, "daily-performance"))) {
+      skipped += 1
+      continue
+    }
+    const ok = await sendTelegramText(token, recipient.chatId, text)
+    if (ok) sent += 1
+    else failed += 1
+  }
+
+  return { recipients: recipients.length, sent, failed, skipped }
 }
 
-export async function runOpsSuperCron() {
-  const startedAt = new Date()
+export async function runOpsSuperCron(now = new Date()) {
+  const startedAt = now
   const db = await getDb()
   const revenueDailyFees = await ensureDailyTradingFeeExpectations()
   const revenueValuation = await valuePendingRevenueReceipts()

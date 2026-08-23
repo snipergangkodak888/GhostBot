@@ -122,7 +122,7 @@ export default function AdminCronPage() {
         <div className="mt-4 grid gap-3 md:grid-cols-3">
           <StatusCard title="Due reminders" body="Sends scheduled reminders to active team users and hosted groups." />
           <StatusCard title="Calendar launches" body="Sends launch reminders for today and tomorrow using EST dates." />
-          <StatusCard title="Daily report" body="Sends profit and performance once per EST day." />
+          <StatusCard title="Daily report" body="Sends profit and performance once per EST day, only to chats subscribed to daily project updates." />
         </div>
       </section>
 

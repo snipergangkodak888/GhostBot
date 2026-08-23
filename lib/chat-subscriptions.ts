@@ -6,7 +6,7 @@ export type ChatPurpose = typeof CHAT_PURPOSES[number]
 export function normalizeChatPurpose(value: unknown): ChatPurpose | null {
   const normalized = String(value || "").trim().toLowerCase().replace(/[\s_-]+/g, "")
   if (["launch", "launches", "calendar", "launchcalendar"].includes(normalized)) return "launches"
-  if (["performance", "dailyperformance", "stats"].includes(normalized)) return "performance"
+  if (["performance", "daily", "dailyupdate", "dailyupdates", "dailyperformance", "projectupdates", "stats"].includes(normalized)) return "performance"
   if (["payroll", "pay"].includes(normalized)) return "payroll"
   if (["reminder", "reminders"].includes(normalized)) return "reminders"
   if (["fee", "fees", "revenue", "feeinbox", "revenueinbox"].includes(normalized)) return "fees"
@@ -16,7 +16,7 @@ export function normalizeChatPurpose(value: unknown): ChatPurpose | null {
 export function chatPurposeLabel(purpose: ChatPurpose) {
   return {
     launches: "Launch updates",
-    performance: "Performance updates",
+    performance: "Daily project updates",
     payroll: "Payroll updates",
     reminders: "Team reminders",
     fees: "Revenue and fee alerts",

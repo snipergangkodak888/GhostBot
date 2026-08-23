@@ -183,5 +183,22 @@
     "chatType": "group",
     "text": "/unsubscribe launches",
     "expectIncludes": ["no longer subscribed to Launch updates"]
+  },
+  {
+    "name": "subscribes a chat to the daily project update",
+    "telegramId": 990000099,
+    "chatId": 990000988,
+    "chatType": "group",
+    "text": "/subscribe daily",
+    "resetBefore": true,
+    "expectIncludes": ["subscribed to Daily project updates", "only in subscribed chats"]
+  },
+  {
+    "name": "unsubscribes a chat from the daily project update",
+    "telegramId": 990000099,
+    "chatId": 990000988,
+    "chatType": "group",
+    "text": "/unsubscribe daily",
+    "expectIncludes": ["no longer subscribed to Daily project updates"]
   }
 ]

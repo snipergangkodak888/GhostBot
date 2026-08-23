@@ -146,7 +146,7 @@ function helpMessage() {
     "🧠 @me your question",
     "🌍 /timezone - set your local timezone",
     "💰 /fees - show today’s revenue inbox",
-    "📣 /subscribe launches or /subscribe fees",
+    "📣 /subscribe launches, /subscribe daily, or /subscribe fees",
   ].join("\n")
 }
 
@@ -1172,7 +1172,7 @@ async function routeText(token: string, chatId: number | string, telegramId: num
   if (subscribeCommand || naturalLaunchSubscription) {
     const active = naturalLaunchSubscription || subscribeCommand?.[1].toLowerCase() === "subscribe"
     const purpose = naturalLaunchSubscription ? "launches" : normalizeChatPurpose(subscribeCommand?.[2])
-    if (!purpose) return sendMessage(token, chatId, "Choose an update type: /subscribe launches or /subscribe fees.")
+    if (!purpose) return sendMessage(token, chatId, "Choose an update type: /subscribe launches, /subscribe daily, or /subscribe fees.")
     await setChatSubscription({
       chatId,
       purpose,
@@ -1181,8 +1181,15 @@ async function routeText(token: string, chatId: number | string, telegramId: num
       chatType: message?.chat?.type || (isGroupChatId(chatId) ? "group" : "private"),
       telegramId,
     })
+    const confirmation = purpose === "fees"
+      ? "This is now the private Fee Inbox. Forward standardized fee/cashout messages here, and I’ll also post new revenue-wallet receipts."
+      : purpose === "launches"
+        ? `This chat is subscribed to ${chatPurposeLabel(purpose)}.\n\nI’ll post the complete launch schedule here each morning in ET.`
+        : purpose === "performance"
+          ? `This chat is subscribed to ${chatPurposeLabel(purpose)}.\n\nI’ll post the daily project revenue and performance update only in subscribed chats.`
+          : `This chat is subscribed to ${chatPurposeLabel(purpose)}.`
     return sendMessage(token, chatId, active
-      ? purpose === "fees" ? `✅ This is now the private Fee Inbox. Forward standardized fee/cashout messages here, and I’ll also post new revenue-wallet receipts.` : `✅ This chat is subscribed to ${chatPurposeLabel(purpose)}.\n\nI’ll post the complete launch schedule here each morning in ET.`
+      ? `✅ ${confirmation}`
       : `✅ This chat is no longer subscribed to ${chatPurposeLabel(purpose)}.`)
   }
   if (/^\/subscriptions$/i.test(commandText)) {
