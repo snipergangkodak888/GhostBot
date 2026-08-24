@@ -13,7 +13,11 @@ function loadTypeScriptModule(path, overrides = {}) {
   const module = { exports: {} }
   const localRequire = (id) => {
     if (Object.hasOwn(overrides, id)) return overrides[id]
-    if (id === "@/lib/revenue-types") return { REVENUE_CHAINS: ["ethereum", "base", "bnb", "robinhood", "solana"], REVENUE_WALLET_ROLES: ["revenue", "treasury"] }
+    if (id === "@/lib/revenue-types") return {
+      REVENUE_CHAINS: ["ethereum", "base", "bnb", "robinhood", "solana"],
+      REVENUE_WALLET_ROLES: ["revenue", "treasury"],
+      isGlobalRevenueFeeType: (value) => ["fee_rebate", "sumo_ref_claim"].includes(String(value || "")),
+    }
     if (id === "@/lib/db") return { getDb: async () => { throw new Error("Database access is not used by this unit test") } }
     if (id === "@/lib/team-timezone") return { teamDateKey: () => "2026-08-20" }
     return require(id)
@@ -80,6 +84,9 @@ const consolidationCandidates = loadTypeScriptModule("lib/revenue-consolidation-
 const pricing = loadTypeScriptModule("lib/revenue-pricing.ts")
 const explorer = loadTypeScriptModule("lib/revenue-explorer.ts")
 const dust = loadTypeScriptModule("lib/revenue-dust.ts")
+const allocations = loadTypeScriptModule("lib/revenue-allocations.ts")
+const revenuePayroll = loadTypeScriptModule("lib/revenue-payroll.ts")
+const payrollMisc = loadTypeScriptModule("lib/payroll-misc.ts")
 
 assert.equal(explorer.revenueTransactionUrl("ethereum", "0xabc"), "https://etherscan.io/tx/0xabc")
 assert.equal(explorer.revenueTransactionUrl("base", "0xabc"), "https://basescan.org/tx/0xabc")
@@ -90,6 +97,29 @@ assert.equal(dust.isRevenueReceiptDust({ direction: "incoming", amountUsd: 0.99 
 assert.equal(dust.isRevenueReceiptDust({ direction: "incoming", amountUsd: 1 }, 1), false)
 assert.equal(dust.isRevenueReceiptDust({ direction: "outgoing", amountUsd: 0.01 }, 1), false)
 assert.equal(dust.isRevenueReceiptDust({ direction: "incoming", amountUsd: null }, 1), false)
+
+const partiallyAllocated = { amount: 0.716913, amountUsd: 501.59, allocations: [{ amount: 0.71464044, amountUsd: 500 }] }
+assert.equal(allocations.receiptAllocatedAmount(partiallyAllocated), 0.71464044)
+assert.ok(Math.abs(allocations.receiptAvailableAmount(partiallyAllocated) - 0.00227256) < 1e-12)
+assert.ok(Math.abs(allocations.receiptAvailableUsd(partiallyAllocated) - 1.59) < 0.01)
+assert.doesNotThrow(() => allocations.validateClassifiedAmount(0.00227256, allocations.receiptAvailableAmount(partiallyAllocated), "BNB"))
+assert.throws(() => allocations.validateClassifiedAmount(0.716913, allocations.receiptAvailableAmount(partiallyAllocated), "BNB"), /Only 0.00227256 BNB remains available/)
+
+const payrollAggregation = revenuePayroll.aggregateRevenueFeesForPayroll([
+  { _id: "rebate-sol", feeType: "fee_rebate", chain: "solana", recognizedUsd: 100 },
+  { _id: "rebate-bnb", feeType: "fee_rebate", chain: "bnb", recognizedUsd: 250 },
+  { _id: "sumo-sol", feeType: "sumo_ref_claim", chain: "solana", recognizedUsd: 400 },
+  { _id: "sumo-eth", feeType: "sumo_ref_claim", chain: "ethereum", recognizedUsd: 125 },
+  { _id: "dev-wagie", feeType: "dev_allocation", projectId: "wagie", chain: "bnb", recognizedUsd: 75 },
+], "2026-08-23")
+assert.deepEqual(JSON.parse(JSON.stringify(payrollAggregation.devAllocations)), [
+  { category: "fee_rebate", income: 350, sourceFeeEventIds: ["rebate-sol", "rebate-bnb"] },
+  { category: "sumo_ref_claim", income: 525, sourceFeeEventIds: ["sumo-sol", "sumo-eth"] },
+  { projectId: "wagie", category: "dev_allocation", income: 75, sourceFeeEventIds: ["dev-wagie"] },
+])
+assert.equal(payrollMisc.normalizeMiscIncomeCategory("sumo claim"), "sumo_ref_claim")
+assert.equal(payrollMisc.miscIncomeProjectDisabled("sumo_ref_claim"), true)
+assert.equal(payrollMisc.validateDevAllocations([{ category: "sumo_ref_claim", income: 500 }, { category: "sumo_ref_claim", income: 100 }]).length, 1)
 
 const swapLegs = quicknode.classifyDeterministicInternalMovements([
   { _id: "swap-out", chain: "solana", walletRole: "revenue", wallet: solanaWallet, direction: "outgoing", transactionHash: "swap-tx", asset: "SOL", amount: 13.1501, amountUsd: 1254.67, status: "unclassified", allocations: [] },
@@ -176,6 +206,7 @@ await revenueTelegram.notifyConsolidationCandidate({ _id: "batch-1", sourceRecei
 const batchNotification = telegramCalls.at(-1).body
 assert.match(batchNotification.text, /Possible internal consolidation/)
 assert.equal(batchNotification.reply_markup.inline_keyboard[0][0].callback_data, "consol:view:batch-1")
+assert.ok(Buffer.byteLength(`receipt:type:${"x".repeat(24)}:sumo_ref_claim`) <= 64)
 
 const liquidation = parser.parseFeeMessage(`Cashout Summary:\nA total of 212,574 USDC was withdrawn from the MM balance\n200,050 USDC was sent here.\n12,524 USDC was taken for our 5% liquidations fee + privacy swap fee.`)
 assert.equal(liquidation.feeType, "liquidation")
@@ -195,6 +226,7 @@ assert.equal(parser.parseFeeMessage("2.5 SOL dev allocation").feeType, "dev_allo
 assert.equal(parser.parseFeeMessage("$400 dev allocation for prime").expectedUsd, 400)
 assert.equal(parser.parseFeeMessage("750 USDC fee collector").feeType, "fee_collector")
 assert.equal(parser.parseFeeMessage("125 USDC fee rebate").feeType, "fee_rebate")
+assert.equal(parser.parseFeeMessage("Claimed 900 USDC from the Sumo ref claim").feeType, "sumo_ref_claim")
 const exactMmRevenue = parser.parseFeeMessage("We have taken $725 from the MM balance")
 assert.equal(exactMmRevenue.feeType, "other")
 assert.equal(exactMmRevenue.expectedUsd, 725)

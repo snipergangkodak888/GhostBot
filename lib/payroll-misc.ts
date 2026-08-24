@@ -2,6 +2,7 @@ export const MISC_INCOME_CATEGORIES = [
   { id: "dev_allocation", label: "Dev allocation", projectRequired: true },
   { id: "private_liqs", label: "Private liquidations", projectRequired: false },
   { id: "fee_rebate", label: "Rebate", projectRequired: false },
+  { id: "sumo_ref_claim", label: "Sumo ref claim", projectRequired: false },
   { id: "other", label: "Other", projectRequired: false },
 ] as const
 
@@ -16,6 +17,7 @@ export function normalizeMiscIncomeCategory(value: unknown): MiscIncomeCategory 
   if (raw === "dev" || raw === "dev_alloc" || raw === "allocation") return "dev_allocation"
   if (raw === "priv_liqs" || raw === "privateliqs" || raw === "private_liquidation") return "private_liqs"
   if (raw === "rebate" || raw === "fee_rebates") return "fee_rebate"
+  if (raw === "sumo" || raw === "sumo_ref" || raw === "sumo_claim" || raw === "sumo_referral_claim") return "sumo_ref_claim"
   const match = MISC_INCOME_CATEGORIES.find((item) => item.id === raw)
   return match?.id || "dev_allocation"
 }
@@ -25,11 +27,11 @@ export function miscIncomeProjectRequired(category: MiscIncomeCategory | string)
 }
 
 export function miscIncomeProjectDisabled(category: MiscIncomeCategory | string) {
-  return category === "fee_rebate" || category === "private_liqs"
+  return category === "fee_rebate" || category === "private_liqs" || category === "sumo_ref_claim"
 }
 
 export function miscIncomeCategoryIsSingleton(category: MiscIncomeCategory | string) {
-  return category === "fee_rebate" || category === "private_liqs"
+  return category === "fee_rebate" || category === "private_liqs" || category === "sumo_ref_claim"
 }
 
 export function normalizeDevAllocationRow(row: {
@@ -69,7 +71,7 @@ export function validateDevAllocations(rows: unknown) {
       errors.push(`Misc income row ${index + 1}: ${miscIncomeCategoryLabel(row.category)} requires a project`)
     }
   })
-  for (const category of ["fee_rebate", "private_liqs"] as const) {
+  for (const category of ["fee_rebate", "private_liqs", "sumo_ref_claim"] as const) {
     if ((categoryCounts.get(category) || 0) > 1) {
       errors.push(`Only one ${miscIncomeCategoryLabel(category).toLowerCase()} row is allowed per day`)
     }
@@ -89,7 +91,7 @@ export function parseMiscLogCategory(rawType: string): MiscIncomeCategory | null
 export function parseIncomeLogCommand(text: string) {
   const match = text.match(/^\/log(?:@\w+)?\s+(\S+)\s+(\S+)\s+(-?\d+)$/i)
   if (!match) {
-    return { error: "Use: /log <project-id|- > <trading|dev|fee_rebate|private_liqs|other> <amount>" }
+    return { error: "Use: /log <project-id|- > <trading|dev|fee_rebate|sumo_ref_claim|private_liqs|other> <amount>" }
   }
   const [, projectToken, rawType, rawAmount] = match
   const amount = Number(rawAmount)
@@ -99,7 +101,7 @@ export function parseIncomeLogCommand(text: string) {
   const isTrading = ["trading", "trading_income", "trade"].includes(rawType.toLowerCase())
   const miscCategory = parseMiscLogCategory(rawType)
   if (!isTrading && !miscCategory) {
-    return { error: "Income type must be trading, dev, fee_rebate, private_liqs, or other." }
+    return { error: "Income type must be trading, dev, fee_rebate, sumo_ref_claim, private_liqs, or other." }
   }
   const projectId = projectToken === "-" || projectToken.toLowerCase() === "none" ? null : projectToken
   if (isTrading && !projectId) {

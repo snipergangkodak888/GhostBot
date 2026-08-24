@@ -6,9 +6,15 @@ export const REVENUE_WALLET_ROLES = ["revenue", "treasury"] as const
 
 export type RevenueWalletRole = (typeof REVENUE_WALLET_ROLES)[number]
 
-export const FEE_TYPES = ["liquidation", "daily_trading", "launch", "dev_allocation", "fee_collector", "fee_rebate", "other"] as const
+export const FEE_TYPES = ["liquidation", "daily_trading", "launch", "dev_allocation", "fee_collector", "fee_rebate", "sumo_ref_claim", "other"] as const
 
 export type FeeType = (typeof FEE_TYPES)[number]
+
+export const GLOBAL_REVENUE_FEE_TYPES = ["fee_rebate", "sumo_ref_claim"] as const
+
+export function isGlobalRevenueFeeType(value: unknown): value is (typeof GLOBAL_REVENUE_FEE_TYPES)[number] {
+  return GLOBAL_REVENUE_FEE_TYPES.includes(value as any)
+}
 
 export type FeeEventStatus =
   | "awaiting_project"

@@ -17,7 +17,8 @@ import { revenueTransactionUrl } from "@/lib/revenue-explorer"
 import { acceptReceiptMatch, assignFeeProject, confirmFeeExpectation, createFeeFromReceipt, createForwardedFeeEvent, ensureDailyTradingFeeExpectations, getRevenueReceipt, listRevenueDay, setFeeQuoteAsset, setFeeType, updateReceiptClassification } from "@/lib/revenue-service"
 import { feeProjectButtons, formatConsolidationCandidate, formatFeeExpectation, isFeeInboxChat, receiptClassificationButtons } from "@/lib/revenue-telegram"
 import { confirmConsolidationCandidate, getConsolidationCandidate, rejectConsolidationCandidate } from "@/lib/revenue-consolidation-candidates"
-import type { FeeType } from "@/lib/revenue-types"
+import { isGlobalRevenueFeeType, type FeeType } from "@/lib/revenue-types"
+import { receiptAvailableAmount, receiptAvailableUsd } from "@/lib/revenue-allocations"
 import { LAUNCH_CHAINS, launchPad, padsForChain, type LaunchChainId } from "@/lib/launch-math"
 import { calculateLaunchQuote, defaultMmLiquidity, formatLaunchQuote, getLaunchAssetPrice, parseLaunchNumber, type LaunchTargetMetric } from "@/lib/launch-calculator"
 
@@ -932,13 +933,13 @@ async function processState(token: string, chatId: number | string, telegramId: 
   return false
 }
 
-const DIRECT_RECEIPT_FEE_TYPES = ["daily_trading", "dev_allocation", "fee_collector", "fee_rebate", "other"] as const
+const DIRECT_RECEIPT_FEE_TYPES = ["daily_trading", "dev_allocation", "fee_collector", "fee_rebate", "sumo_ref_claim", "other"] as const
 
 function receiptTypeButtons(receiptId: string) {
   return [
     [{ text: "Daily trading", callback_data: `receipt:type:${receiptId}:daily_trading` }, { text: "Dev allocation", callback_data: `receipt:type:${receiptId}:dev_allocation` }],
     [{ text: "Fee collector", callback_data: `receipt:type:${receiptId}:fee_collector` }, { text: "Fee rebate", callback_data: `receipt:type:${receiptId}:fee_rebate` }],
-    [{ text: "Other revenue", callback_data: `receipt:type:${receiptId}:other` }],
+    [{ text: "Sumo ref claim", callback_data: `receipt:type:${receiptId}:sumo_ref_claim` }, { text: "Other revenue", callback_data: `receipt:type:${receiptId}:other` }],
     [{ text: "Liquidation / launch expectation", callback_data: `receipt:existing:${receiptId}` }],
   ]
 }
@@ -948,8 +949,12 @@ function feeTypeLabel(value: unknown) {
 }
 
 function receiptSummary(receipt: any) {
-  const value = receipt.amountUsd == null ? "Awaiting USD value" : Number(receipt.amountUsd).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 })
-  return `${Number(receipt.amount || 0).toLocaleString("en-US", { maximumFractionDigits: 8 })} ${receipt.asset} · ${value} · ${feeTypeLabel(receipt.chain)}`
+  const available = receiptAvailableAmount(receipt)
+  const original = Number(receipt.amount || 0)
+  const availableUsd = receiptAvailableUsd(receipt)
+  const value = availableUsd == null ? "Awaiting USD value" : availableUsd.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 })
+  const prior = available < original - 0.00000001 ? ` available from ${original.toLocaleString("en-US", { maximumFractionDigits: 8 })} received` : ""
+  return `${available.toLocaleString("en-US", { maximumFractionDigits: 8 })} ${receipt.asset}${prior} · ${value} · ${feeTypeLabel(receipt.chain)}`
 }
 
 async function compatibleReceiptProjects(receipt: any, feeType: FeeType) {
@@ -988,14 +993,16 @@ async function sendReceiptConfirmation(token: string, chatId: number | string, t
     projectId ? db.collection("opsProjects").findOne({ _id: projectId }) : Promise.resolve(null),
   ])
   if (!receipt || receipt.status !== "unclassified") return sendMessage(token, chatId, "This receipt was already classified.")
-  if (state.feeType !== "fee_rebate" && !project) return sendMessage(token, chatId, "Choose an existing project first.")
-  const expectedUsd = state.feeType === "daily_trading" ? Number(projectFeeConfig(project).dailyTradingFeeUsd || 500) : Number(receipt.amountUsd || 0)
-  const variance = receipt.amountUsd == null ? null : Number(receipt.amountUsd) - expectedUsd
+  if (!isGlobalRevenueFeeType(state.feeType) && !project) return sendMessage(token, chatId, "Choose an existing project first.")
+  const available = receiptAvailableAmount(receipt)
+  const availableUsd = receiptAvailableUsd(receipt)
+  const expectedUsd = state.feeType === "daily_trading" ? Number(projectFeeConfig(project).dailyTradingFeeUsd || 500) : Number(availableUsd || 0)
+  const variance = availableUsd == null ? null : availableUsd - expectedUsd
   await setState(telegramId, { ...state, projectId: project ? String(project._id) : null })
   const text = [
     `<b>Confirm revenue classification</b>`,
     "",
-    `Project: <b>${project?.name || "Fee rebate"}</b>`,
+    `Project: <b>${project?.name || (state.feeType === "sumo_ref_claim" ? "Sumo ref claim" : "Fee rebate")}</b>`,
     `Type: <b>${feeTypeLabel(state.feeType)}</b>`,
     `Receipt: <b>${receiptSummary(receipt)}</b>`,
     state.feeType === "daily_trading" ? `Recognized revenue: <b>$${expectedUsd.toFixed(2)}</b>` : "",
@@ -1095,7 +1102,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   }
   if (area === "receipt" && action === "type") {
     if (!DIRECT_RECEIPT_FEE_TYPES.includes(extra as any)) return sendMessage(token, chatId, "That receipt classification is unsupported.")
-    if (extra === "fee_rebate") {
+    if (isGlobalRevenueFeeType(extra)) {
       await setState(telegramId, { action: "receipt_classification", receiptId: id, feeType: extra })
       return sendReceiptConfirmation(token, chatId, telegramId, null)
     }

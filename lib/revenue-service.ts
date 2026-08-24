@@ -10,9 +10,12 @@ import type {
   RevenueReceipt,
   RevenueReceiptStatus,
 } from "@/lib/revenue-types"
+import { isGlobalRevenueFeeType } from "@/lib/revenue-types"
 import { getConsolidation } from "@/lib/revenue-consolidation"
 import { listConsolidationCandidates } from "@/lib/revenue-consolidation-candidates"
 import { valueRevenueReceipt } from "@/lib/revenue-pricing"
+import { aggregateRevenueFeesForPayroll } from "@/lib/revenue-payroll"
+import { receiptAvailableAmount, validateClassifiedAmount } from "@/lib/revenue-allocations"
 
 const FEES = "revenueFeeEvents"
 const RECEIPTS = "revenueReceipts"
@@ -176,7 +179,7 @@ export async function setFeeQuoteAsset(feeId: string, assetInput: string) {
 }
 
 export async function setFeeType(feeId: string, feeType: FeeType) {
-  if (!["liquidation", "daily_trading", "launch", "dev_allocation", "fee_collector", "fee_rebate", "other"].includes(feeType)) throw new Error("Unsupported fee type")
+  if (!["liquidation", "daily_trading", "launch", "dev_allocation", "fee_collector", "fee_rebate", "sumo_ref_claim", "other"].includes(feeType)) throw new Error("Unsupported fee type")
   const db = await getDb()
   const fee = await db.collection(FEES).findOne({ _id: feeId })
   if (!fee) throw new Error("Fee entry was not found")
@@ -225,8 +228,8 @@ export async function createFeeFromReceipts(params: { receiptIds: string[]; feeT
   if (receipts.some((row: any) => row.chain !== receipt.chain || row.asset !== receipt.asset)) throw new Error("Grouped receipts must use the same chain and asset")
   if (receipts.some((row: any) => row.status !== "unclassified")) throw new Error("One or more receipts are already classified or reserved")
   if (receipts.some((row: any) => row.consolidationBatchId)) throw new Error("Remove or reject the pending consolidation batch before classifying this receipt as revenue")
-  if (!["daily_trading", "dev_allocation", "fee_collector", "fee_rebate", "other"].includes(params.feeType)) throw new Error("Use a forwarded message for this fee type")
-  const projectRequired = params.feeType !== "fee_rebate"
+  if (!["daily_trading", "dev_allocation", "fee_collector", "fee_rebate", "sumo_ref_claim", "other"].includes(params.feeType)) throw new Error("Use a forwarded message for this fee type")
+  const projectRequired = !isGlobalRevenueFeeType(params.feeType)
   const project = params.projectId ? await db.collection("opsProjects").findOne({ _id: params.projectId }) : null
   if (projectRequired && !project) throw new Error("Choose an existing project")
   if (project) {
@@ -269,7 +272,7 @@ export async function createFeeFromReceipts(params: { receiptIds: string[]; feeT
   }
   const available = receipts.reduce((sum: number, row: any) => sum + receiptAvailableAmount(row), 0)
   const expectedAssetAmount = params.amount == null ? available : Number(params.amount)
-  if (!Number.isFinite(expectedAssetAmount) || expectedAssetAmount <= 0 || expectedAssetAmount > available + 0.00000001) throw new Error("Classified amount must fit within the selected receipts")
+  validateClassifiedAmount(expectedAssetAmount, available, receipt.asset)
   let remaining = expectedAssetAmount
   let expectedUsd = 0
   let fullyValued = true
@@ -292,7 +295,7 @@ export async function createFeeFromReceipts(params: { receiptIds: string[]; feeT
     source: "manual",
     sourceKey,
     projectId: project ? String(project._id) : null,
-    projectName: project ? String(project.name || "") : params.feeType === "fee_rebate" ? "Fee rebate" : null,
+    projectName: project ? String(project.name || "") : params.feeType === "fee_rebate" ? "Fee rebate" : params.feeType === "sumo_ref_claim" ? "Sumo ref claim" : null,
     chain: receipt.chain,
     quoteAsset: receipt.asset,
     feeType: params.feeType,
@@ -361,11 +364,6 @@ export async function proposeReceiptMatch(feeId: string) {
     await db.collection(RECEIPTS).updateOne({ _id: receiptId }, { $set: { status: "match_proposed", proposedFeeEventId: feeId, updatedAt: iso() } })
   }
   return db.collection(FEES).findOne({ _id: feeId }) as Promise<RevenueFeeEvent>
-}
-
-function receiptAvailableAmount(receipt: any) {
-  const allocated = (receipt.allocations || []).reduce((sum: number, row: any) => sum + Number(row.amount || 0), 0)
-  return Math.max(0, Number(receipt.amount || 0) - allocated)
 }
 
 export async function acceptReceiptMatch(feeId: string, telegramId?: number | null, receiptIdsInput?: string[]) {
@@ -641,22 +639,5 @@ export async function revenuePayrollDraft(date = teamDateKey(0)) {
   const consolidation = await getConsolidation(date)
   if (!consolidation || consolidation.status !== "confirmed") throw new Error("Finalize end-of-day revenue reconciliation before importing payroll")
   const fees = await db.collection(FEES).find({ date, status: "confirmed" }).toArray()
-  const valued = fees.filter((fee: any) => Number(fee.recognizedUsd || 0) > 0 && (fee.projectId || fee.feeType === "fee_rebate"))
-  const clientGroups = new Map<string, { projectId: string; incomeType: string; income: number; sourceFeeEventIds: string[] }>()
-  const devGroups = new Map<string, { projectId: string; category: string; income: number; sourceFeeEventIds: string[] }>()
-  for (const fee of valued) {
-    const isMisc = ["dev_allocation", "fee_rebate"].includes(fee.feeType)
-    const target = isMisc ? devGroups : clientGroups
-    const key = `${fee.projectId || "global"}:${fee.feeType}`
-    const existing = target.get(key) || {
-      projectId: String(fee.projectId),
-      ...(isMisc ? { category: fee.feeType } : { incomeType: String(fee.feeType || "trading") }),
-      income: 0,
-      sourceFeeEventIds: [],
-    } as any
-    existing.income = round(existing.income + Number(fee.recognizedUsd || 0), 2)
-    existing.sourceFeeEventIds.push(String(fee._id))
-    target.set(key, existing as any)
-  }
-  return { date, clientIncome: Array.from(clientGroups.values()), devAllocations: Array.from(devGroups.values()) }
+  return aggregateRevenueFeesForPayroll(fees, date)
 }

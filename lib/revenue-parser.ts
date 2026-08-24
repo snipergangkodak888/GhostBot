@@ -82,6 +82,7 @@ export function parseFeeMessage(input: string): ParsedFeeMessage {
   const isDevAllocation = /\bdev(?:eloper)?\s+all(?:o|ocation)\b/i.test(text)
   const isFeeCollector = /\bfee\s+collector\b/i.test(text)
   const isFeeRebate = /\b(?:fee\s+)?rebate\b/i.test(text)
+  const isSumoRefClaim = /\bsumo\s+(?:ref(?:erral)?\s+)?claim\b/i.test(text)
 
   if (isLiquidation) {
     const gross = amountMatches(text)
@@ -152,12 +153,12 @@ export function parseFeeMessage(input: string): ParsedFeeMessage {
     }
   }
 
-  if (isFeeCollector || isFeeRebate) {
+  if (isFeeCollector || isFeeRebate || isSumoRefClaim) {
     const direct = looseAmount(text)
     const amount = direct?.amount ?? null
     const asset = direct?.asset ?? null
     return {
-      feeType: isFeeRebate ? "fee_rebate" : "fee_collector",
+      feeType: isSumoRefClaim ? "sumo_ref_claim" : isFeeRebate ? "fee_rebate" : "fee_collector",
       grossAmount: null,
       grossAsset: asset,
       expectedAssetAmount: asset === "USD" ? null : amount,

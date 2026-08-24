@@ -23,6 +23,7 @@ function miscIncomeBreakdown(entry: any) {
     dev_allocation: "Dev allocation",
     private_liqs: "Private liquidations",
     fee_rebate: "Fee rebate",
+    sumo_ref_claim: "Sumo ref claim",
     other: "Other",
   }
   return Array.from(totals.entries()).map(([category, amount]) => ({

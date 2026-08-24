@@ -49,6 +49,8 @@ function reportMiscClientLabel(category: string, projectName: string | null) {
   switch (category) {
     case "fee_rebate":
       return "Rebate"
+    case "sumo_ref_claim":
+      return "Sumo ref claim"
     case "private_liqs":
       return "Priv liqs"
     case "other":
