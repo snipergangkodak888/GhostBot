@@ -113,6 +113,13 @@ export async function createTelegramUserGateway(): Promise<{
       return ref
     },
 
+    async clearChannelAbout(channel) {
+      await client.invoke(new Api.messages.EditChatAbout({
+        peer: inputChannel(channel),
+        about: "",
+      }))
+    },
+
     async setChannelPhoto(channel) {
       const stat = fs.statSync(config.logoPath)
       const file = new CustomFile(path.basename(config.logoPath), stat.size, config.logoPath)

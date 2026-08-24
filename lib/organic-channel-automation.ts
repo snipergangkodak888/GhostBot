@@ -10,6 +10,7 @@ export type OrganicChannelRef = {
 export type OrganicChannelStage =
   | "queued"
   | "channel_created"
+  | "about_cleared"
   | "photo_set"
   | "sumo_admin_set"
   | "command_ready"
@@ -38,6 +39,7 @@ export type OrganicAutomationGateway = {
   preflight(): Promise<void>
   findChannelByMarker(marker: string): Promise<OrganicChannelRef | null>
   createBroadcastChannel(title: string, about: string): Promise<OrganicChannelRef>
+  clearChannelAbout(channel: OrganicChannelRef): Promise<void>
   setChannelPhoto(channel: OrganicChannelRef): Promise<void>
   addSumoBotAsAdmin(channel: OrganicChannelRef): Promise<void>
   createInviteLink(channel: OrganicChannelRef, title: string): Promise<string>
@@ -51,11 +53,12 @@ export type OrganicAutomationDependencies = {
 const STAGE_NUMBER: Record<OrganicChannelStage, number> = {
   queued: 0,
   channel_created: 1,
-  photo_set: 2,
-  sumo_admin_set: 3,
-  command_ready: 4,
-  invite_created: 5,
-  complete: 6,
+  about_cleared: 2,
+  photo_set: 3,
+  sumo_admin_set: 4,
+  command_ready: 5,
+  invite_created: 6,
+  complete: 7,
 }
 
 function reached(job: OrganicChannelJob, stage: OrganicChannelStage) {
@@ -105,6 +108,11 @@ export async function processOrganicChannelJob(
   }
 
   if (!job.channel) throw new Error("Organic channel reference is missing after creation")
+
+  if (!reached(job, "about_cleared")) {
+    await deps.gateway.clearChannelAbout(job.channel)
+    await save(job, deps, { stage: "about_cleared" })
+  }
 
   if (!reached(job, "photo_set")) {
     await deps.gateway.setChannelPhoto(job.channel)

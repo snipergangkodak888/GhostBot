@@ -219,7 +219,7 @@ Launch Chat members can run `/organicsetup TICKER` or use the setup button shown
 - creates a client invite link
 - returns the channel ID, invite link, and ready-to-copy `/subscribe_channel <channel_id> <profile_id>` command to the Launch Chat
 
-The automation does not send the subscription command to Sumo Bot and does not post anything in a client chat. The operator reviews and sends the returned command manually. The worker checkpoints every step in `organicChannelJobs`, retries temporary failures up to five times, and recovers a channel created just before a process restart using a unique channel marker. Only one job runs at a time in each app process. If user-session automation is not fully configured, `/organicsetup` falls back to the guided Bot API workflow instead of becoming unavailable.
+The automation does not send the subscription command to Sumo Bot and does not post anything in a client chat. The channel's public Info/description is left blank. The operator reviews and sends the returned command manually. The worker checkpoints every step in `organicChannelJobs`, retries temporary failures up to five times, and recovers a channel created just before a process restart using a temporary unique marker that is cleared immediately after creation. Only one job runs at a time in each app process. If user-session automation is not fully configured, `/organicsetup` falls back to the guided Bot API workflow instead of becoming unavailable.
 
 Full automation requires a dedicated Telegram user account because Telegram's Bot API cannot create channels or initiate messages to another bot. Configure the account locally:
 
