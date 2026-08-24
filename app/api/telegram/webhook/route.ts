@@ -25,6 +25,9 @@ import { botPermissionDeniedMessage, canUseBotCapability, getBotPermissionContex
 import { createGuardEnrollmentLink, guardEnrollmentTokenFromText, guardEnrollmentUrl, handleGuardBotMembershipUpdate, handleGuardChatMemberUpdate, recordGuardChatMember, revokeGuardEnrollmentLinks, syncTelegramChatAdministrators, verifyAndRedeemGuardEnrollment } from "@/lib/guard-enrollment"
 import { activateScheduledProject, activationLifecycleFields, cancelScheduledProject, cleanLaunchProjectName, confirmNoProjectReferrer, confirmStandardProjectFees, projectActivationReadiness, projectLaunchAt, projectLaunchDateKey, projectLaunchTimingStatus, rescheduleProject, setTentativeProjectLaunchDate } from "@/lib/project-lifecycle"
 import { formatLaunchSetupReview, launchChainButtons, launchChainConfig, launchChainIdForProject, launchQuoteButtons, launchSetupButtons, launchSetupReady, launchVenueButtons, launchVenueSelection } from "@/lib/launch-setup"
+import { ghostBotOrganicChannelUrl, normalizeOrganicTicker, organicChannelTitle, SUMO_TRADE_BOT_USERNAME, sumoBotChannelUrl, sumoSubscribeCommand, validOrganicTicker, validSumoProfileId } from "@/lib/organic-channel-setup"
+import { telegramUserAutomationConfigured } from "@/lib/telegram-user-client"
+import { queueOrganicChannelJob } from "@/lib/organic-channel-jobs"
 
 type InlineButton = { text: string; callback_data?: string; url?: string; web_app?: { url: string } }
 
@@ -109,6 +112,7 @@ async function setBotCommands(token: string) {
       { command: "projects", description: "Show active projects" },
       { command: "calendar", description: "Show launches and reminders" },
       { command: "schedulelaunch", description: "Create a launch with guided setup" },
+      { command: "organicsetup", description: "Set up organic trade notifications" },
       { command: "launchcalc", description: "Build a client launch-capital quote" },
       { command: "reminders", description: "Manage reminders" },
       { command: "payroll", description: "Manage payroll" },
@@ -149,6 +153,7 @@ function helpMessage() {
     "📁 /projects",
     "📅 /calendar",
     "🗓️ /schedulelaunch - create a launch with guided setup",
+    "📣 /organicsetup TICKER - set up organic trade notifications",
     "🚀 /launchcalc - build a launch-capital quote",
     "🔔 /reminders",
     "💸 /payroll",
@@ -507,6 +512,151 @@ async function takeState(telegramId: number, chatId?: number | string) {
   const state = await db.collection("opsBotStates").findOne({ telegramId })
   if (state?.telegramChatId && chatId != null && String(state.telegramChatId) !== String(chatId)) return null
   return state
+}
+
+async function startOrganicChannelSetup(token: string, chatId: number | string, telegramId: number, tickerInput: unknown) {
+  const inputParts = String(tickerInput || "").trim().split(/\s+/).filter(Boolean)
+  const ticker = normalizeOrganicTicker(inputParts[0] || "")
+  const suppliedProfileId = String(inputParts[1] || "").trim()
+  if (!validOrganicTicker(ticker)) {
+    await setState(telegramId, { action: "organic_setup_ticker" }, chatId)
+    await sendMessage(token, chatId, "Send the token ticker only, without spaces.\n\nExample: SUMO\nSend /cancel to stop.")
+    return
+  }
+
+  if (telegramUserAutomationConfigured()) {
+    if (validSumoProfileId(suppliedProfileId)) {
+      await queueOrganicSetup(token, chatId, telegramId, ticker, suppliedProfileId)
+      return
+    }
+    await setState(telegramId, {
+      action: "organic_auto_profile_id",
+      ticker,
+      startedAt: Date.now(),
+    }, chatId)
+    await sendMessage(token, chatId, [
+      `📣 <b>Automated setup for $${ticker}</b>`,
+      "",
+      "Send the Sumo trading profile ID.",
+      "Example: <code>67f9d846-8d06-47ed-b6e0-63380ed7d1d3</code>",
+      "",
+      "GhostBot will create the channel, apply the Sumo logo, add Sumo Bot as admin, create the invite, and return the ready-to-copy Sumo subscription command. It will not send the command automatically.",
+    ].join("\n"))
+    return
+  }
+
+  const botUsername = await getTelegramBotUsername()
+  if (!botUsername) {
+    await sendMessage(token, chatId, "⚠️ GhostBot's Telegram username is not configured, so I cannot build the channel setup link yet.")
+    return
+  }
+
+  await setState(telegramId, {
+    action: "organic_setup_awaiting_channel",
+    ticker,
+    startedAt: Date.now(),
+  }, chatId)
+
+  const title = organicChannelTitle(ticker)
+  await sendMessage(token, chatId, [
+    `📣 <b>Organic notifications setup for $${ticker}</b>`,
+    "",
+    "1. Create a new Telegram channel. A temporary name is fine.",
+    "2. Tap <b>Add GhostBot</b> below and choose that channel.",
+    "3. Tap <b>Add Sumo Bot</b> and choose the same channel.",
+    "",
+    `When GhostBot is added, I will rename it to <b>${title}</b>, capture the <code>-100…</code> channel ID, create the invite link, and ask you for the Sumo profile ID.`,
+    "",
+    "Set the channel photo to the black Sumo logo while Telegram is open. The logo image is not currently stored in GhostBot.",
+  ].join("\n"), [[
+    { text: "1 · Add GhostBot", url: ghostBotOrganicChannelUrl(botUsername) },
+    { text: "2 · Add Sumo Bot", url: sumoBotChannelUrl() },
+  ]])
+}
+
+async function queueOrganicSetup(
+  token: string,
+  sourceChatId: number | string,
+  telegramId: number,
+  ticker: string,
+  profileId: string,
+) {
+  const queued = await queueOrganicChannelJob({
+    ticker,
+    profileId,
+    sourceChatId: String(sourceChatId),
+    requestedByTelegramId: telegramId,
+  })
+  await clearState(telegramId)
+  await sendMessage(token, sourceChatId, [
+    queued.alreadyQueued ? "ℹ️ This setup is already queued." : `🚀 <b>$${ticker} setup queued</b>`,
+    "",
+    "The worker checks the queue every 30 seconds. When complete, it will return the channel ID, invite link, and ready-to-copy Sumo command here.",
+    "Nothing will be posted to a client chat, and the Sumo command will not be sent automatically.",
+  ].join("\n"))
+}
+
+async function handleOrganicChannelMembershipUpdate(token: string, update: any) {
+  const chat = update?.chat
+  const telegramId = Number(update?.from?.id || 0)
+  const status = String(update?.new_chat_member?.status || "")
+  if (chat?.type !== "channel" || !chat?.id || !telegramId || !["administrator", "creator"].includes(status)) return false
+
+  const state = await takeState(telegramId)
+  if (state?.action !== "organic_setup_awaiting_channel" || !validOrganicTicker(state.ticker)) return false
+  const startedAt = Number(state.startedAt || 0)
+  if (startedAt && Date.now() - startedAt > 24 * 60 * 60 * 1000) return false
+
+  const ticker = normalizeOrganicTicker(state.ticker)
+  const channelId = String(chat.id)
+  const title = organicChannelTitle(ticker)
+  const titleResult = await telegramApiJson(token, "setChatTitle", { chat_id: channelId, title })
+  const inviteResult = await telegramApiJson(token, "createChatInviteLink", {
+    chat_id: channelId,
+    name: `${ticker} client invite`.slice(0, 32),
+  })
+  const inviteLink = String(inviteResult?.result?.invite_link || "")
+  const sourceChatId = String(state.telegramChatId || telegramId)
+  const now = new Date()
+  const db = await getDb()
+  await db.collection("organicTradeChannels").updateOne(
+    { channelId },
+    {
+      $set: {
+        channelId,
+        ticker,
+        title,
+        inviteLink,
+        setupStatus: "awaiting_profile_id",
+        setupByTelegramId: telegramId,
+        sourceChatId,
+        titleConfigured: titleResult?.ok === true,
+        updatedAt: now,
+      },
+      $setOnInsert: { createdAt: now },
+    },
+    { upsert: true },
+  )
+  await setState(telegramId, {
+    action: "organic_setup_profile_id",
+    ticker,
+    channelId,
+    channelTitle: title,
+    inviteLink,
+    startedAt: state.startedAt || Date.now(),
+  }, sourceChatId)
+
+  await sendMessage(token, sourceChatId, [
+    `✅ <b>Channel detected for $${ticker}</b>`,
+    "",
+    `Channel ID: <code>${channelId}</code>`,
+    `Title: <b>${title}</b>${titleResult?.ok === true ? "" : "\n⚠️ I could not rename it. Give GhostBot permission to change channel info, then rename it manually."}`,
+    inviteLink ? `Invite link: ${inviteLink}` : "⚠️ I could not create an invite link. Give GhostBot permission to invite subscribers, then create one manually.",
+    "",
+    "Now send the Sumo trading profile ID.",
+    "Example: <code>67f9d846-8d06-47ed-b6e0-63380ed7d1d3</code>",
+  ].join("\n"), [[{ text: "Add Sumo Bot", url: sumoBotChannelUrl() }]])
+  return true
 }
 
 function money(value?: number) {
@@ -904,7 +1054,7 @@ async function processState(token: string, chatId: number | string, telegramId: 
     return true
   }
 
-  const stateCapability: BotCapability = String(state.action || "").startsWith("launch_calc") || String(state.action || "").startsWith("launch_setup") || state.action === "schedule_launch_request" || state.action === "reschedule_launch" || state.action === "tentative_launch_day"
+  const stateCapability: BotCapability = String(state.action || "").startsWith("launch_calc") || String(state.action || "").startsWith("launch_setup") || String(state.action || "").startsWith("organic_setup") || state.action === "schedule_launch_request" || state.action === "reschedule_launch" || state.action === "tentative_launch_day"
     ? "launch"
     : ["add_project", "edit_project", "add_reminder", "timezone_for_manual_reminder", "timezone_for_reminder"].includes(String(state.action || ""))
       ? (context.profile === "launch" ? "launch" : "trade")
@@ -921,6 +1071,90 @@ async function processState(token: string, chatId: number | string, telegramId: 
   if (state.action === "schedule_launch_request") {
     await clearState(telegramId)
     await sendAiResponse(token, chatId, telegramId, text, message, context)
+    return true
+  }
+
+  if (state.action === "organic_setup_ticker") {
+    const inputParts = String(text || "").trim().split(/\s+/).filter(Boolean)
+    const ticker = normalizeOrganicTicker(inputParts[0] || "")
+    if (!validOrganicTicker(ticker)) {
+      await setState(telegramId, state, chatId)
+      await sendMessage(token, chatId, "Send a ticker using up to 20 letters, numbers, dots, dashes, or underscores.\n\nExample: SUMO\nSend /cancel to stop.")
+      return true
+    }
+    await startOrganicChannelSetup(token, chatId, telegramId, inputParts.join(" "))
+    return true
+  }
+
+  if (state.action === "organic_auto_profile_id") {
+    const profileId = String(text || "").trim()
+    if (!validSumoProfileId(profileId)) {
+      await setState(telegramId, state, chatId)
+      await sendMessage(token, chatId, "That does not look like a Sumo profile ID. Send the full UUID, for example:\n<code>67f9d846-8d06-47ed-b6e0-63380ed7d1d3</code>\n\nSend /cancel to stop.")
+      return true
+    }
+    await queueOrganicSetup(token, chatId, telegramId, normalizeOrganicTicker(state.ticker), profileId)
+    return true
+  }
+
+  if (state.action === "organic_setup_awaiting_channel") {
+    await setState(telegramId, state, chatId)
+    await sendMessage(token, chatId, "I am waiting for you to add GhostBot as an administrator to the new channel. Use the <b>Add GhostBot</b> button from the setup message, or send /cancel to stop.")
+    return true
+  }
+
+  if (state.action === "organic_setup_profile_id") {
+    const profileId = String(text || "").trim()
+    if (!validSumoProfileId(profileId)) {
+      await setState(telegramId, state, chatId)
+      await sendMessage(token, chatId, "That does not look like a Sumo profile ID. Send the full UUID, for example:\n<code>67f9d846-8d06-47ed-b6e0-63380ed7d1d3</code>\n\nSend /cancel to stop.")
+      return true
+    }
+
+    const channelId = String(state.channelId || "")
+    const ticker = normalizeOrganicTicker(state.ticker)
+    const inviteLink = String(state.inviteLink || "")
+    const command = sumoSubscribeCommand(channelId, profileId)
+    const administrators = await telegramApiJson(token, "getChatAdministrators", { chat_id: channelId, return_bots: true })
+    const sumoIsAdmin = Array.isArray(administrators?.result) && administrators.result.some((member: any) =>
+      String(member?.user?.username || "").toLowerCase() === SUMO_TRADE_BOT_USERNAME,
+    )
+    const now = new Date()
+    const db = await getDb()
+    await db.collection("organicTradeChannels").updateOne(
+      { channelId },
+      {
+        $set: {
+          ticker,
+          profileId,
+          subscribeCommand: command,
+          inviteLink,
+          sumoIsAdmin,
+          setupStatus: "ready_to_subscribe",
+          updatedAt: now,
+        },
+        $setOnInsert: { createdAt: now },
+      },
+      { upsert: true },
+    )
+    await clearState(telegramId)
+    await sendMessage(token, chatId, [
+      `✅ <b>$${ticker} organic notification channel is ready</b>`,
+      "",
+      `Channel ID: <code>${channelId}</code>`,
+      `Profile ID: <code>${profileId}</code>`,
+      "",
+      `Send this in your DM with @${SUMO_TRADE_BOT_USERNAME}:`,
+      `<code>${command}</code>`,
+      "",
+      sumoIsAdmin ? "✅ Sumo Bot is an administrator." : "⚠️ I could not verify Sumo Bot as an administrator. Add it with the button below before subscribing.",
+      inviteLink ? `Invite link: ${inviteLink}` : "⚠️ Create an invite link in the notification channel manually.",
+      "",
+      "The subscription command is intentionally returned for manual review and sending.",
+    ].join("\n"), [
+      [{ text: "Open Sumo Bot", url: `https://t.me/${SUMO_TRADE_BOT_USERNAME}` }, { text: "Add / verify Sumo admin", url: sumoBotChannelUrl() }],
+      ...(inviteLink ? [[{ text: "Open notification channel", url: inviteLink }]] : []),
+    ])
     return true
   }
 
@@ -1332,7 +1566,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   const db = await getDb()
   const [area, action, id, extra] = data.split(":")
   const context = await botPermissions(telegramId, chatId)
-  const callbackCapability: BotCapability | null = area === "launch" || area === "lifecycle" || area === "launchsetup"
+  const callbackCapability: BotCapability | null = area === "launch" || area === "lifecycle" || area === "launchsetup" || area === "organic"
     ? "launch"
     : ["reminder", "reminders"].includes(area)
       ? (context.profile === "launch" ? "launch" : "trade")
@@ -1344,6 +1578,12 @@ async function handleCallback(token: string, chatId: number | string, telegramId
           ? aiPermissionPolicy(context).capability
           : null
   if (callbackCapability && !(await requireCapability(token, context, callbackCapability))) return
+
+  if (area === "organic" && action === "start") {
+    const launchAction = await db.collection("opsAiActions").findOne({ _id: id })
+    const suggestedTicker = normalizeOrganicTicker(launchAction?.payload?.ticker || launchAction?.payload?.symbol || launchAction?.payload?.name || "")
+    return startOrganicChannelSetup(token, chatId, telegramId, validOrganicTicker(suggestedTicker) ? suggestedTicker : "")
+  }
 
   if (area === "launchsetup") {
     const draft = await getLaunchSetupAction(db, id, telegramId, chatId)
@@ -1497,11 +1737,14 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       const launchDate = launchAction.payload?.launchAt || launchAction.payload?.launchDate || launchAction.payload?.tentativeLaunchDate
       const schedule = text.startsWith("✅") && launchDate ? await formatLaunchDaySchedule(launchDate) : ""
       const finalText = [text, schedule].filter(Boolean).join("\n\n")
+      const organicButtons: InlineButton[][] = text.startsWith("✅")
+        ? [[{ text: "📣 Set up organic notifications", callback_data: `organic:start:${id}` }]]
+        : []
       if (messageId) {
-        const edited = await editTelegramMessage(token, chatId, messageId, finalText, { parseMode: hasTelegramHtml(finalText) ? "HTML" : undefined, replyMarkup: { inline_keyboard: [] } })
+        const edited = await editTelegramMessage(token, chatId, messageId, finalText, { parseMode: hasTelegramHtml(finalText) ? "HTML" : undefined, replyMarkup: { inline_keyboard: organicButtons } })
         if (edited) return
       }
-      return sendMessage(token, chatId, finalText)
+      return sendMessage(token, chatId, finalText, organicButtons.length ? organicButtons : undefined)
     }
   }
 
@@ -2003,6 +2246,7 @@ async function routeText(token: string, chatId: number | string, telegramId: num
     return sendMessage(token, chatId, `✅ Your timezone is now ${saved.timeZone} (${teamZoneLabel(saved.timeZone)}).`)
   }
   const scheduleLaunchCommand = commandText.match(/^\/schedulelaunch(?:@\w+)?(?:\s+([\s\S]+))?$/i)
+  const organicSetupCommand = commandText.match(/^\/organicsetup(?:@\w+)?(?:\s+([\s\S]+))?$/i)
   const aiCommand = aiCommandText(commandText)
   if (scheduleLaunchCommand) {
     if (!(await requireCapability(token, context, "launch"))) return
@@ -2011,6 +2255,11 @@ async function routeText(token: string, chatId: number | string, telegramId: num
     if (request) return sendAiResponse(token, chatId, telegramId, request, message, context)
     await setState(telegramId, { action: "schedule_launch_request", startedAt: messageDateMs || Date.now() }, chatId)
     return sendMessage(token, chatId, "Send the launch in natural language.\n\nExample: SnapGame on Pump.fun, launching today at 5:10 PM ET\n\nI’ll open a review where you can confirm the name, chain, launchpad, quote token, fees, and referrer before anything is created. Send /cancel to stop.")
+  }
+  if (organicSetupCommand) {
+    if (!(await requireCapability(token, context, "launch"))) return
+    await clearState(telegramId)
+    return startOrganicChannelSetup(token, chatId, telegramId, String(organicSetupCommand[1] || ""))
   }
   if (text === "🚀 Launch Calc" || isBotCommand(text, "launchcalc")) {
     if (!(await requireCapability(token, context, "launch"))) return
@@ -2117,6 +2366,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true })
   }
   if (update.my_chat_member) {
+    await handleOrganicChannelMembershipUpdate(token, update.my_chat_member).catch((error) => {
+      console.error("[organic-channel-setup] channel setup failed", error)
+    })
     await handleGuardBotMembershipUpdate(update.my_chat_member).catch((error) => {
       console.error("[guard-enrollment] bot membership sync failed", error)
     })

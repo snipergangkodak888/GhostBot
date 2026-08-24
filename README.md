@@ -50,7 +50,7 @@ supabase/schema.sql   Supabase schema
 
 ## Requirements
 
-- Node.js 18 or newer
+- Node.js 22.13 or newer (required by the pinned pnpm 11 release)
 - pnpm
 - Supabase project
 - Telegram bot token
@@ -208,6 +208,29 @@ An explicit timezone in reminder text always overrides the saved preference:
 
 Times are converted to UTC for scheduling while the original IANA timezone is retained for confirmations, delivery labels, and DST-safe daily or weekly recurrence. Relative durations such as `in 20 minutes` do not require a timezone.
 
+### Organic trade notification channels
+
+Launch Chat members can run `/organicsetup TICKER` or use the setup button shown after creating a launch. When the Telegram user session and Sumo logo are configured, GhostBot asks for the Sumo profile ID, then automatically:
+
+- creates `$TICKER - Organic Trade Notifications` as a broadcast channel
+- applies the black Sumo logo
+- adds `@sumo_trade_bot` as an administrator with posting rights
+- converts Telegram's raw channel ID to the required `-100…` Bot API ID
+- creates a client invite link
+- returns the channel ID, invite link, and ready-to-copy `/subscribe_channel <channel_id> <profile_id>` command to the Launch Chat
+
+The automation does not send the subscription command to Sumo Bot and does not post anything in a client chat. The operator reviews and sends the returned command manually. The worker checkpoints every step in `organicChannelJobs`, retries temporary failures up to five times, and recovers a channel created just before a process restart using a unique channel marker. Only one job runs at a time in each app process. If user-session automation is not fully configured, `/organicsetup` falls back to the guided Bot API workflow instead of becoming unavailable.
+
+Full automation requires a dedicated Telegram user account because Telegram's Bot API cannot create channels or initiate messages to another bot. Configure the account locally:
+
+1. Keep the provided image at `public/logos/sumo-black.jpg`, or set `SUMO_CHANNEL_LOGO_PATH` to another image.
+2. Put `TELEGRAM_USER_API_ID` and `TELEGRAM_USER_API_HASH` in `.env.local`.
+3. Run `npm run telegram:user:authorize` and enter the API, phone, code, and optional 2FA prompts. The script saves the generated `TELEGRAM_USER_SESSION` directly to the gitignored `.env.local` without printing it.
+4. Run `npm run telegram:user:check` to verify the saved session without creating a channel.
+5. Authenticate Railway, verify that the directory is linked to the intended service, then run `npm run telegram:user:railway`. It streams all five values from `.env.local` without printing them and skips deployment so the code and variables can be released together.
+
+The authorization script requests Telegram's maximum 366-day inactivity TTL. The session normally remains authorized indefinitely while the worker uses it, but Telegram can still revoke it after a password/security change, manual session termination, or enforcement action. Treat `TELEGRAM_USER_API_HASH` and especially `TELEGRAM_USER_SESSION` like passwords.
+
 ## Useful scripts
 
 ```bash
@@ -215,7 +238,12 @@ pnpm dev       # run locally
 pnpm dev:bot   # run local app + ngrok + Telegram webhook + reminder cron
 pnpm bot:lab   # interactive local Telegram simulator
 pnpm bot:test  # scripted local conversation checks
-pnpm dev:cron  # run only the local reminder cron pinger
+pnpm bot:test:organic-automation # channel creation, recovery, and command-output simulation
+pnpm typecheck:organic # focused TypeScript check for the automation worker
+pnpm telegram:user:authorize # one-time interactive user-session authorization
+pnpm telegram:user:check # read-only session health check
+pnpm telegram:user:railway # securely sync Telegram user values to linked Railway service
+pnpm dev:cron  # run the local reminder and organic-channel worker pinger
 pnpm build     # production build
 pnpm start     # start production build
 pnpm db:init   # create/update Supabase schema and seed default admin/settings

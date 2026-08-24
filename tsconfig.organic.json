@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "incremental": false,
+    "noEmit": true
+  },
+  "include": [
+    "next-env.d.ts",
+    "lib/organic-channel-setup.ts",
+    "lib/organic-channel-automation.ts",
+    "lib/telegram-user-client.ts",
+    "lib/organic-channel-jobs.ts",
+    "app/api/cron/organic-channels/route.ts"
+  ],
+  "exclude": ["node_modules"]
+}

@@ -12,6 +12,12 @@
     "bot:test:guard": "node ./scripts/test-guard-access.mjs",
     "bot:test:enrollment": "node ./scripts/test-guard-enrollment.mjs",
     "bot:test:launch": "node ./scripts/test-launch-workflow.mjs",
+    "bot:test:organic": "node ./scripts/test-organic-channel-setup.mjs",
+    "bot:test:organic-automation": "node ./scripts/test-organic-channel-automation.mjs",
+    "telegram:user:authorize": "node ./scripts/authorize-telegram-user.mjs",
+    "telegram:user:check": "node ./scripts/check-telegram-user.mjs",
+    "telegram:user:railway": "node ./scripts/sync-telegram-user-to-railway.mjs",
+    "typecheck:organic": "tsc -p tsconfig.organic.json --pretty false",
     "bot:test:lifecycle": "node ./scripts/test-project-lifecycle.mjs && node ./scripts/test-launch-lifecycle-cron.mjs",
     "bot:test:daily-subscriptions": "node ./scripts/test-daily-update-subscriptions.mjs",
     "revenue:test": "node ./scripts/test-revenue-automation.mjs",
@@ -32,6 +38,7 @@
     "@telegram-apps/analytics": "^1.6.4",
     "autoprefixer": "^10.4.20",
     "bcryptjs": "^2.4.3",
+    "big-integer": "^1.6.52",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "dotenv": "^16.4.5",
@@ -45,6 +52,7 @@
     "sonner": "^1.7.4",
     "tailwind-merge": "^2.5.5",
     "tailwindcss-animate": "^1.0.7",
+    "teleproto": "^1.228.5",
     "tw-animate-css": "1.3.3"
   },
   "devDependencies": {

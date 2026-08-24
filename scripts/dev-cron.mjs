@@ -27,6 +27,7 @@ const baseUrl = String(process.env.CRON_PING_URL || "http://localhost:3000").rep
 const secret = String(process.env.CRON_SECRET || "").trim()
 const intervalMs = Math.max(5000, Number(process.env.CRON_PING_INTERVAL_MS || 15000) || 15000)
 const cronUrl = `${baseUrl}/api/cron/ops`
+const organicCronUrl = `${baseUrl}/api/cron/organic-channels`
 
 function stamp() {
   return new Date().toLocaleTimeString("en-US", { hour12: false })
@@ -49,6 +50,16 @@ async function pingOnce() {
     const sent = body.reminders?.sent ?? 0
     const suffix = due > 0 ? ` reminders due=${due} sent=${sent}` : ""
     console.log(`[${stamp()}] cron ok (${elapsed}ms)${suffix}`)
+    const organicRes = await fetch(organicCronUrl, {
+      method: "POST",
+      headers: secret ? { Authorization: `Bearer ${secret}` } : {},
+    })
+    const organicBody = await organicRes.json().catch(() => ({}))
+    if (!organicRes.ok) {
+      console.log(`[${stamp()}] organic channel worker failed ${organicRes.status}`, organicBody.error || organicBody)
+    } else if (organicBody.processed > 0) {
+      console.log(`[${stamp()}] organic channel worker processed=${organicBody.processed} status=${organicBody.status || "unknown"}`)
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     console.log(`[${stamp()}] cron unreachable: ${message}`)

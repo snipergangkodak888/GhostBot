@@ -24,12 +24,28 @@ async function runLaunchTick() {
   }
 }
 
+async function runOrganicChannelTick() {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/cron/organic-channels`, {
+      method: "POST",
+      headers: { "x-ghostbot-internal-cron": internalCronKey },
+    })
+    if (!response.ok) console.error(`[organic-channel-cron] HTTP ${response.status}: ${await response.text()}`)
+  } catch (error) {
+    console.error("[organic-channel-cron] scheduled run failed:", error instanceof Error ? error.message : error)
+  }
+}
+
 const initial = setTimeout(runLaunchTick, 15_000)
 const interval = setInterval(runLaunchTick, 5 * 60_000)
+const organicInitial = setTimeout(runOrganicChannelTick, 20_000)
+const organicInterval = setInterval(runOrganicChannelTick, 30_000)
 
 function stop(signal) {
   clearTimeout(initial)
   clearInterval(interval)
+  clearTimeout(organicInitial)
+  clearInterval(organicInterval)
   if (!child.killed) child.kill(signal)
 }
 
@@ -38,5 +54,7 @@ process.on("SIGINT", () => stop("SIGINT"))
 child.on("exit", (code, signal) => {
   clearTimeout(initial)
   clearInterval(interval)
+  clearTimeout(organicInitial)
+  clearInterval(organicInterval)
   process.exitCode = code ?? (signal ? 1 : 0)
 })
