@@ -7,6 +7,7 @@ import ts from "typescript"
 
 const deliveries = new Map()
 const messages = []
+let resumedActivations = 0
 const projects = [{
   _id: "kolcoin",
   name: "KOLcoin",
@@ -24,8 +25,11 @@ const projects = [{
 const cursor = (items) => ({ toArray: async () => items })
 const db = { collection(name) { return {
   find: () => cursor(name === "opsProjects" ? projects : []),
-  findOne: async ({ key }) => deliveries.get(key) || null,
+  findOne: async (filter) => name === "opsProjects"
+    ? projects.find((row) => Object.entries(filter || {}).every(([key, value]) => String(row[key]) === String(value))) || null
+    : deliveries.get(filter?.key) || null,
   insertOne: async (row) => { if (name === "opsCronDeliveries") deliveries.set(row.key, row); return { insertedId: row.key || "1" } },
+  deleteOne: async ({ key }) => { const deleted = deliveries.delete(key); return { deletedCount: deleted ? 1 : 0 } },
   updateOne: async (filter, update) => {
     const project = projects.find((row) => String(row._id) === String(filter._id))
     if (project) Object.assign(project, update.$set || {})
@@ -52,6 +56,14 @@ function localRequire(id) {
     projectActivationReadiness: (project) => project.referrerStatus === "pending"
       ? ({ ready: false, missing: ["referrer decision"], chain: "solana", quoteToken: "SOL" })
       : ({ ready: true, missing: [], chain: "solana", quoteToken: "SOL" }),
+    activateScheduledProject: async ({ projectId }) => {
+      const project = projects.find((row) => String(row._id) === String(projectId))
+      if (!project) return { ok: false, error: "Project not found" }
+      project.status = "active"
+      project.nextActivationPromptAt = null
+      resumedActivations += 1
+      return { ok: true, project }
+    },
   }
   throw new Error(`Unexpected import: ${id}`)
 }
@@ -76,6 +88,12 @@ assert.equal(messages.length, 3)
 assert.equal(projects[0].activationOverdue, true)
 await module.exports.processDueLaunchConfirmations("test", new Date("2026-08-24T22:00:00.000Z"))
 assert.equal(messages.length, 3)
+
+projects.push({ _id: "pending-ready", name: "Pending ready", status: "scheduled", launchAt: "2026-08-24T18:00:00.000Z", launchTimeZone: "America/New_York", launchChatId: "-1001", scheduleVersion: 1, activationPromptCount: 1, referrerStatus: "none", pendingActivationIntent: "scheduled", pendingActivationRequestedByTelegramId: 101 })
+await module.exports.processDueLaunchConfirmations("test", new Date("2026-08-24T22:01:00.000Z"))
+assert.equal(messages.length, 3)
+assert.equal(projects.find((project) => project._id === "pending-ready").status, "active")
+assert.equal(resumedActivations, 1)
 
 projects.push({ _id: "needs-setup", name: "Needs setup", status: "scheduled", launchAt: "2026-08-25T19:30:00.000Z", launchTimeZone: "America/New_York", launchChatId: "-1001", scheduleVersion: 1, activationPromptCount: 0, referrerStatus: "pending" })
 await module.exports.processUpcomingLaunchReadiness("test", new Date("2026-08-24T20:00:00.000Z"))

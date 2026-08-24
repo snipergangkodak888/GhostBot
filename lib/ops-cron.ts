@@ -4,7 +4,7 @@ import { formatTeamDateTime, nextRecurringDueAt, TEAM_TIME_ZONE } from "@/lib/te
 import { getSubscribedChats } from "@/lib/chat-subscriptions"
 import { formatLaunchDaySchedule, getLaunchesForDay, launchDateKey, LAUNCH_TIME_ZONE } from "@/lib/launch-calendar"
 import { ensureDailyTradingFeeExpectations, valuePendingRevenueReceipts } from "@/lib/revenue-service"
-import { projectActivationReadiness, projectLaunchAt } from "@/lib/project-lifecycle"
+import { activateScheduledProject, projectActivationReadiness, projectLaunchAt } from "@/lib/project-lifecycle"
 
 const EST_TIME_ZONE = LAUNCH_TIME_ZONE
 
@@ -191,7 +191,30 @@ export async function processDueLaunchConfirmations(token: string, now: Date) {
   let sent = 0
   let failed = 0
   let skipped = 0
-  for (const project of due) {
+  for (const dueProject of due) {
+    const project = await db.collection("opsProjects").findOne({ _id: dueProject._id })
+    const currentLaunchAt = projectLaunchAt(project)
+    if (!project || !["scheduled", "in_progress"].includes(String(project.status || "")) || !currentLaunchAt || currentLaunchAt.getTime() > now.getTime()) {
+      skipped += 1
+      continue
+    }
+    const readiness = projectActivationReadiness(project)
+    const pendingIntent = ["scheduled", "now"].includes(String(project.pendingActivationIntent || ""))
+      ? project.pendingActivationIntent as "scheduled" | "now"
+      : null
+    if (readiness.ready && pendingIntent) {
+      const resumed = await activateScheduledProject({
+        projectId: String(project._id),
+        telegramId: Number(project.pendingActivationRequestedByTelegramId || project.scheduledByTelegramId || 0),
+        actual: pendingIntent,
+        expectedScheduleVersion: Number(project.scheduleVersion || 0),
+        now,
+      })
+      if (resumed.ok) {
+        skipped += 1
+        continue
+      }
+    }
     const launchAt = projectLaunchAt(project)!
     const version = Number(project.scheduleVersion || 0)
     const promptNumber = Number(project.activationPromptCount || 0) + 1
@@ -202,7 +225,6 @@ export async function processDueLaunchConfirmations(token: string, now: Date) {
       skipped += 1
       continue
     }
-    const readiness = projectActivationReadiness(project)
     const text = [
       `🚀 <b>${escapeHtml(project.name || "Scheduled launch")}</b> was scheduled to launch now.`,
       "",
@@ -225,6 +247,12 @@ export async function processDueLaunchConfirmations(token: string, now: Date) {
       const key = `launch-activation:${project._id}:${version}:${promptNumber}:${recipient.chatId}`
       if (!(await claimDelivery(key, "launch-activation"))) {
         skipped += 1
+        continue
+      }
+      const latest = await db.collection("opsProjects").findOne({ _id: project._id })
+      if (!latest || !["scheduled", "in_progress"].includes(String(latest.status || "")) || Number(latest.scheduleVersion || 0) !== version) {
+        skipped += 1
+        await releaseDelivery(key)
         continue
       }
       const messageId = await sendTelegramMessage(token, recipient.chatId, text, { parseMode: "HTML", replyMarkup })

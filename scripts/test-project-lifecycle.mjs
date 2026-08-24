@@ -94,6 +94,65 @@ assert.equal(activated.project.actualLaunchAt, launchAt)
 assert.equal(activated.dailyFeeStartDate, "2026-08-25")
 assert.equal((await lifecycle.activateScheduledProject({ projectId: "kolcoin", telegramId: 404, actual: "now" })).alreadyActive, true)
 
+const gated = {
+  _id: "gated",
+  name: "Gated launch",
+  ...lifecycle.scheduledLifecycleFields({ launchAt, launchTimeZone: "America/New_York", launchChatId: "-1001", telegramId: 101 }),
+  launchVenue: "pumpfun",
+  chain: "solana",
+  quoteToken: "SOL",
+  quoteAssets: ["SOL"],
+  dailyTradingFeeEnabled: true,
+  dailyTradingFeeUsd: 500,
+  feeConfigurationConfirmed: false,
+  referrerStatus: "pending",
+}
+rows.opsProjects.push(gated)
+const blockedActivation = await lifecycle.activateScheduledProject({ projectId: "gated", telegramId: 505, actual: "scheduled", now: new Date("2026-08-24T18:01:00.000Z"), expectedScheduleVersion: 1 })
+assert.equal(blockedActivation.ok, false)
+assert.equal(gated.pendingActivationIntent, "scheduled")
+assert.deepEqual(JSON.parse(JSON.stringify(blockedActivation.readiness.missing)), ["fee configuration", "referrer decision"])
+const feesCompleted = await lifecycle.confirmStandardProjectFees("gated", 505, 1)
+assert.equal(feesCompleted.ok, true)
+assert.equal(feesCompleted.activated, false)
+assert.equal(gated.status, "scheduled")
+assert.deepEqual(JSON.parse(JSON.stringify(feesCompleted.readiness.missing)), ["referrer decision"])
+const readinessCompleted = await lifecycle.confirmNoProjectReferrer("gated", 505, 1)
+assert.equal(readinessCompleted.ok, true)
+assert.equal(readinessCompleted.activated, true)
+assert.equal(gated.status, "active")
+assert.equal(gated.actualLaunchAt, launchAt)
+assert.equal(gated.pendingActivationIntent, null)
+assert.equal(readinessCompleted.dailyFeeStartDate, "2026-08-25")
+const gatedActivationEvents = rows.opsProjectLifecycleEvents.filter((event) => event.projectId === "gated" && event.action === "activated")
+assert.equal(gatedActivationEvents.length, 1)
+const repeatedReadinessClick = await lifecycle.confirmNoProjectReferrer("gated", 505, 1)
+assert.equal(repeatedReadinessClick.alreadyActive, true)
+assert.equal(rows.opsProjectLifecycleEvents.filter((event) => event.projectId === "gated" && event.action === "activated").length, 1)
+
+const concurrent = {
+  _id: "concurrent",
+  name: "Concurrent launch",
+  ...lifecycle.scheduledLifecycleFields({ launchAt, launchTimeZone: "America/New_York", launchChatId: "-1001", telegramId: 101 }),
+  chain: "solana",
+  quoteToken: "SOL",
+  quoteAssets: ["SOL"],
+  dailyTradingFeeEnabled: true,
+  dailyTradingFeeUsd: 500,
+  feeConfigurationConfirmed: true,
+  referrerStatus: "pending",
+}
+rows.opsProjects.push(concurrent)
+assert.equal((await lifecycle.activateScheduledProject({ projectId: "concurrent", telegramId: 606, actual: "now", expectedScheduleVersion: 1 })).ok, false)
+const concurrentConfirmations = await Promise.all([
+  lifecycle.confirmNoProjectReferrer("concurrent", 606, 1),
+  lifecycle.confirmNoProjectReferrer("concurrent", 606, 1),
+])
+assert.equal(concurrent.status, "active")
+assert.equal(concurrentConfirmations.filter((result) => result.activated).length, 2)
+assert.equal(concurrentConfirmations.filter((result) => result.alreadyActive).length, 1)
+assert.equal(rows.opsProjectLifecycleEvents.filter((event) => event.projectId === "concurrent" && event.action === "activated").length, 1)
+
 const delayed = {
   _id: "delayed",
   name: "Delayed launch",
@@ -119,4 +178,4 @@ const preview = lifecycle.launchLifecycleMigrationPreview(previewInput, new Date
 assert.equal(preview[0].proposedStatus, "scheduled")
 assert.equal(previewInput[0].status, "active")
 
-console.log("PASS: lifecycle readiness, KOLcoin on-time activation, next-day fees, delay versioning, cancellation, and migration preview.")
+console.log("PASS: lifecycle readiness resumes blocked activation, stays idempotent, starts next-day fees, versions delays, handles cancellation, and previews migration.")

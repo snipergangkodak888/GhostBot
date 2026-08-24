@@ -106,6 +106,26 @@ export function projectActivationReadiness(project: any) {
   return { ready: missing.length === 0, missing, chain, quoteToken, referrerStatus }
 }
 
+export type ProjectActivationIntent = "scheduled" | "now"
+export type ProjectReadinessStep = "standard_fees" | "no_referrer"
+
+const projectLifecycleLocks = new Map<string, Promise<void>>()
+
+async function withProjectLifecycleLock<T>(projectId: string, work: () => Promise<T>) {
+  const previous = projectLifecycleLocks.get(projectId) || Promise.resolve()
+  let release!: () => void
+  const current = new Promise<void>((resolve) => { release = resolve })
+  const tail = previous.then(() => current)
+  projectLifecycleLocks.set(projectId, tail)
+  await previous
+  try {
+    return await work()
+  } finally {
+    release()
+    if (projectLifecycleLocks.get(projectId) === tail) projectLifecycleLocks.delete(projectId)
+  }
+}
+
 export function activationLifecycleFields(project: any, params: {
   actual: "scheduled" | "now"
   telegramId?: number | null
@@ -124,6 +144,9 @@ export function activationLifecycleFields(project: any, params: {
     dailyFeeStartDate: nextDateKey(actualLaunchAt, project.launchTimeZone || TEAM_TIME_ZONE),
     activationOverdue: false,
     nextActivationPromptAt: null,
+    pendingActivationIntent: null,
+    pendingActivationRequestedAt: null,
+    pendingActivationRequestedByTelegramId: null,
     updatedAt: now,
   }
 }
@@ -154,6 +177,9 @@ export function scheduledLifecycleFields(params: {
     activationPromptSentAt: null,
     nextActivationPromptAt: null,
     activationOverdue: false,
+    pendingActivationIntent: null,
+    pendingActivationRequestedAt: null,
+    pendingActivationRequestedByTelegramId: null,
   }
 }
 
@@ -164,25 +190,40 @@ export async function activateScheduledProject(params: {
   now?: Date
   expectedScheduleVersion?: number
 }) {
-  const db = await getDb()
-  const project = await db.collection("opsProjects").findOne({ _id: params.projectId })
-  if (!project) return { ok: false as const, error: "Project not found" }
-  if (project.status === "active") return { ok: true as const, alreadyActive: true, project }
-  if (project.status !== "scheduled" && project.status !== "in_progress") return { ok: false as const, error: "Only scheduled projects can be activated" }
-  if (params.expectedScheduleVersion != null && Number(project.scheduleVersion || 0) !== params.expectedScheduleVersion) {
-    return { ok: false as const, error: "This launch schedule was updated. Use the newest confirmation message." }
-  }
-  const readiness = projectActivationReadiness(project)
-  if (!readiness.ready) return { ok: false as const, error: `Complete ${readiness.missing.join(", ")} before activation.`, readiness, project }
-  const now = params.now || new Date()
-  const update = activationLifecycleFields(project, { actual: params.actual, telegramId: params.telegramId, source: "launch_chat_confirmation", now })
-  const result = await db.collection("opsProjects").updateOne(
-    { _id: project._id, status: project.status, scheduleVersion: project.scheduleVersion },
-    { $set: update },
-  )
-  if (!result.modifiedCount) return { ok: false as const, error: "The project changed before activation. Refresh and try again." }
-  await db.collection("opsProjectLifecycleEvents").insertOne({ projectId: String(project._id), projectName: project.name, action: "activated", ...update, createdAt: now })
-  return { ok: true as const, project: { ...project, ...update }, dailyFeeStartDate: update.dailyFeeStartDate }
+  return withProjectLifecycleLock(params.projectId, async () => {
+    const db = await getDb()
+    const project = await db.collection("opsProjects").findOne({ _id: params.projectId })
+    if (!project) return { ok: false as const, error: "Project not found" }
+    if (project.status === "active") return { ok: true as const, alreadyActive: true, project }
+    if (project.status !== "scheduled" && project.status !== "in_progress") return { ok: false as const, error: "Only scheduled projects can be activated" }
+    if (params.expectedScheduleVersion != null && Number(project.scheduleVersion || 0) !== params.expectedScheduleVersion) {
+      return { ok: false as const, error: "This launch schedule was updated. Use the newest confirmation message." }
+    }
+    const readiness = projectActivationReadiness(project)
+    const now = params.now || new Date()
+    if (!readiness.ready) {
+      const pending = {
+        pendingActivationIntent: params.actual,
+        pendingActivationRequestedAt: now.toISOString(),
+        pendingActivationRequestedByTelegramId: params.telegramId,
+        updatedAt: now,
+      }
+      const pendingResult = await db.collection("opsProjects").updateOne(
+        { _id: project._id, status: project.status, scheduleVersion: project.scheduleVersion },
+        { $set: pending },
+      )
+      if (!pendingResult.modifiedCount) return { ok: false as const, error: "The project changed before activation. Use the newest launch confirmation." }
+      return { ok: false as const, error: `Complete ${readiness.missing.join(", ")} before activation.`, readiness, project: { ...project, ...pending } }
+    }
+    const update = activationLifecycleFields(project, { actual: params.actual, telegramId: params.telegramId, source: "launch_chat_confirmation", now })
+    const result = await db.collection("opsProjects").updateOne(
+      { _id: project._id, status: project.status, scheduleVersion: project.scheduleVersion },
+      { $set: update },
+    )
+    if (!result.modifiedCount) return { ok: false as const, error: "The project changed before activation. Refresh and try again." }
+    await db.collection("opsProjectLifecycleEvents").insertOne({ projectId: String(project._id), projectName: project.name, action: "activated", ...update, createdAt: now })
+    return { ok: true as const, project: { ...project, ...update }, activated: true as const, dailyFeeStartDate: update.dailyFeeStartDate }
+  })
 }
 
 export async function rescheduleProject(params: { projectId: string; launchAt: string | Date; telegramId: number; chatId?: number | string; timeZone?: string; expectedScheduleVersion?: number }) {
@@ -207,42 +248,107 @@ export async function cancelScheduledProject(projectId: string, telegramId: numb
   if (project.status === "active") return { ok: false as const, error: "Deactivate active projects from project management." }
   if (project.status === "inactive") return { ok: true as const, alreadyInactive: true, project }
   if (expectedScheduleVersion != null && Number(project.scheduleVersion || 0) !== expectedScheduleVersion) return { ok: false as const, error: "This launch schedule was already updated. Use the newest confirmation message." }
-  const update = { status: "inactive", inactivatedAt: now.toISOString(), inactivationSource: "launch_cancelled", inactivatedByTelegramId: telegramId, nextActivationPromptAt: null, activationOverdue: false, updatedAt: now }
+  const update = { status: "inactive", inactivatedAt: now.toISOString(), inactivationSource: "launch_cancelled", inactivatedByTelegramId: telegramId, nextActivationPromptAt: null, activationOverdue: false, pendingActivationIntent: null, pendingActivationRequestedAt: null, pendingActivationRequestedByTelegramId: null, updatedAt: now }
   const result = await db.collection("opsProjects").updateOne({ _id: project._id, status: project.status, scheduleVersion: project.scheduleVersion }, { $set: update })
   if (!result.modifiedCount) return { ok: false as const, error: "The project changed before cancellation. Use the newest schedule." }
   await db.collection("opsProjectLifecycleEvents").insertOne({ projectId: String(project._id), projectName: project.name, action: "cancelled", telegramId, createdAt: now })
   return { ok: true as const, project: { ...project, ...update } }
 }
 
-export async function confirmNoProjectReferrer(projectId: string, telegramId: number) {
-  const db = await getDb()
-  const now = new Date()
-  const result = await db.collection("opsProjects").updateOne({ _id: projectId }, { $set: { referrerStatus: "none", referrerConfirmedAt: now.toISOString(), referrerConfirmedByTelegramId: telegramId, updatedAt: now } })
-  return { ok: result.modifiedCount > 0 }
+export async function completeProjectReadinessStep(params: {
+  projectId: string
+  telegramId: number
+  step: ProjectReadinessStep
+  expectedScheduleVersion?: number
+  resumeActivation?: ProjectActivationIntent
+  now?: Date
+}) {
+  return withProjectLifecycleLock(params.projectId, async () => {
+    const db = await getDb()
+    const project = await db.collection("opsProjects").findOne({ _id: params.projectId })
+    if (!project) return { ok: false as const, error: "Project not found" }
+    if (project.status === "active") {
+      return {
+        ok: true as const,
+        alreadyActive: true as const,
+        activated: true as const,
+        project,
+        readiness: projectActivationReadiness(project),
+        dailyFeeStartDate: project.dailyFeeStartDate || null,
+      }
+    }
+    if (project.status !== "scheduled" && project.status !== "in_progress") return { ok: false as const, error: "Only scheduled projects can be prepared for activation" }
+    if (params.expectedScheduleVersion != null && Number(project.scheduleVersion || 0) !== params.expectedScheduleVersion) {
+      return { ok: false as const, error: "This launch schedule was updated. Use the newest confirmation message." }
+    }
+
+    const now = params.now || new Date()
+    let prerequisiteUpdate: Record<string, any>
+    if (params.step === "no_referrer") {
+      prerequisiteUpdate = {
+        referrerStatus: "none",
+        referrerConfirmedAt: now.toISOString(),
+        referrerConfirmedByTelegramId: params.telegramId,
+        updatedAt: now,
+      }
+    } else {
+      const currentReadiness = projectActivationReadiness(project)
+      if (!currentReadiness.chain || !currentReadiness.quoteToken) return { ok: false as const, error: "Set the chain and quote token before confirming fees." }
+      prerequisiteUpdate = {
+        chain: currentReadiness.chain,
+        revenueChain: currentReadiness.chain,
+        quoteToken: currentReadiness.quoteToken,
+        quoteAssets: [currentReadiness.quoteToken],
+        dailyTradingFeeEnabled: true,
+        dailyTradingFeeUsd: Number(project.dailyTradingFeeUsd || 500),
+        launchFeeUsd: Number(project.launchFeeUsd || 1000),
+        feeConfigurationConfirmed: true,
+        feeConfigurationConfirmedAt: now.toISOString(),
+        feeConfigurationConfirmedByTelegramId: params.telegramId,
+        updatedAt: now,
+      }
+    }
+
+    const preparedProject = { ...project, ...prerequisiteUpdate }
+    const readiness = projectActivationReadiness(preparedProject)
+    const storedIntent = ["scheduled", "now"].includes(String(project.pendingActivationIntent || ""))
+      ? project.pendingActivationIntent as ProjectActivationIntent
+      : undefined
+    const activationIntent = params.resumeActivation || storedIntent
+    const activationUpdate = readiness.ready && activationIntent
+      ? activationLifecycleFields(preparedProject, { actual: activationIntent, telegramId: params.telegramId, source: "launch_chat_confirmation", now })
+      : null
+    const update = { ...prerequisiteUpdate, ...(activationUpdate || {}) }
+    const result = await db.collection("opsProjects").updateOne(
+      { _id: project._id, status: project.status, scheduleVersion: project.scheduleVersion },
+      { $set: update },
+    )
+    if (!result.modifiedCount) {
+      const latest = await db.collection("opsProjects").findOne({ _id: project._id })
+      if (latest?.status === "active") return { ok: true as const, alreadyActive: true as const, activated: true as const, project: latest, readiness: projectActivationReadiness(latest), dailyFeeStartDate: latest.dailyFeeStartDate || null }
+      return { ok: false as const, error: "The project changed before setup was completed. Use the newest launch confirmation." }
+    }
+
+    const updatedProject = { ...preparedProject, ...(activationUpdate || {}) }
+    if (activationUpdate) {
+      await db.collection("opsProjectLifecycleEvents").insertOne({ projectId: String(project._id), projectName: project.name, action: "activated", ...activationUpdate, createdAt: now })
+    }
+    return {
+      ok: true as const,
+      project: updatedProject,
+      readiness,
+      activated: Boolean(activationUpdate),
+      dailyFeeStartDate: activationUpdate?.dailyFeeStartDate || null,
+    }
+  })
 }
 
-export async function confirmStandardProjectFees(projectId: string, telegramId: number) {
-  const db = await getDb()
-  const project = await db.collection("opsProjects").findOne({ _id: projectId })
-  if (!project) return { ok: false as const, error: "Project not found" }
-  const readiness = projectActivationReadiness({ ...project, feeConfigurationConfirmed: true })
-  if (!readiness.chain || !readiness.quoteToken) return { ok: false as const, error: "Set the chain and quote token before confirming fees." }
-  const now = new Date()
-  const update = {
-    chain: readiness.chain,
-    revenueChain: readiness.chain,
-    quoteToken: readiness.quoteToken,
-    quoteAssets: [readiness.quoteToken],
-    dailyTradingFeeEnabled: true,
-    dailyTradingFeeUsd: Number(project.dailyTradingFeeUsd || 500),
-    launchFeeUsd: Number(project.launchFeeUsd || 1000),
-    feeConfigurationConfirmed: true,
-    feeConfigurationConfirmedAt: now.toISOString(),
-    feeConfigurationConfirmedByTelegramId: telegramId,
-    updatedAt: now,
-  }
-  await db.collection("opsProjects").updateOne({ _id: project._id }, { $set: update })
-  return { ok: true as const, project: { ...project, ...update } }
+export async function confirmNoProjectReferrer(projectId: string, telegramId: number, expectedScheduleVersion?: number) {
+  return completeProjectReadinessStep({ projectId, telegramId, step: "no_referrer", expectedScheduleVersion })
+}
+
+export async function confirmStandardProjectFees(projectId: string, telegramId: number, expectedScheduleVersion?: number) {
+  return completeProjectReadinessStep({ projectId, telegramId, step: "standard_fees", expectedScheduleVersion })
 }
 
 export function launchLifecycleMigrationPreview(projects: any[], now = new Date()) {

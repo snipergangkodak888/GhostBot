@@ -1216,20 +1216,19 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       return sendMessage(token, chatId, result.ok ? `✅ ${(result.project as any).name} was marked Inactive and removed from launch confirmations.` : `⚠️ ${result.error}`)
     }
     if (action === "fees") {
-      const current = await db.collection("opsProjects").findOne({ _id: id })
-      if (!current || !["scheduled", "in_progress"].includes(String(current.status || "")) || Number(current.scheduleVersion || 0) !== scheduleVersion) return sendMessage(token, chatId, "⚠️ This launch schedule was already updated. Use the newest confirmation message.")
-      const result = await confirmStandardProjectFees(id, telegramId)
+      const result = await confirmStandardProjectFees(id, telegramId, scheduleVersion)
       if (!result.ok) return sendMessage(token, chatId, `⚠️ ${result.error}`)
-      const readiness = projectActivationReadiness(result.project)
+      if (result.alreadyActive) return sendMessage(token, chatId, `✅ ${(result.project as any).name} is already active.`)
+      if (result.activated) return sendMessage(token, chatId, `✅ Standard fee setup confirmed and ${(result.project as any).name} is now Active.\n\nDaily trading fees begin on ${result.dailyFeeStartDate} because each $500 charge covers the prior 24 hours.`)
+      const readiness = result.readiness
       return sendMessage(token, chatId, readiness.ready ? "✅ Standard launch and daily fee setup confirmed. You can now use the launch confirmation button." : `✅ Fee setup confirmed. Still needed before activation: ${readiness.missing.join(", ")}.`)
     }
     if (action === "refnone") {
-      const current = await db.collection("opsProjects").findOne({ _id: id })
-      if (!current || !["scheduled", "in_progress"].includes(String(current.status || "")) || Number(current.scheduleVersion || 0) !== scheduleVersion) return sendMessage(token, chatId, "⚠️ This launch schedule was already updated. Use the newest confirmation message.")
-      const result = await confirmNoProjectReferrer(id, telegramId)
-      if (!result.ok) return sendMessage(token, chatId, "⚠️ Project not found.")
-      const project = await db.collection("opsProjects").findOne({ _id: id })
-      const readiness = projectActivationReadiness(project)
+      const result = await confirmNoProjectReferrer(id, telegramId, scheduleVersion)
+      if (!result.ok) return sendMessage(token, chatId, `⚠️ ${result.error}`)
+      if (result.alreadyActive) return sendMessage(token, chatId, `✅ ${(result.project as any).name} is already active.`)
+      if (result.activated) return sendMessage(token, chatId, `✅ No referrer confirmed and ${(result.project as any).name} is now Active.\n\nDaily trading fees begin on ${result.dailyFeeStartDate} because each $500 charge covers the prior 24 hours.`)
+      const readiness = result.readiness
       return sendMessage(token, chatId, readiness.ready ? "✅ No referrer confirmed. This launch is ready to activate." : `✅ No referrer confirmed. Still needed before activation: ${readiness.missing.join(", ")}.`)
     }
   }
