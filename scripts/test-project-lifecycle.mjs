@@ -64,6 +64,7 @@ const exactRequestConfig = lifecycle.inferLaunchConfiguration("add KOLCOIN launc
 assert.deepEqual(JSON.parse(JSON.stringify(exactRequestConfig)), { launchVenue: "pumpfun", launchVenueLabel: "Pump.fun", launchFundingAsset: "SOL", chain: "solana", quoteToken: "SOL" })
 assert.equal(lifecycle.cleanLaunchProjectName("add KOLCOIN"), "KOLCOIN")
 assert.equal(lifecycle.cleanLaunchProjectName("please schedule the project alpha coin"), "Alpha Coin")
+assert.equal(lifecycle.cleanLaunchProjectNameFromRequest("SnapGame pumpfun sol", "SnapGame pumpfun sol launch at 5:10 pm ET today"), "SnapGame")
 
 const launchAt = "2026-08-24T18:00:00.000Z" // 2 PM ET
 const kolcoin = {

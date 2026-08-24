@@ -29,7 +29,8 @@ import {
   TEAM_TIME_ZONE,
 } from "@/lib/team-timezone"
 import { getSheetSchema, normalizeSheetKind, valuesForKind, type SheetKind } from "@/lib/sheet-schemas"
-import { cleanLaunchProjectName, inferLaunchConfiguration, normalizeProjectStatus, projectActivationReadiness, projectLaunchAt, scheduledLifecycleFields } from "@/lib/project-lifecycle"
+import { cleanLaunchProjectName, cleanLaunchProjectNameFromRequest, inferLaunchConfiguration, normalizeProjectStatus, projectActivationReadiness, projectLaunchAt, scheduledLifecycleFields } from "@/lib/project-lifecycle"
+import { formatLaunchSetupReview, launchSetupButtons, launchSetupReady } from "@/lib/launch-setup"
 import { cleanProjectFeeFields } from "@/lib/revenue-projects"
 
 function includes(text: string, words: string[]) {
@@ -255,7 +256,7 @@ function scopedActionPayload(actionType: string, payload: Record<string, any>, s
   const allowed = actionType === "create_reminder"
     ? ["title", "message", "dueAt", "timeZone", "deliveryScope", "telegramChatId", "targetChatTitle"]
     : scope === "launch"
-      ? ["projectName", "name", "owner", "referrer", "status", "service", "startDate", "launchDate", "endDate", "notes", "tags", "_candidates"]
+      ? ["projectName", "name", "owner", "referrer", "referrerWallet", "referrerAccountId", "referralPercentage", "referrerStatus", "status", "service", "startDate", "launchAt", "launchDate", "launchTimeZone", "launchVenue", "launchFundingAsset", "chain", "revenueChain", "quoteToken", "quoteAssets", "dailyTradingFeeEnabled", "dailyTradingFeeUsd", "launchFeeUsd", "feeConfigurationConfirmed", "endDate", "notes", "tags", "_candidates"]
       : ["projectName", "name", "status", "service", "notes", "tags", "_candidates"]
   return Object.fromEntries(Object.entries(payload).filter(([key]) => allowed.includes(key)))
 }
@@ -693,7 +694,7 @@ function launchProjectName(text: string, projects: any[]) {
     /\blaunch(?:\s+(?:for|of))?\s+(.{1,80}?)(?=\s+(?:today|tomorrow|tonight|next|on|at)\b|$)/i,
   ]
   for (const pattern of patterns) {
-    const name = cleanLaunchProjectName(text.match(pattern)?.[1])
+    const name = cleanLaunchProjectNameFromRequest(text.match(pattern)?.[1], text)
     if (!name || /^(?:a|the|our|new|project|launch)$/i.test(name)) continue
     const project = projects.find((item: any) => sameName(item.name, name)) || null
     return { name: project?.name || name, project }
@@ -1134,6 +1135,15 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
   }
   const result = await db.collection("opsAiActions").insertOne(record)
   const actionId = String(result.insertedId)
+  if (actionType === "create_project" && (resolved.payload.launchAt || resolved.payload.launchDate) && options.dataScope === "launch") {
+    const launchAction = { ...record, _id: actionId }
+    return {
+      actionId,
+      message: formatLaunchSetupReview(launchAction),
+      needsChoice: false,
+      buttons: launchSetupButtons(launchAction),
+    }
+  }
   const details = uniqueLines(resolved.preview.length ? resolved.preview : actionDetails(resolved.payload))
   const isDelete = actionType.startsWith("delete_")
   const message = [
@@ -1248,11 +1258,14 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
     const name = String(payload.name || "").trim()
     if (!name) return "⚠️ Missing project name. I did not change anything."
     const launchAt = payload.launchAt || payload.launchDate
+    if (launchAt && options.dataScope === "launch" && !launchSetupReady(payload)) return "⚠️ Complete the launch review before creating this project. I did not change anything."
     const currentProfitLoss = Number(payload.currentProfitLoss || 0)
     const project = {
       name,
       referrer: String(payload.referrer || payload.owner || "").trim(),
       referrerWallet: String(payload.referrerWallet || "").trim(),
+      referrerAccountId: payload.referrerAccountId ? String(payload.referrerAccountId).trim() : null,
+      referralPercentage: Math.max(0, Number(payload.referralPercentage || payload.referrerPercentage || 0)),
       status: normalizeProjectStatus(payload.status, launchAt),
       service: String(payload.service || "").trim(),
       startDate: payload.startDate ? new Date(payload.startDate).toISOString() : null,

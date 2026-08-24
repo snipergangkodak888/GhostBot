@@ -57,6 +57,32 @@ export function cleanLaunchProjectName(value: unknown) {
   return cleaned
 }
 
+export function cleanLaunchProjectNameFromRequest(value: unknown, request: unknown) {
+  let cleaned = cleanLaunchProjectName(value)
+  const config = inferLaunchConfiguration(request)
+  if (!config.launchVenue || !cleaned) return cleaned
+  const venue = LAUNCH_PADS.find((pad) => pad.id === config.launchVenue)
+  const terms = new Set<string>([
+    venue?.id || "",
+    venue?.name || "",
+    venue?.id === "pumpfun" ? "pump fun" : "",
+    venue?.id === "fourmeme" ? "four meme" : "",
+    venue?.id === "aero" ? "aerodrome" : "",
+    config.chain,
+    config.chain === "solana" ? "solana" : "",
+    config.chain === "bnb" ? "bsc" : "",
+    config.quoteToken,
+  ].filter(Boolean))
+  const suffixPattern = Array.from(terms).sort((a, b) => b.length - a.length).map(escapedPattern).join("|")
+  if (!suffixPattern) return cleaned
+  for (let index = 0; index < 6; index++) {
+    const next = cleaned.replace(new RegExp(`(?:\\s|[/·|,-])+(?:${suffixPattern})$`, "i"), "").trim()
+    if (!next || next === cleaned) break
+    cleaned = next
+  }
+  return cleanLaunchProjectName(cleaned)
+}
+
 export function inferLaunchConfiguration(text: unknown) {
   const raw = String(text || "")
   const lower = raw.toLowerCase()
