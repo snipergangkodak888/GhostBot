@@ -1,4 +1,5 @@
 import { getDb } from "@/lib/db"
+import { projectLaunchAt } from "@/lib/project-lifecycle"
 
 export const LAUNCH_TIME_ZONE = "America/New_York"
 
@@ -44,10 +45,13 @@ export async function getLaunchesForDay(value: string | Date) {
   const targetKey = launchDateKey(value)
   if (!targetKey) return []
   const db = await getDb()
-  const projects = await db.collection("opsProjects").find({ launchDate: { $exists: true } }).toArray()
+  const projects = await db.collection("opsProjects").find({}).toArray()
   return projects
-    .filter((project: any) => project.status !== "inactive" && project.launchDate && launchDateKey(project.launchDate) === targetKey)
-    .sort((a: any, b: any) => new Date(a.launchDate).getTime() - new Date(b.launchDate).getTime())
+    .filter((project: any) => {
+      const launchAt = projectLaunchAt(project)
+      return project.status !== "inactive" && launchAt && launchDateKey(launchAt) === targetKey
+    })
+    .sort((a: any, b: any) => Number(projectLaunchAt(a)) - Number(projectLaunchAt(b)))
 }
 
 export async function formatLaunchDaySchedule(value: string | Date, options: { morning?: boolean } = {}) {
@@ -57,7 +61,9 @@ export async function formatLaunchDaySchedule(value: string | Date, options: { m
   const header = options.morning ? "☀️ Today’s Launch Schedule" : "📅 Launch Schedule"
   const lines = launches.map((project: any) => {
     const owner = String(project.referrer || project.owner || "").trim()
-    return `• ${launchTimeLabel(project.launchDate)} — ${project.name || "Unnamed project"}${owner ? ` (${owner})` : ""}`
+    const launchAt = projectLaunchAt(project)!
+    const status = project.status === "active" ? "Active" : project.activationOverdue ? "Awaiting confirmation" : "Scheduled"
+    return `• ${launchTimeLabel(launchAt)} — ${project.name || "Unnamed project"}${owner ? ` (${owner})` : ""} · ${status}`
   })
   return [
     header,

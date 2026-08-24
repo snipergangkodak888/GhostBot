@@ -38,7 +38,7 @@ export async function GET() {
   } catch {}
 
   const now = Date.now()
-  const activeProjects = projects.filter((p: any) => p.status !== 'inactive')
+  const activeProjects = projects.filter((p: any) => p.status === 'active')
   const upcomingReminders = reminders
     .filter((r: any) => r.status !== 'done' && new Date(r.dueAt).getTime() >= now)
     .sort((a: any, b: any) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime())

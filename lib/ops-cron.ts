@@ -1,9 +1,10 @@
 import { getDb } from "@/lib/db"
-import { getTelegramBotToken, sendTelegramText } from "@/lib/telegram-bot"
+import { getTelegramBotToken, sendTelegramMessage, sendTelegramText } from "@/lib/telegram-bot"
 import { formatTeamDateTime, nextRecurringDueAt, TEAM_TIME_ZONE } from "@/lib/team-timezone"
 import { getSubscribedChats } from "@/lib/chat-subscriptions"
 import { formatLaunchDaySchedule, getLaunchesForDay, launchDateKey, LAUNCH_TIME_ZONE } from "@/lib/launch-calendar"
 import { ensureDailyTradingFeeExpectations, valuePendingRevenueReceipts } from "@/lib/revenue-service"
+import { projectActivationReadiness, projectLaunchAt } from "@/lib/project-lifecycle"
 
 const EST_TIME_ZONE = LAUNCH_TIME_ZONE
 
@@ -45,6 +46,11 @@ async function claimDelivery(key: string, type: string) {
   const now = new Date()
   await db.collection("opsCronDeliveries").insertOne({ key, type, createdAt: now, updatedAt: now })
   return true
+}
+
+async function releaseDelivery(key: string) {
+  const db = await getDb()
+  await db.collection("opsCronDeliveries").deleteOne({ key })
 }
 
 function directRecipient(reminder: any): CronRecipient[] | null {
@@ -168,15 +174,148 @@ async function processLaunchMorningDigest(token: string, now: Date) {
   return { events: launches.length, recipients: recipients.length, sent, failed, skipped, waiting: false, hourEt: digestHour }
 }
 
+export async function processDueLaunchConfirmations(token: string, now: Date) {
+  const db = await getDb()
+  const projects = await db.collection("opsProjects").find({}).toArray()
+  const fallbackRecipients = await getSubscribedChats("launches")
+  const due = projects.filter((project: any) => {
+    if (!["scheduled", "in_progress"].includes(String(project.status || ""))) return false
+    const launchAt = projectLaunchAt(project)
+    if (!launchAt || launchAt.getTime() > now.getTime()) return false
+    const promptCount = Number(project.activationPromptCount || 0)
+    if (promptCount >= 3) return false
+    const nextPrompt = project.nextActivationPromptAt ? new Date(project.nextActivationPromptAt) : null
+    return !nextPrompt || Number.isNaN(nextPrompt.getTime()) || nextPrompt.getTime() <= now.getTime()
+  })
+
+  let sent = 0
+  let failed = 0
+  let skipped = 0
+  for (const project of due) {
+    const launchAt = projectLaunchAt(project)!
+    const version = Number(project.scheduleVersion || 0)
+    const promptNumber = Number(project.activationPromptCount || 0) + 1
+    const recipients = project.launchChatId
+      ? [{ chatId: String(project.launchChatId), kind: "group" as const, label: "Launch Chat" }]
+      : fallbackRecipients
+    if (!recipients.length) {
+      skipped += 1
+      continue
+    }
+    const readiness = projectActivationReadiness(project)
+    const text = [
+      `🚀 <b>${escapeHtml(project.name || "Scheduled launch")}</b> was scheduled to launch now.`,
+      "",
+      `${escapeHtml(project.launchVenue || "Launch venue not set")} · ${escapeHtml(readiness.chain || "chain not set")} · ${escapeHtml(readiness.quoteToken || "quote token not set")}`,
+      `Scheduled: ${telegramLocalDateTime(launchAt, project.launchTimeZone || EST_TIME_ZONE)}`,
+      readiness.ready ? "✅ Activation setup is complete." : `⚠️ Before activation: ${escapeHtml(readiness.missing.join(", "))}.`,
+      "",
+      "Has the token launched?",
+    ].join("\n")
+    const replyMarkup = {
+      inline_keyboard: [
+        [{ text: "✅ Launched on schedule", callback_data: `lifecycle:ontime:${project._id}:${version}` }],
+        [{ text: "✅ Launched now", callback_data: `lifecycle:now:${project._id}:${version}` }],
+        [{ text: "🕒 Delayed — update time", callback_data: `lifecycle:delay:${project._id}:${version}` }],
+        [{ text: "❌ Launch cancelled", callback_data: `lifecycle:cancel:${project._id}:${version}` }],
+      ],
+    }
+    let delivered = false
+    for (const recipient of recipients) {
+      const key = `launch-activation:${project._id}:${version}:${promptNumber}:${recipient.chatId}`
+      if (!(await claimDelivery(key, "launch-activation"))) {
+        skipped += 1
+        continue
+      }
+      const messageId = await sendTelegramMessage(token, recipient.chatId, text, { parseMode: "HTML", replyMarkup })
+      if (messageId) {
+        sent += 1
+        delivered = true
+      } else {
+        failed += 1
+        await releaseDelivery(key)
+      }
+    }
+    if (delivered) {
+      const delayMinutes = promptNumber === 1 ? 15 : promptNumber === 2 ? 45 : null
+      await db.collection("opsProjects").updateOne(
+        { _id: project._id, status: project.status, scheduleVersion: project.scheduleVersion },
+        { $set: {
+          activationPromptCount: promptNumber,
+          activationPromptSentAt: now.toISOString(),
+          nextActivationPromptAt: delayMinutes ? new Date(now.getTime() + delayMinutes * 60_000).toISOString() : null,
+          activationOverdue: promptNumber >= 3,
+          updatedAt: now,
+        } },
+      )
+    }
+  }
+  return { due: due.length, sent, failed, skipped }
+}
+
+export async function processUpcomingLaunchReadiness(token: string, now: Date) {
+  const db = await getDb()
+  const projects = await db.collection("opsProjects").find({}).toArray()
+  const fallbackRecipients = await getSubscribedChats("launches")
+  const upcoming = projects.filter((project: any) => {
+    if (!["scheduled", "in_progress"].includes(String(project.status || ""))) return false
+    const launchAt = projectLaunchAt(project)
+    if (!launchAt) return false
+    const remaining = launchAt.getTime() - now.getTime()
+    return remaining > 0 && remaining <= 24 * 60 * 60_000 && !projectActivationReadiness(project).ready
+  })
+  let sent = 0
+  let failed = 0
+  let skipped = 0
+  for (const project of upcoming) {
+    const launchAt = projectLaunchAt(project)!
+    const remaining = launchAt.getTime() - now.getTime()
+    const bucket = remaining <= 60 * 60_000 ? "1h" : "24h"
+    const version = Number(project.scheduleVersion || 0)
+    const readiness = projectActivationReadiness(project)
+    const recipients = project.launchChatId
+      ? [{ chatId: String(project.launchChatId), kind: "group" as const, label: "Launch Chat" }]
+      : fallbackRecipients
+    const buttons: Array<Array<{ text: string; callback_data: string }>> = []
+    if (readiness.missing.includes("fee configuration") && readiness.chain && readiness.quoteToken) buttons.push([{ text: "✅ Use standard $1K launch + $500/day fees", callback_data: `lifecycle:fees:${project._id}:${version}` }])
+    if (readiness.missing.includes("referrer decision")) buttons.push([{ text: "Confirm no referrer", callback_data: `lifecycle:refnone:${project._id}:${version}` }])
+    const text = [
+      `⚠️ <b>${escapeHtml(project.name || "Scheduled launch")}</b> is not ready to activate.`,
+      "",
+      `Launch: ${telegramLocalDateTime(launchAt, project.launchTimeZone || EST_TIME_ZONE)}`,
+      `Complete before launch: ${escapeHtml(readiness.missing.join(", "))}.`,
+      readiness.missing.some((item) => item === "chain" || item === "quote token") ? "Edit the project to set its chain and single quote token." : "",
+    ].filter(Boolean).join("\n")
+    for (const recipient of recipients) {
+      const key = `launch-readiness:${project._id}:${version}:${bucket}:${recipient.chatId}`
+      if (!(await claimDelivery(key, "launch-readiness"))) {
+        skipped += 1
+        continue
+      }
+      const messageId = await sendTelegramMessage(token, recipient.chatId, text, { parseMode: "HTML", ...(buttons.length ? { replyMarkup: { inline_keyboard: buttons } } : {}) })
+      if (messageId) sent += 1
+      else {
+        failed += 1
+        await releaseDelivery(key)
+      }
+    }
+  }
+  return { due: upcoming.length, sent, failed, skipped }
+}
+
 export async function runLaunchScheduleCron(now = new Date()) {
   const token = await getTelegramBotToken()
   if (!token) return { ok: false, error: "Telegram bot token is not configured" }
+  const readiness = await processUpcomingLaunchReadiness(token, now)
+  const confirmations = await processDueLaunchConfirmations(token, now)
   const calendar = await processLaunchMorningDigest(token, now)
   return {
     ok: true,
     timezone: EST_TIME_ZONE,
     estDate: estDateKey(now),
     calendar,
+    confirmations,
+    readiness,
     runAt: now.toISOString(),
   }
 }
@@ -194,6 +333,8 @@ export async function runOpsSuperCron(now = new Date()) {
   }
 
   const reminders = await processDueReminders(token, startedAt)
+  const readiness = await processUpcomingLaunchReadiness(token, startedAt)
+  const confirmations = await processDueLaunchConfirmations(token, startedAt)
   const calendar = await processLaunchMorningDigest(token, startedAt)
   const finishedAt = new Date()
   const result = {
@@ -202,6 +343,8 @@ export async function runOpsSuperCron(now = new Date()) {
     estDate: estDateKey(startedAt),
     reminders,
     calendar,
+    confirmations,
+    readiness,
     revenueDailyFees,
     revenueValuation,
     startedAt: startedAt.toISOString(),

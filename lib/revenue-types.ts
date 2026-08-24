@@ -31,6 +31,7 @@ export type RevenueReceiptStatus = "unclassified" | "match_proposed" | "allocate
 
 export type ProjectFeeConfig = {
   chain: RevenueChain | ""
+  quoteToken: string
   quoteAssets: string[]
   dailyTradingFeeEnabled: boolean
   dailyTradingFeeUsd: number

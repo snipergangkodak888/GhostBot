@@ -54,6 +54,7 @@ function localRequire(id) {
         sentMessages.push({ chatId: String(chatId), text })
         return true
       },
+      sendTelegramMessage: async () => 1,
     }
   }
   if (id === "@/lib/team-timezone") {
@@ -67,6 +68,9 @@ function localRequire(id) {
   }
   if (id === "@/lib/revenue-service") {
     return { ensureDailyTradingFeeExpectations: async () => ({}), valuePendingRevenueReceipts: async () => ({}) }
+  }
+  if (id === "@/lib/project-lifecycle") {
+    return { projectActivationReadiness: () => ({ ready: true, missing: [], chain: "", quoteToken: "" }), projectLaunchAt: () => null }
   }
   throw new Error(`Unexpected import: ${id}`)
 }

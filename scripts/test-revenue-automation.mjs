@@ -50,6 +50,10 @@ function memoryDb(seed = {}) {
             found = found.sort((a, b) => (a[key] > b[key] ? 1 : -1) * direction)
             return cursor
           },
+          limit(count) {
+            found = found.slice(0, Number(count || 0))
+            return cursor
+          },
           async toArray() { return found },
         }
         return cursor
@@ -146,6 +150,27 @@ await receiptFirstService.undoManualRevenueClassification(classifiedSumo._id)
 assert.equal(receiptFirstDb.collections.get("revenueFeeEvents").length, 0)
 assert.equal(receiptFirstDb.collections.get("revenueReceipts")[0].status, "unclassified")
 assert.equal(receiptFirstDb.collections.get("revenueFeeAudit")[0].action, "undo_manual_classification")
+
+const lifecycleFeeDb = memoryDb({
+  opsProjects: [{ _id: "kolcoin", name: "KOLcoin", status: "active", chain: "solana", quoteToken: "SOL", dailyTradingFeeEnabled: true, dailyTradingFeeUsd: 500, dailyFeeStartDate: "2026-08-25" }],
+})
+const lifecycleFeeService = loadTypeScriptModule("lib/revenue-service.ts", {
+  "@/lib/db": { getDb: async () => lifecycleFeeDb },
+  "@/lib/team-timezone": { dateKeyInTimeZone: () => "2026-08-24", teamDateKey: () => "2026-08-24" },
+  "@/lib/revenue-matching": matching,
+  "@/lib/revenue-parser": parser,
+  "@/lib/revenue-projects": { projectFeeConfig: (project) => ({ chain: project.chain, quoteToken: project.quoteToken, quoteAssets: [project.quoteToken], dailyTradingFeeEnabled: project.dailyTradingFeeEnabled, dailyTradingFeeUsd: project.dailyTradingFeeUsd, liquidationFeeEnabled: true, liquidationFeePercentage: 5, launchFeeUsd: 1000 }) },
+  "@/lib/revenue-types": { isGlobalRevenueFeeType: (value) => ["fee_rebate", "sumo_ref_claim"].includes(String(value || "")) },
+  "@/lib/revenue-consolidation": { getConsolidation: async () => null },
+  "@/lib/revenue-consolidation-candidates": { listConsolidationCandidates: async () => [] },
+  "@/lib/revenue-pricing": { valueRevenueReceipt: async (receipt) => receipt },
+  "@/lib/revenue-payroll": revenuePayroll,
+  "@/lib/revenue-allocations": allocations,
+})
+assert.equal((await lifecycleFeeService.ensureDailyTradingFeeExpectations("2026-08-24")).created, 0)
+assert.equal((await lifecycleFeeService.ensureDailyTradingFeeExpectations("2026-08-25")).created, 1)
+assert.equal(lifecycleFeeDb.collections.get("revenueFeeEvents")[0].quoteAsset, "SOL")
+assert.equal(lifecycleFeeDb.collections.get("revenueFeeEvents")[0].expectedUsd, 500)
 
 const payrollAggregation = revenuePayroll.aggregateRevenueFeesForPayroll([
   { _id: "rebate-sol", feeType: "fee_rebate", chain: "solana", recognizedUsd: 100 },

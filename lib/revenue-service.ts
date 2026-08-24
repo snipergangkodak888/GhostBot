@@ -647,7 +647,7 @@ function projectEligibleForDailyFee(project: any, date: string) {
   if (project.status !== "active") return false
   const config = projectFeeConfig(project)
   if (!config.chain || !config.dailyTradingFeeEnabled || config.dailyTradingFeeUsd <= 0) return false
-  const start = String(project.startDate || project.launchDate || "").slice(0, 10)
+  const start = String(project.dailyFeeStartDate || project.startDate || project.actualLaunchAt || project.launchAt || project.launchDate || "").slice(0, 10)
   const end = String(project.endDate || "").slice(0, 10)
   if (start && date < start) return false
   if (end && date > end) return false

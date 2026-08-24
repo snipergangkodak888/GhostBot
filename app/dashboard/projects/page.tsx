@@ -8,7 +8,7 @@ import type { PayrollAccount } from "@/lib/payroll-ledger"
 type Project = {
   _id: string
   name: string
-  status: "active" | "inactive" | "in_progress" | "paused" | "launching"
+  status: "scheduled" | "active" | "inactive" | "in_progress" | "paused" | "launching"
   referrer?: string
   referrerWallet?: string
   referrerAccountId?: string | null
@@ -20,6 +20,8 @@ type Project = {
   profitThisWeek?: number
   owner?: string
   launchDate?: string
+  launchAt?: string
+  referrerStatus?: "pending" | "assigned" | "none"
   notes?: string
   tags?: string[]
 }
@@ -46,12 +48,13 @@ const emptyProject = {
   currentProfitLoss: "",
   notes: "",
   tags: "",
+  referrerStatus: "pending",
 }
 
 const money = (value?: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(Number(value || 0))
 
-const statusLabel = (value?: string) => value === "in_progress" ? "In Progress" : value ? value.replace(/\b\w/g, (char) => char.toUpperCase()) : "Active"
+const statusLabel = (value?: string) => value === "in_progress" ? "Scheduled" : value ? value.replace(/\b\w/g, (char) => char.toUpperCase()) : "Active"
 
 export default function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>([])
@@ -59,7 +62,7 @@ export default function ProjectsPage() {
   const [projectNotes, setProjectNotes] = useState<ProjectNote[]>([])
   const [query, setQuery] = useState("")
   const [view, setView] = useState<"projects" | "notes">("projects")
-  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive" | "in_progress">("all")
+  const [statusFilter, setStatusFilter] = useState<"all" | "scheduled" | "active" | "inactive">("all")
   const [filterOpen, setFilterOpen] = useState(false)
   const [selectedId, setSelectedId] = useState("")
   const [projectFormOpen, setProjectFormOpen] = useState(false)
@@ -97,7 +100,7 @@ export default function ProjectsPage() {
       .filter((project) => statusFilter === "all" || project.status === statusFilter)
       .filter((project) => !term || `${project.name} ${project.referrer || ""} ${project.referrerWallet || ""} ${project.service || ""} ${project.notes || ""}`.toLowerCase().includes(term))
       .sort((a, b) => {
-        const rank = (status?: string) => status === "active" ? 0 : status === "in_progress" ? 1 : 2
+        const rank = (status?: string) => status === "active" ? 0 : status === "scheduled" || status === "in_progress" ? 1 : 2
         return rank(a.status) - rank(b.status)
       })
   }, [projects, query, statusFilter])
@@ -135,13 +138,14 @@ export default function ProjectsPage() {
       referrerWallet: project.referrerWallet || "",
       referrerAccountId: project.referrerAccountId || "",
       referralPercentage: String(project.referralPercentage ?? 0),
-      status: project.status === "inactive" ? "inactive" : project.status === "in_progress" ? "in_progress" : "active",
+      status: project.status === "inactive" ? "inactive" : project.status === "scheduled" || project.status === "in_progress" ? "scheduled" : "active",
       service: project.service || "",
-      startDate: project.startDate ? project.startDate.slice(0, 10) : project.launchDate ? project.launchDate.slice(0, 10) : "",
+      startDate: project.startDate ? project.startDate.slice(0, 10) : "",
       endDate: project.endDate ? project.endDate.slice(0, 10) : "",
       currentProfitLoss: String(project.currentProfitLoss ?? project.profitThisWeek ?? 0),
       notes: project.notes || "",
       tags: (project.tags || []).join(", "),
+      referrerStatus: project.referrerStatus || (project.referrerAccountId || project.referrer ? "assigned" : "pending"),
     })
     setProjectFormOpen(true)
     setView("projects")
@@ -252,15 +256,20 @@ export default function ProjectsPage() {
               }}
               className="h-10 rounded-lg border border-white/[0.08] bg-black px-3 text-sm text-white outline-none focus:border-[#ffd43b]/60"
             >
-              <option value="">No referrer</option>
+              <option value="">Choose later</option>
               {accounts.filter((account) => account.type === "REFERRER").map((account) => <option key={String(account._id || account.id)} value={String(account._id || account.id)}>{account.name}</option>)}
             </select>
             <input value={form.referrerWallet} onChange={(event) => setForm({ ...form, referrerWallet: event.target.value })} placeholder="Referrer wallet (optional)" className="h-10 rounded-lg border border-white/[0.08] bg-black/35 px-3 text-sm text-white outline-none focus:border-[#ffd43b]/60" />
             <input type="number" min="0" max="100" value={form.referralPercentage} onChange={(event) => setForm({ ...form, referralPercentage: event.target.value })} placeholder="Referrer percentage" className="h-10 rounded-lg border border-white/[0.08] bg-black/35 px-3 text-sm text-white outline-none focus:border-[#ffd43b]/60" />
             <select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })} className="h-10 rounded-lg border border-white/[0.08] bg-black px-3 text-sm text-white outline-none focus:border-[#ffd43b]/60">
+              <option value="scheduled">Scheduled</option>
               <option value="active">Active</option>
-              <option value="in_progress">In Progress</option>
               <option value="inactive">Inactive</option>
+            </select>
+            <select value={form.referrerStatus} onChange={(event) => setForm({ ...form, referrerStatus: event.target.value })} className="h-10 rounded-lg border border-white/[0.08] bg-black px-3 text-sm text-white outline-none focus:border-[#ffd43b]/60">
+              <option value="pending">Referrer decision pending</option>
+              <option value="assigned">Referrer assigned</option>
+              <option value="none">No referrer</option>
             </select>
             <input type="number" value={form.currentProfitLoss} onChange={(event) => setForm({ ...form, currentProfitLoss: event.target.value })} placeholder="Current Profit / Loss" className="h-10 rounded-lg border border-white/[0.08] bg-black/35 px-3 text-sm text-white outline-none focus:border-[#ffd43b]/60" />
             <input type="date" value={form.startDate} onChange={(event) => setForm({ ...form, startDate: event.target.value })} className="h-10 rounded-lg border border-white/[0.08] bg-black/35 px-3 text-sm text-white outline-none focus:border-[#ffd43b]/60" />
@@ -296,7 +305,7 @@ export default function ProjectsPage() {
             {([
               ["all", "All Projects"],
               ["active", "Active"],
-              ["in_progress", "In Progress"],
+              ["scheduled", "Scheduled"],
               ["inactive", "Inactive"],
             ] as const).map(([value, label]) => (
               <button key={value} onClick={() => { setStatusFilter(value); setFilterOpen(false) }} className={`block h-9 w-full rounded-lg px-3 text-left text-xs font-semibold ${statusFilter === value ? "bg-[#ffd43b]/15 text-[#ffe066]" : "text-white/60 hover:bg-white/[0.05]"}`}>
@@ -313,9 +322,9 @@ export default function ProjectsPage() {
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <h2 className="truncate text-base font-bold text-white">{project.name}</h2>
-                <p className="mt-1 text-sm text-white/45">{project.service || "No service"} · {project.startDate || project.launchDate ? new Date(project.startDate || project.launchDate || "").toLocaleDateString() : "No start date"}</p>
+                <p className="mt-1 text-sm text-white/45">{project.service || "No service"} · {project.launchAt || project.launchDate || project.startDate ? new Date(project.launchAt || project.launchDate || project.startDate || "").toLocaleDateString() : "No start date"}</p>
               </div>
-              <span className={`rounded-full px-3 py-1 text-xs font-semibold ${project.status === "active" ? "bg-[#ffd43b]/15 text-[#ffe066]" : project.status === "in_progress" ? "bg-blue-500/15 text-blue-200" : "bg-white/10 text-white/45"}`}>{statusLabel(project.status)}</span>
+              <span className={`rounded-full px-3 py-1 text-xs font-semibold ${project.status === "active" ? "bg-[#ffd43b]/15 text-[#ffe066]" : project.status === "scheduled" || project.status === "in_progress" ? "bg-blue-500/15 text-blue-200" : "bg-white/10 text-white/45"}`}>{statusLabel(project.status)}</span>
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
               <div className="rounded-lg border border-white/[0.08] bg-black/25 p-2 text-white/55">Referrer: <span className="text-white">{project.referrer || "None"}</span></div>

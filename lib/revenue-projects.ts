@@ -30,9 +30,12 @@ export function cleanQuoteAssets(value: unknown, chain?: RevenueChain | "") {
 
 export function projectFeeConfig(project: any): ProjectFeeConfig {
   const chain = cleanRevenueChain(project?.chain || project?.revenueChain)
+  const explicitQuote = String(project?.quoteToken || "").trim().toUpperCase()
+  const quoteAssets = explicitQuote ? [explicitQuote] : cleanQuoteAssets(project?.quoteAssets, chain)
   return {
     chain,
-    quoteAssets: cleanQuoteAssets(project?.quoteAssets, chain),
+    quoteToken: explicitQuote || (quoteAssets.length === 1 ? quoteAssets[0] : ""),
+    quoteAssets,
     dailyTradingFeeEnabled: project?.dailyTradingFeeEnabled === true,
     dailyTradingFeeUsd: Math.max(0, Number(project?.dailyTradingFeeUsd ?? 500)),
     liquidationFeeEnabled: project?.liquidationFeeEnabled !== false,
@@ -43,9 +46,12 @@ export function projectFeeConfig(project: any): ProjectFeeConfig {
 
 export function cleanProjectFeeFields(body: any) {
   const chain = cleanRevenueChain(body?.chain || body?.revenueChain)
+  const explicitQuote = String(body?.quoteToken || "").trim().toUpperCase()
+  const quoteAssets = explicitQuote ? [explicitQuote] : cleanQuoteAssets(body?.quoteAssets, chain)
   return {
     chain,
-    quoteAssets: cleanQuoteAssets(body?.quoteAssets, chain),
+    quoteToken: explicitQuote || (quoteAssets.length === 1 ? quoteAssets[0] : ""),
+    quoteAssets,
     dailyTradingFeeEnabled: body?.dailyTradingFeeEnabled === true,
     dailyTradingFeeUsd: Math.max(0, Number(body?.dailyTradingFeeUsd ?? 500)),
     liquidationFeeEnabled: body?.liquidationFeeEnabled !== false,

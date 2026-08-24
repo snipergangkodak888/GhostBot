@@ -3,6 +3,8 @@ import { getDb } from '@/lib/db'
 import { ObjectId } from '@/lib/object-id'
 import { deleteProjectCascade } from '@/lib/platform-data'
 import { cleanProjectFeeFields } from '@/lib/revenue-projects'
+import { activationLifecycleFields, normalizeProjectStatus, projectActivationReadiness, projectLaunchAt, scheduledLifecycleFields } from '@/lib/project-lifecycle'
+import { parseTeamDateTime } from '@/lib/team-timezone'
 
 export const dynamic = 'force-dynamic'
 
@@ -23,11 +25,23 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   if (body.referralPercentage !== undefined || body.referrerPercentage !== undefined) {
     update.referralPercentage = Number(body.referralPercentage ?? body.referrerPercentage ?? 0)
   }
-  if (body.status === 'active' || body.status === 'inactive' || body.status === 'in_progress') update.status = body.status
-  if (body.startDate !== undefined || body.launchDate !== undefined) {
-    const startDate = body.startDate || body.launchDate
-    update.startDate = startDate ? new Date(startDate).toISOString() : null
-    update.launchDate = update.startDate
+  const requestedStatus = body.status === undefined ? undefined : normalizeProjectStatus(body.status, body.launchAt || body.launchDate || projectLaunchAt(existing))
+  if (body.startDate !== undefined) {
+    update.startDate = body.startDate ? new Date(body.startDate).toISOString() : null
+  }
+  if (body.launchAt !== undefined || body.launchDate !== undefined) {
+    const launchSource = body.launchAt || body.launchDate
+    const launchAt = launchSource ? parseTeamDateTime(launchSource, body.launchTimeZone || existing.launchTimeZone || 'America/New_York')?.toISOString() : null
+    if (launchSource && !launchAt) return NextResponse.json({ error: 'Launch time or timezone is invalid.' }, { status: 400 })
+    if (launchAt && existing.status !== 'active') Object.assign(update, scheduledLifecycleFields({ launchAt, launchTimeZone: body.launchTimeZone || existing.launchTimeZone, previous: existing }))
+    else if (launchAt) {
+      update.launchAt = new Date(launchAt).toISOString()
+      update.launchDate = update.launchAt
+    }
+    else {
+      update.launchAt = null
+      update.launchDate = null
+    }
   }
   if (body.endDate !== undefined) update.endDate = body.endDate ? new Date(body.endDate).toISOString() : null
   if (body.revenueToday !== undefined) update.revenueToday = Number(body.revenueToday || 0)
@@ -37,8 +51,34 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     update.profitThisWeek = update.currentProfitLoss
   }
   if (Array.isArray(body.tags)) update.tags = body.tags.map(String)
-  if (["chain", "revenueChain", "quoteAssets", "dailyTradingFeeEnabled", "dailyTradingFeeUsd", "liquidationFeeEnabled", "liquidationFeePercentage", "launchFeeUsd"].some((key) => body[key] !== undefined)) {
+  for (const key of ['launchTimeZone', 'launchVenue', 'launchFundingAsset']) {
+    if (typeof body[key] === 'string') update[key] = body[key].trim()
+  }
+  if (body.referrerStatus !== undefined || body.referrer !== undefined || body.referrerAccountId !== undefined) {
+    update.referrerStatus = String(body.referrerStatus || (body.referrerAccountId || body.referrer ? 'assigned' : 'pending'))
+  }
+  if (["chain", "revenueChain", "quoteToken", "quoteAssets", "dailyTradingFeeEnabled", "dailyTradingFeeUsd", "liquidationFeeEnabled", "liquidationFeePercentage", "launchFeeUsd"].some((key) => body[key] !== undefined)) {
     Object.assign(update, cleanProjectFeeFields({ ...existing, ...body, chain: body.chain ?? body.revenueChain ?? existing.chain }))
+  }
+
+  if (body.feeConfigurationConfirmed !== undefined) update.feeConfigurationConfirmed = body.feeConfigurationConfirmed === true
+
+  if (requestedStatus === 'active' && existing.status !== 'active') {
+    const candidate = { ...existing, ...update, status: 'scheduled' }
+    const readiness = projectActivationReadiness(candidate)
+    if (!readiness.ready) return NextResponse.json({ error: `Complete ${readiness.missing.join(', ')} before activation.`, readiness }, { status: 400 })
+    Object.assign(update, activationLifecycleFields(candidate, { actual: 'now', source: 'manual_dashboard' }))
+  } else if (requestedStatus === 'scheduled') {
+    const launchAt = projectLaunchAt({ ...existing, ...update })
+    if (!launchAt) return NextResponse.json({ error: 'A launch time is required for a scheduled project.' }, { status: 400 })
+    if (existing.status === 'active') return NextResponse.json({ error: 'An active project cannot be moved back to Scheduled. Deactivate it first or edit its launch details without changing status.' }, { status: 400 })
+    update.status = 'scheduled'
+  } else if (requestedStatus === 'inactive') {
+    update.status = 'inactive'
+    update.inactivatedAt = new Date().toISOString()
+    update.inactivationSource = 'manual_dashboard'
+    update.nextActivationPromptAt = null
+    update.activationOverdue = false
   }
 
   await db.collection('opsProjects').updateOne(idFilter(params.id), { $set: update })

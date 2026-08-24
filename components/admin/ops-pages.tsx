@@ -32,18 +32,27 @@ type Project = {
   referrerWallet?: string
   referrerAccountId?: string | null
   referralPercentage?: number
-  status: "active" | "inactive" | "in_progress"
+  status: "scheduled" | "active" | "inactive" | "in_progress"
   service?: string
   startDate?: string | null
   endDate?: string | null
   currentProfitLoss?: number
   launchDate?: string | null
+  launchAt?: string | null
+  launchTimeZone?: string
+  launchVenue?: string
+  launchFundingAsset?: string
   revenueToday?: number
   profitThisWeek?: number
   notes?: string
   tags?: string[]
   chain?: string
+  quoteToken?: string
   quoteAssets?: string[]
+  referrerStatus?: "pending" | "assigned" | "none"
+  feeConfigurationConfirmed?: boolean
+  actualLaunchAt?: string
+  dailyFeeStartDate?: string
   dailyTradingFeeEnabled?: boolean
   dailyTradingFeeUsd?: number
   liquidationFeeEnabled?: boolean
@@ -107,16 +116,21 @@ const emptyProject = {
   referrerWallet: "",
   referrerAccountId: "",
   referralPercentage: "0",
-  status: "active",
+  status: "scheduled",
   service: "",
   startDate: "",
+  launchAt: "",
+  launchTimeZone: "America/New_York",
+  launchVenue: "",
+  launchFundingAsset: "",
   endDate: "",
   revenueToday: "0",
   currentProfitLoss: "0",
   tags: "",
   notes: "",
   chain: "",
-  quoteAssets: "",
+  quoteToken: "",
+  referrerStatus: "pending",
   dailyTradingFeeEnabled: false,
   dailyTradingFeeUsd: "500",
   liquidationFeeEnabled: true,
@@ -141,9 +155,14 @@ function browserTimeZone() {
   return typeof Intl === "undefined" ? "" : Intl.DateTimeFormat().resolvedOptions().timeZone || ""
 }
 
-function localDateTimeInput(value: string | Date) {
+function localDateTimeInput(value: string | Date, timeZone?: string) {
   const date = value instanceof Date ? value : new Date(value)
   if (Number.isNaN(date.getTime())) return ""
+  if (timeZone) {
+    const parts = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(date)
+    const part = (type: string) => parts.find((item) => item.type === type)?.value || ""
+    return `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:${part("minute")}`
+  }
   return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16)
 }
 
@@ -172,7 +191,7 @@ const dateLabel = (value?: string | null) => {
   return Number.isNaN(date.getTime()) ? "No date" : date.toLocaleDateString()
 }
 
-const projectStatusLabel = (value?: string) => value === "in_progress" ? "In Progress" : value ? value.replace(/\b\w/g, (char) => char.toUpperCase()) : "Active"
+const projectStatusLabel = (value?: string) => value === "in_progress" ? "Scheduled" : value ? value.replace(/\b\w/g, (char) => char.toUpperCase()) : "Active"
 
 const todayKey = () => new Date().toISOString().slice(0, 10)
 
@@ -321,7 +340,7 @@ export function AdminProjectsPage() {
   const [projectNotes, setProjectNotes] = useState<ProjectNote[]>([])
   const [query, setQuery] = useState("")
   const [view, setView] = useState<"projects" | "notes">("projects")
-  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive" | "in_progress">("all")
+  const [statusFilter, setStatusFilter] = useState<"all" | "scheduled" | "active" | "inactive">("all")
   const [filterOpen, setFilterOpen] = useState(false)
   const [selectedId, setSelectedId] = useState("")
   const [noteText, setNoteText] = useState("")
@@ -331,22 +350,26 @@ export function AdminProjectsPage() {
   const [editing, setEditing] = useState<string | null>(null)
   const [showForm, setShowForm] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [lifecyclePreview, setLifecyclePreview] = useState<{ projectCount: number; changeCount: number } | null>(null)
 
   const load = async () => {
     setLoading(true)
     try {
-      const [res, accountRes, noteRes] = await Promise.all([
+      const [res, accountRes, noteRes, lifecycleRes] = await Promise.all([
         fetch("/api/ops/projects", { cache: "no-store", credentials: "include" }),
         fetch("/api/ops/payroll?ledger=1", { cache: "no-store", credentials: "include" }),
         fetch("/api/ops/project-notes", { cache: "no-store", credentials: "include" }),
+        fetch("/api/admin/project-lifecycle-preview", { cache: "no-store", credentials: "include" }),
       ])
       const data = await readJson(res, [])
       const accountData = await readJson(accountRes, {})
       const noteData = await readJson(noteRes, {})
+      const lifecycleData = await readJson(lifecycleRes, null)
       const nextProjects = Array.isArray(data) ? data : Array.isArray(data?.projects) ? data.projects : []
       setProjects(nextProjects)
       setAccounts(Array.isArray(accountData?.accounts) ? accountData.accounts : [])
       setProjectNotes(Array.isArray(noteData?.notes) ? noteData.notes : [])
+      setLifecyclePreview(lifecycleData && typeof lifecycleData.changeCount === "number" ? lifecycleData : null)
       setSelectedId((current) => current || nextProjects[0]?._id || "")
       setNoteProjectId((current) => current || nextProjects[0]?._id || "")
     } finally {
@@ -368,16 +391,21 @@ export function AdminProjectsPage() {
       referrerWallet: project.referrerWallet || "",
       referrerAccountId: project.referrerAccountId || "",
       referralPercentage: String(project.referralPercentage ?? 0),
-      status: project.status || "active",
+      status: project.status === "in_progress" ? "scheduled" : project.status || "active",
       service: project.service || "",
-      startDate: project.startDate ? String(project.startDate).slice(0, 10) : project.launchDate ? String(project.launchDate).slice(0, 10) : "",
+      startDate: project.startDate ? String(project.startDate).slice(0, 10) : "",
+      launchAt: project.launchAt || project.launchDate ? localDateTimeInput(project.launchAt || project.launchDate || "", project.launchTimeZone || "America/New_York") : "",
+      launchTimeZone: project.launchTimeZone || "America/New_York",
+      launchVenue: project.launchVenue || "",
+      launchFundingAsset: project.launchFundingAsset || "",
       endDate: project.endDate ? String(project.endDate).slice(0, 10) : "",
       revenueToday: String(project.revenueToday || 0),
       currentProfitLoss: String(project.currentProfitLoss ?? project.profitThisWeek ?? 0),
       tags: (project.tags || []).join(", "),
       notes: project.notes || "",
       chain: project.chain || "",
-      quoteAssets: (project.quoteAssets || []).join(", "),
+      quoteToken: project.quoteToken || (project.quoteAssets?.length === 1 ? project.quoteAssets[0] : ""),
+      referrerStatus: project.referrerStatus || (project.referrerAccountId || project.referrer ? "assigned" : "pending"),
       dailyTradingFeeEnabled: project.dailyTradingFeeEnabled === true,
       dailyTradingFeeUsd: String(project.dailyTradingFeeUsd ?? 500),
       liquidationFeeEnabled: project.liquidationFeeEnabled !== false,
@@ -397,12 +425,19 @@ export function AdminProjectsPage() {
       toast.error("Project name is required")
       return
     }
+    if (form.status === "scheduled" && !form.launchAt) {
+      toast.error("A scheduled project needs an exact launch date and time")
+      return
+    }
     const payload = {
       ...form,
       revenueToday: Number(form.revenueToday || 0),
       currentProfitLoss: Number(form.currentProfitLoss || 0),
       tags: form.tags.split(",").map((tag) => tag.trim()).filter(Boolean),
-      quoteAssets: form.quoteAssets.split(",").map((asset) => asset.trim().toUpperCase()).filter(Boolean),
+      launchAt: form.launchAt || null,
+      quoteToken: form.quoteToken.trim().toUpperCase(),
+      quoteAssets: form.quoteToken.trim() ? [form.quoteToken.trim().toUpperCase()] : [],
+      feeConfigurationConfirmed: Boolean(form.chain && form.quoteToken.trim()),
       dailyTradingFeeUsd: Number(form.dailyTradingFeeUsd || 500),
       liquidationFeePercentage: Number(form.liquidationFeePercentage || 5),
       launchFeeUsd: Number(form.launchFeeUsd || 1000),
@@ -440,7 +475,7 @@ export function AdminProjectsPage() {
       .filter((project) => statusFilter === "all" || project.status === statusFilter)
       .filter((project) => !term || `${project.name} ${project.referrer || ""} ${project.referrerWallet || ""} ${project.service || ""} ${project.notes || ""} ${(project.tags || []).join(" ")}`.toLowerCase().includes(term))
       .sort((a, b) => {
-        const rank = (status?: string) => status === "active" ? 0 : status === "in_progress" ? 1 : 2
+        const rank = (status?: string) => status === "active" ? 0 : status === "scheduled" || status === "in_progress" ? 1 : 2
         return rank(a.status) - rank(b.status)
       })
   }, [projects, query, statusFilter])
@@ -497,6 +532,9 @@ export function AdminProjectsPage() {
         color={colors.projects}
         action={<IconButton onClick={handleAdd} className="border-[#ffd43b]/50 bg-[#ffd43b] text-black hover:bg-[#ffd43b]/90"><Plus className="h-4 w-4" />Add</IconButton>}
       />
+      {lifecyclePreview?.changeCount ? <div className="rounded-xl border border-blue-400/20 bg-blue-500/[0.07] px-4 py-3 text-sm text-blue-100">
+        Lifecycle preview: {lifecyclePreview.changeCount} of {lifecyclePreview.projectCount} existing projects would change status under the new Scheduled → Active rules. This is a preview only; no existing project was changed.
+      </div> : null}
       {showForm ? <SectionBlock title={editing ? "Edit Project" : "Add Project"} detail="Project identity, referrer, service, timing, status, and current P/L.">
         <div className="mb-4 flex items-center justify-between gap-3 border-b border-white/[0.08] pb-4">
           <div>
@@ -513,16 +551,26 @@ export function AdminProjectsPage() {
           <div className="grid gap-3 md:grid-cols-3">
             <Field label="Referrer"><Select value={form.referrerAccountId} onChange={(e) => {
               const account = accounts.find((item) => String(item._id || item.id) === e.target.value)
-              setForm({ ...form, referrerAccountId: e.target.value, referrer: account?.name || "", referrerWallet: account?.wallet || account?.source || form.referrerWallet })
-            }}><option value="">No referrer</option>{accounts.filter((account) => account.type === "REFERRER").map((account) => <option key={String(account._id || account.id)} value={String(account._id || account.id)}>{account.name}</option>)}</Select></Field>
+              setForm({ ...form, referrerAccountId: e.target.value, referrer: account?.name || "", referrerStatus: account ? "assigned" : form.referrerStatus, referrerWallet: account?.wallet || account?.source || form.referrerWallet })
+            }}><option value="">Choose later</option>{accounts.filter((account) => account.type === "REFERRER").map((account) => <option key={String(account._id || account.id)} value={String(account._id || account.id)}>{account.name}</option>)}</Select></Field>
             <Field label="Referrer Wallet"><Input value={form.referrerWallet} onChange={(e) => setForm({ ...form, referrerWallet: e.target.value })} placeholder="Optional wallet address" /></Field>
             <Field label="Referrer %"><Input type="number" min="0" max="100" value={form.referralPercentage} onChange={(e) => setForm({ ...form, referralPercentage: e.target.value })} /></Field>
           </div>
+          <Field label="Referrer decision"><Select value={form.referrerStatus} onChange={(e) => setForm({ ...form, referrerStatus: e.target.value })}><option value="pending">Pending</option><option value="assigned">Assigned above</option><option value="none">No referrer</option></Select></Field>
           <div className="grid gap-3 md:grid-cols-4">
-            <Field label="Status"><Select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}><option value="active">Active</option><option value="in_progress">In Progress</option><option value="inactive">Inactive</option></Select></Field>
+            <Field label="Status"><Select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}><option value="scheduled">Scheduled</option><option value="active">Active</option><option value="inactive">Inactive</option></Select></Field>
             <Field label="Start date"><Input type="date" value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} /></Field>
             <Field label="End date"><Input type="date" value={form.endDate} onChange={(e) => setForm({ ...form, endDate: e.target.value })} /></Field>
             <Field label="Current Profit / Loss"><Input type="number" value={form.currentProfitLoss} onChange={(e) => setForm({ ...form, currentProfitLoss: e.target.value })} /></Field>
+          </div>
+          <div className="rounded-xl border border-[#ff8a3d]/20 bg-[#ff8a3d]/[0.05] p-4">
+            <div className="mb-3"><h4 className="font-bold text-white">Launch schedule</h4><p className="mt-1 text-xs text-white/45">Scheduled launches remain outside active reporting until Launch Chat confirms they launched.</p></div>
+            <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+              <Field label="Exact launch time"><Input type="datetime-local" value={form.launchAt} onChange={(e) => setForm({ ...form, launchAt: e.target.value })} /></Field>
+              <Field label="Schedule timezone"><Input value={form.launchTimeZone} onChange={(e) => setForm({ ...form, launchTimeZone: e.target.value })} placeholder="America/New_York" /></Field>
+              <Field label="Launch venue"><Input value={form.launchVenue} onChange={(e) => setForm({ ...form, launchVenue: e.target.value })} placeholder="pumpfun, aerodrome…" /></Field>
+              <Field label="Funding asset"><Input value={form.launchFundingAsset} onChange={(e) => setForm({ ...form, launchFundingAsset: e.target.value.toUpperCase() })} placeholder="SOL" /></Field>
+            </div>
           </div>
           <div className="grid gap-3 md:grid-cols-1">
             <Field label="Revenue today"><Input type="number" value={form.revenueToday} onChange={(e) => setForm({ ...form, revenueToday: e.target.value })} /></Field>
@@ -534,7 +582,7 @@ export function AdminProjectsPage() {
             </div>
             <div className="grid gap-3 md:grid-cols-2">
               <Field label="Revenue chain"><Select value={form.chain} onChange={(e) => setForm({ ...form, chain: e.target.value })}><option value="">Not configured</option><option value="ethereum">Ethereum Mainnet</option><option value="base">Base</option><option value="bnb">BNB Smart Chain</option><option value="robinhood">Robinhood Chain</option><option value="solana">Solana</option></Select></Field>
-              <Field label="Allowed quote assets"><Input value={form.quoteAssets} onChange={(e) => setForm({ ...form, quoteAssets: e.target.value })} placeholder={form.chain === "solana" ? "SOL, USDC" : "ETH, USDC"} /></Field>
+              <Field label="Project quote token"><Input value={form.quoteToken} onChange={(e) => setForm({ ...form, quoteToken: e.target.value.toUpperCase() })} placeholder={form.chain === "solana" ? "SOL" : "ETH"} /></Field>
             </div>
             <div className="mt-3 grid gap-3 md:grid-cols-3">
               <Field label="Daily fee (USD)"><Input type="number" min="0" value={form.dailyTradingFeeUsd} onChange={(e) => setForm({ ...form, dailyTradingFeeUsd: e.target.value })} /></Field>
@@ -568,7 +616,7 @@ export function AdminProjectsPage() {
         </div>
         {view === "projects" ? <IconButton onClick={() => setFilterOpen((current) => !current)} className="border-[#ffd43b]/30 bg-[#ffd43b]/10 text-[#ffe066]"><Filter className="h-4 w-4" />Filter</IconButton> : null}
         {filterOpen && view === "projects" ? <div className="absolute right-0 top-12 z-20 w-44 rounded-xl border border-white/[0.1] bg-[#111214] p-1.5 shadow-2xl">
-          {([["all", "All Projects"], ["active", "Active"], ["in_progress", "In Progress"], ["inactive", "Inactive"]] as const).map(([value, label]) => (
+          {([["all", "All Projects"], ["active", "Active"], ["scheduled", "Scheduled"], ["inactive", "Inactive"]] as const).map(([value, label]) => (
             <button key={value} onClick={() => { setStatusFilter(value); setFilterOpen(false) }} className={`block h-9 w-full rounded-lg px-3 text-left text-xs font-semibold ${statusFilter === value ? "bg-[#ffd43b]/15 text-[#ffe066]" : "text-white/60 hover:bg-white/[0.05]"}`}>{label}</button>
           ))}
         </div> : null}
@@ -582,9 +630,9 @@ export function AdminProjectsPage() {
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <h3 className="truncate text-base font-bold text-white">{project.name}</h3>
-                    <p className="mt-1 text-sm text-white/45">{project.service || "No service"} - {dateLabel(project.startDate || project.launchDate)}</p>
+                    <p className="mt-1 text-sm text-white/45">{project.service || "No service"} - {dateLabel(project.launchAt || project.launchDate || project.startDate)}</p>
                   </div>
-                  <span className={`rounded-full px-3 py-1 text-xs font-semibold ${project.status === "active" ? "bg-[#ffd43b]/18 text-[#ffd43b]" : project.status === "in_progress" ? "bg-blue-500/15 text-blue-200" : "bg-white/10 text-white/45"}`}>{projectStatusLabel(project.status)}</span>
+                  <span className={`rounded-full px-3 py-1 text-xs font-semibold ${project.status === "active" ? "bg-[#ffd43b]/18 text-[#ffd43b]" : project.status === "scheduled" || project.status === "in_progress" ? "bg-blue-500/15 text-blue-200" : "bg-white/10 text-white/45"}`}>{projectStatusLabel(project.status)}</span>
                 </div>
                 {project.notes ? <p className="mt-3 line-clamp-2 text-sm text-white/60">{project.notes}</p> : null}
                 <div className="mt-4 grid grid-cols-2 gap-2 lg:grid-cols-4">
@@ -852,9 +900,9 @@ export function AdminCalendarPage() {
 
   const events = useMemo(() => {
     const rows = [
-      ...projects.filter((project) => project.launchDate).map((project) => ({
+      ...projects.filter((project) => project.launchAt || project.launchDate).map((project) => ({
         id: `project-${project._id}`,
-        date: project.launchDate || "",
+        date: project.launchAt || project.launchDate || "",
         type: "Launch",
         title: project.name,
         detail: project.service || project.referrer || "Project",
