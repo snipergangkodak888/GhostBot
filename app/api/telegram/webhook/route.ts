@@ -14,8 +14,9 @@ import { chatPurposeLabel, listChatSubscriptions, normalizeChatPurpose, setChatS
 import { formatLaunchDaySchedule } from "@/lib/launch-calendar"
 import { projectFeeConfig } from "@/lib/revenue-projects"
 import { revenueTransactionUrl } from "@/lib/revenue-explorer"
-import { acceptReceiptMatch, assignFeeProject, confirmFeeExpectation, createForwardedFeeEvent, getRevenueReceipt, listRevenueDay, setFeeQuoteAsset, setFeeType, updateReceiptClassification } from "@/lib/revenue-service"
-import { feeProjectButtons, formatFeeExpectation, isFeeInboxChat } from "@/lib/revenue-telegram"
+import { acceptReceiptMatch, assignFeeProject, confirmFeeExpectation, createFeeFromReceipt, createForwardedFeeEvent, ensureDailyTradingFeeExpectations, getRevenueReceipt, listRevenueDay, setFeeQuoteAsset, setFeeType, updateReceiptClassification } from "@/lib/revenue-service"
+import { feeProjectButtons, formatConsolidationCandidate, formatFeeExpectation, isFeeInboxChat, receiptClassificationButtons } from "@/lib/revenue-telegram"
+import { confirmConsolidationCandidate, getConsolidationCandidate, rejectConsolidationCandidate } from "@/lib/revenue-consolidation-candidates"
 import type { FeeType } from "@/lib/revenue-types"
 import { LAUNCH_CHAINS, launchPad, padsForChain, type LaunchChainId } from "@/lib/launch-math"
 import { calculateLaunchQuote, defaultMmLiquidity, formatLaunchQuote, getLaunchAssetPrice, parseLaunchNumber, type LaunchTargetMetric } from "@/lib/launch-calculator"
@@ -931,6 +932,96 @@ async function processState(token: string, chatId: number | string, telegramId: 
   return false
 }
 
+const DIRECT_RECEIPT_FEE_TYPES = ["daily_trading", "dev_allocation", "fee_collector", "fee_rebate", "other"] as const
+
+function receiptTypeButtons(receiptId: string) {
+  return [
+    [{ text: "Daily trading", callback_data: `receipt:type:${receiptId}:daily_trading` }, { text: "Dev allocation", callback_data: `receipt:type:${receiptId}:dev_allocation` }],
+    [{ text: "Fee collector", callback_data: `receipt:type:${receiptId}:fee_collector` }, { text: "Fee rebate", callback_data: `receipt:type:${receiptId}:fee_rebate` }],
+    [{ text: "Other revenue", callback_data: `receipt:type:${receiptId}:other` }],
+    [{ text: "Liquidation / launch expectation", callback_data: `receipt:existing:${receiptId}` }],
+  ]
+}
+
+function feeTypeLabel(value: unknown) {
+  return String(value || "Revenue").replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+function receiptSummary(receipt: any) {
+  const value = receipt.amountUsd == null ? "Awaiting USD value" : Number(receipt.amountUsd).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 })
+  return `${Number(receipt.amount || 0).toLocaleString("en-US", { maximumFractionDigits: 8 })} ${receipt.asset} · ${value} · ${feeTypeLabel(receipt.chain)}`
+}
+
+async function compatibleReceiptProjects(receipt: any, feeType: FeeType) {
+  const db = await getDb()
+  if (feeType === "daily_trading") await ensureDailyTradingFeeExpectations(receipt.date)
+  const projects = await db.collection("opsProjects").find({ status: { $ne: "inactive" } }).sort({ name: 1 }).toArray()
+  const compatible = []
+  for (const project of projects) {
+    const config = projectFeeConfig(project)
+    if (config.chain !== receipt.chain || !config.quoteAssets.includes(receipt.asset)) continue
+    if (feeType === "daily_trading") {
+      if (!config.dailyTradingFeeEnabled) continue
+      const scheduled = await db.collection("revenueFeeEvents").findOne({ sourceKey: `daily:${receipt.date}:${project._id}` })
+      if (!scheduled || ["confirmed", "ignored", "waived"].includes(scheduled.status)) continue
+    }
+    compatible.push(project)
+  }
+  return compatible
+}
+
+async function sendReceiptProjectPicker(token: string, chatId: number | string, telegramId: number, receiptId: string, feeType: FeeType) {
+  const receipt = await getRevenueReceipt(receiptId)
+  if (!receipt || receipt.direction !== "incoming" || receipt.status !== "unclassified") return sendMessage(token, chatId, "This receipt is no longer available for revenue classification.")
+  const projects = await compatibleReceiptProjects(receipt, feeType)
+  await setState(telegramId, { action: "receipt_classification", receiptId, feeType })
+  if (!projects.length) return sendMessage(token, chatId, `No eligible ${feeTypeLabel(feeType)} project accepts ${receipt.asset} on ${feeTypeLabel(receipt.chain)}. Configure or review it in Revenue Inbox.`)
+  return sendMessage(token, chatId, `${receiptSummary(receipt)}\n\nChoose the project:`, projects.slice(0, 12).map((project: any) => [{ text: `${project.name} · ${feeTypeLabel(project.chain)}`.slice(0, 60), callback_data: `receipt:project:${project._id}` }]))
+}
+
+async function sendReceiptConfirmation(token: string, chatId: number | string, telegramId: number, projectId?: string | null) {
+  const state = await takeState(telegramId)
+  if (state?.action !== "receipt_classification" || !state.receiptId || !DIRECT_RECEIPT_FEE_TYPES.includes(state.feeType)) return sendMessage(token, chatId, "This classification menu expired. Start again from the receipt message.")
+  const db = await getDb()
+  const [receipt, project] = await Promise.all([
+    getRevenueReceipt(String(state.receiptId)),
+    projectId ? db.collection("opsProjects").findOne({ _id: projectId }) : Promise.resolve(null),
+  ])
+  if (!receipt || receipt.status !== "unclassified") return sendMessage(token, chatId, "This receipt was already classified.")
+  if (state.feeType !== "fee_rebate" && !project) return sendMessage(token, chatId, "Choose an existing project first.")
+  const expectedUsd = state.feeType === "daily_trading" ? Number(projectFeeConfig(project).dailyTradingFeeUsd || 500) : Number(receipt.amountUsd || 0)
+  const variance = receipt.amountUsd == null ? null : Number(receipt.amountUsd) - expectedUsd
+  await setState(telegramId, { ...state, projectId: project ? String(project._id) : null })
+  const text = [
+    `<b>Confirm revenue classification</b>`,
+    "",
+    `Project: <b>${project?.name || "Fee rebate"}</b>`,
+    `Type: <b>${feeTypeLabel(state.feeType)}</b>`,
+    `Receipt: <b>${receiptSummary(receipt)}</b>`,
+    state.feeType === "daily_trading" ? `Recognized revenue: <b>$${expectedUsd.toFixed(2)}</b>` : "",
+    variance == null || state.feeType !== "daily_trading" ? "" : `Conversion variance: <b>${variance >= 0 ? "+" : ""}$${variance.toFixed(2)}</b>`,
+    "",
+    "This records accounting only; no funds are moved.",
+  ].filter(Boolean).join("\n")
+  return sendMessage(token, chatId, text, [[{ text: "✅ Confirm", callback_data: `receipt:confirm:${receipt._id}` }, { text: "⬅️ Back", callback_data: `receipt:classify:${receipt._id}` }]])
+}
+
+async function sendExistingExpectationPicker(token: string, chatId: number | string, telegramId: number, receiptId: string) {
+  const receipt = await getRevenueReceipt(receiptId)
+  if (!receipt || receipt.direction !== "incoming" || receipt.status !== "unclassified") return sendMessage(token, chatId, "This receipt is no longer available.")
+  const db = await getDb()
+  const fees = await db.collection("revenueFeeEvents").find({
+    date: receipt.date,
+    chain: receipt.chain,
+    quoteAsset: receipt.asset,
+    status: { $in: ["awaiting_receipt", "match_proposed"] },
+  }).sort({ createdAt: -1 }).toArray()
+  await setState(telegramId, { action: "receipt_expectation", receiptId })
+  const eligible = fees.filter((fee: any) => ["liquidation", "launch", "daily_trading"].includes(fee.feeType)).slice(0, 12)
+  if (!eligible.length) return sendMessage(token, chatId, "No compatible liquidation, launch, or daily expectation is waiting for this receipt. Forward the standardized cashout message first or use Revenue Inbox.")
+  return sendMessage(token, chatId, `${receiptSummary(receipt)}\n\nChoose the existing expectation:`, eligible.map((fee: any) => [{ text: `${fee.projectName || "Project"} · ${feeTypeLabel(fee.feeType)} · ${fee.expectedUsd == null ? `${fee.expectedAssetAmount} ${fee.quoteAsset}` : `$${Number(fee.expectedUsd).toFixed(2)}`}`.slice(0, 60), callback_data: `receipt:expect:${fee._id}` }]))
+}
+
 async function handleCallback(token: string, chatId: number | string, telegramId: number, data: string, req: NextRequest) {
   const db = await getDb()
   const [area, action, id, extra] = data.split(":")
@@ -996,6 +1087,62 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     }
   }
 
+  if (area === "receipt" && action === "classify") {
+    const receipt = await getRevenueReceipt(id)
+    if (!receipt || receipt.direction !== "incoming" || receipt.status !== "unclassified") return sendMessage(token, chatId, "This receipt is no longer available for classification.")
+    await clearState(telegramId)
+    return sendMessage(token, chatId, `${receiptSummary(receipt)}\n\nChoose the revenue type:`, receiptTypeButtons(id))
+  }
+  if (area === "receipt" && action === "type") {
+    if (!DIRECT_RECEIPT_FEE_TYPES.includes(extra as any)) return sendMessage(token, chatId, "That receipt classification is unsupported.")
+    if (extra === "fee_rebate") {
+      await setState(telegramId, { action: "receipt_classification", receiptId: id, feeType: extra })
+      return sendReceiptConfirmation(token, chatId, telegramId, null)
+    }
+    return sendReceiptProjectPicker(token, chatId, telegramId, id, extra as FeeType)
+  }
+  if (area === "receipt" && action === "project") return sendReceiptConfirmation(token, chatId, telegramId, id)
+  if (area === "receipt" && action === "confirm") {
+    const state = await takeState(telegramId)
+    if (state?.action !== "receipt_classification" || String(state.receiptId) !== id || !DIRECT_RECEIPT_FEE_TYPES.includes(state.feeType)) return sendMessage(token, chatId, "This classification menu expired. Start again from the receipt message.")
+    const fee = await createFeeFromReceipt({ receiptId: id, feeType: state.feeType as FeeType, projectId: state.projectId || null })
+    const confirmed = await acceptReceiptMatch(String(fee._id), telegramId)
+    await clearState(telegramId)
+    return sendMessage(token, chatId, `✅ Revenue classified by Telegram. The admin app is already updated.\n\n${formatFeeExpectation(confirmed)}`)
+  }
+  if (area === "receipt" && action === "existing") return sendExistingExpectationPicker(token, chatId, telegramId, id)
+  if (area === "receipt" && action === "expect") {
+    const state = await takeState(telegramId)
+    if (state?.action !== "receipt_expectation" || !state.receiptId) return sendMessage(token, chatId, "This expectation menu expired. Start again from the receipt message.")
+    const confirmed = await acceptReceiptMatch(id, telegramId, [String(state.receiptId)])
+    await clearState(telegramId)
+    return sendMessage(token, chatId, `✅ Receipt linked to the existing expectation.\n\n${formatFeeExpectation(confirmed)}`)
+  }
+
+  if (area === "consol" && action === "view") {
+    const batch = await getConsolidationCandidate(id)
+    if (!batch) return sendMessage(token, chatId, "Consolidation batch was not found.")
+    if (batch.status === "confirmed") return sendMessage(token, chatId, `✅ This batch is already confirmed internal.\n\n${formatConsolidationCandidate(batch)}`)
+    if (batch.status === "rejected") return sendMessage(token, chatId, "This batch was rejected and its receipts remain available for revenue review.")
+    return sendMessage(token, chatId, formatConsolidationCandidate(batch), [
+      [{ text: "✅ Confirm all internal", callback_data: `consol:confirm:${id}` }],
+      [{ text: "Not consolidation", callback_data: `consol:reject:${id}` }, { text: "Open detailed review", url: `${appBaseUrl(req)}/admin/revenue` }],
+    ])
+  }
+  if (area === "consol" && action === "confirm") {
+    const batch = await confirmConsolidationCandidate(id, telegramId)
+    return sendMessage(token, chatId, `✅ Consolidation confirmed. Every source and destination leg is now internal.\n\n${formatConsolidationCandidate(batch)}`)
+  }
+  if (area === "consol" && action === "reject") {
+    const batch = await rejectConsolidationCandidate(id, telegramId)
+    await sendMessage(token, chatId, "Consolidation suggestion rejected. The destination receipts remain unclassified and can be handled below or in Revenue Inbox.")
+    for (const receipt of (batch?.receipts || []).filter((row: any) => (batch?.destinationReceiptIds || []).includes(String(row._id))).slice(0, 10)) {
+      const transactionUrl = revenueTransactionUrl(receipt.chain, receipt.transactionHash)
+      await sendMessage(token, chatId, receiptSummary(receipt), receiptClassificationButtons(String(receipt._id), transactionUrl))
+    }
+    return
+  }
+
   if (area === "fee" && action === "type") {
     const fee = await setFeeType(id, extra as FeeType)
     return sendMessage(token, chatId, `${formatFeeExpectation(fee)}\n\nNow choose the existing project:`, await feeProjectButtons(id))
@@ -1031,9 +1178,14 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     const receipt = await getRevenueReceipt(id)
     if (!receipt) return sendMessage(token, chatId, "Receipt was not found.")
     const transactionUrl = revenueTransactionUrl(receipt.chain, receipt.transactionHash)
-    return sendMessage(token, chatId, `Revenue receipt\n\n${receipt.amount} ${receipt.asset}\nChain: ${receipt.chain}\nStatus: ${receipt.status}\nTransaction: ${receipt.transactionHash}\n\nSelect it with the matching fee in Revenue Inbox.`, [[{ text: "Open Revenue Inbox", url: `${appBaseUrl(req)}/admin/revenue` }, ...(transactionUrl ? [{ text: "↗️ View transaction", url: transactionUrl }] : [])], [{ text: "↔️ Internal transfer", callback_data: `fee:internal:${id}` }, { text: "Ignore", callback_data: `fee:ignore:${id}` }]])
+    return sendMessage(token, chatId, `Revenue receipt\n\n${receipt.amount} ${receipt.asset}\nChain: ${receipt.chain}\nStatus: ${receipt.status}\nTransaction: ${receipt.transactionHash}`, receiptClassificationButtons(id, transactionUrl))
   }
   if (area === "fee" && (action === "internal" || action === "ignore")) {
+    const receipt = await getRevenueReceipt(id)
+    if (action === "internal" && receipt?.consolidationBatchId) {
+      const batch = await getConsolidationCandidate(String(receipt.consolidationBatchId))
+      if (batch && ["collecting", "suggested"].includes(batch.status)) return sendMessage(token, chatId, formatConsolidationCandidate(batch), [[{ text: "✅ Confirm entire batch internal", callback_data: `consol:confirm:${batch._id}` }, { text: "Review", callback_data: `consol:view:${batch._id}` }]])
+    }
     await updateReceiptClassification(id, action === "internal" ? "internal" : "ignored")
     return sendMessage(token, chatId, action === "internal" ? "✅ Marked as an internal movement; it will not count as new revenue." : "✅ Receipt ignored.")
   }

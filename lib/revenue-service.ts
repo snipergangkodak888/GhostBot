@@ -11,6 +11,7 @@ import type {
   RevenueReceiptStatus,
 } from "@/lib/revenue-types"
 import { getConsolidation } from "@/lib/revenue-consolidation"
+import { listConsolidationCandidates } from "@/lib/revenue-consolidation-candidates"
 import { valueRevenueReceipt } from "@/lib/revenue-pricing"
 
 const FEES = "revenueFeeEvents"
@@ -223,6 +224,7 @@ export async function createFeeFromReceipts(params: { receiptIds: string[]; feeT
   const [receipt] = receipts as any[]
   if (receipts.some((row: any) => row.chain !== receipt.chain || row.asset !== receipt.asset)) throw new Error("Grouped receipts must use the same chain and asset")
   if (receipts.some((row: any) => row.status !== "unclassified")) throw new Error("One or more receipts are already classified or reserved")
+  if (receipts.some((row: any) => row.consolidationBatchId)) throw new Error("Remove or reject the pending consolidation batch before classifying this receipt as revenue")
   if (!["daily_trading", "dev_allocation", "fee_collector", "fee_rebate", "other"].includes(params.feeType)) throw new Error("Use a forwarded message for this fee type")
   const projectRequired = params.feeType !== "fee_rebate"
   const project = params.projectId ? await db.collection("opsProjects").findOne({ _id: params.projectId }) : null
@@ -486,7 +488,10 @@ export async function updateReceiptClassification(receiptId: string, status: Rev
   const db = await getDb()
   const existing = await db.collection(RECEIPTS).findOne({ _id: receiptId })
   if (!existing) throw new Error("Revenue receipt was not found")
+  if (existing.consolidationBatchId && status !== existing.status) throw new Error("Review the complete consolidation batch before changing this receipt")
   const update: Record<string, any> = { status, updatedAt: iso() }
+  if (status === "internal") update.internalReason = existing.internalReason || "manual"
+  if (status === "unclassified" && existing.internalReason === "manual") update.internalReason = null
   if (amountUsd !== undefined) {
     const normalizedAmountUsd = amountUsd == null ? null : Number(amountUsd)
     if (normalizedAmountUsd != null && (!Number.isFinite(normalizedAmountUsd) || normalizedAmountUsd < 0)) throw new Error("USD value must be a positive number")
@@ -604,11 +609,12 @@ export async function ensureDailyTradingFeeExpectations(date = teamDateKey(0)) {
 
 export async function listRevenueDay(date = teamDateKey(0)) {
   const db = await getDb()
-  const [fees, receipts, projects, consolidation] = await Promise.all([
+  const [fees, receipts, projects, consolidation, consolidationCandidates] = await Promise.all([
     db.collection(FEES).find({ date }).sort({ createdAt: -1 }).toArray(),
     db.collection(RECEIPTS).find({ date }).sort({ blockTime: -1, createdAt: -1 }).limit(250).toArray(),
     db.collection("opsProjects").find({ status: { $ne: "inactive" } }).sort({ name: 1 }).toArray(),
     getConsolidation(date),
+    listConsolidationCandidates(date),
   ])
   const dayReceipts = receipts
   return {
@@ -617,6 +623,7 @@ export async function listRevenueDay(date = teamDateKey(0)) {
     receipts: dayReceipts,
     projects,
     consolidation,
+    consolidationCandidates,
     summary: {
       fees: fees.length,
       confirmedFees: fees.filter((fee: any) => fee.status === "confirmed").length,

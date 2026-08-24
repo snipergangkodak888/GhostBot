@@ -75,15 +75,42 @@ export type RevenueReceipt = {
   priceSource?: "stablecoin" | "coingecko" | "defillama" | "manual" | null
   priceTimestamp?: string | null
   priceFetchedAt?: string | null
-  notificationSuppressedReason?: "dust" | null
-  autoClassification?: "dust" | null
+  notificationSuppressedReason?: "dust" | "internal_swap" | "consolidation_candidate" | null
+  autoClassification?: "dust" | "same_transaction_swap" | "treasury_transfer" | null
   status: RevenueReceiptStatus
   proposedFeeEventId?: string | null
   allocations: RevenueAllocation[]
   date?: string
   consolidationMatched?: boolean
+  consolidationBatchId?: string | null
+  internalReason?: "same_transaction_swap" | "privacy_consolidation" | "treasury_transfer" | "network_fee" | "manual" | null
   pairedReceiptId?: string | null
   raw?: unknown
+  createdAt: string
+  updatedAt: string
+}
+
+export type RevenueConsolidationCandidateStatus = "collecting" | "suggested" | "confirmed" | "rejected"
+
+export type RevenueConsolidationCandidate = {
+  _id?: string
+  date: string
+  status: RevenueConsolidationCandidateStatus
+  sourceReceiptIds: string[]
+  destinationReceiptIds: string[]
+  swapReceiptIds: string[]
+  sourceUsd?: number | null
+  destinationUsd?: number | null
+  estimatedCostUsd?: number | null
+  confidence?: "high" | "medium" | "low"
+  firstActivityAt: string
+  lastActivityAt: string
+  notificationClaimedAt?: string | null
+  notificationSentAt?: string | null
+  confirmedAt?: string | null
+  confirmedByTelegramId?: number | null
+  rejectedAt?: string | null
+  rejectedByTelegramId?: number | null
   createdAt: string
   updatedAt: string
 }

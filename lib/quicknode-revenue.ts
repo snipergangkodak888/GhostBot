@@ -165,6 +165,28 @@ function eventItems(payload: any) {
   })
 }
 
+export function classifyDeterministicInternalMovements(receipts: ReceiptInput[]) {
+  const groups = new Map<string, ReceiptInput[]>()
+  for (const receipt of receipts) {
+    if ((receipt.walletRole || "revenue") !== "revenue") continue
+    const key = `${receipt.chain}:${receipt.wallet}:${receipt.transactionHash}`
+    groups.set(key, [...(groups.get(key) || []), receipt])
+  }
+  for (const group of Array.from(groups.values())) {
+    const directions = new Set(group.map((receipt) => receipt.direction))
+    const assets = new Set(group.map((receipt) => receipt.asset))
+    if (!directions.has("incoming") || !directions.has("outgoing") || assets.size < 2) continue
+    for (const receipt of group) {
+      receipt.status = "internal"
+      receipt.autoClassification = "same_transaction_swap"
+      receipt.notificationSuppressedReason = "internal_swap"
+      receipt.consolidationMatched = true
+      receipt.internalReason = "same_transaction_swap"
+    }
+  }
+  return receipts
+}
+
 function timeValue(item: any) {
   const raw = item.blockTime ?? item.blockTimestamp ?? item.timestamp ?? item.time ?? null
   if (raw == null) return null
@@ -497,14 +519,16 @@ export function normalizeQuickNodeRevenuePayload(payload: any, chainInput?: unkn
   const walletRole = cleanRevenueWalletRole(walletRoleInput)
   if (!walletRole || (walletRole === "treasury" && chain !== "solana")) return { chain, walletRole: null, receipts: [] as ReceiptInput[], rejected: eventItems(payload).length }
   if (chain === "solana" && asArray(payload).some((item) => item?.block && Array.isArray(item?.transactions))) {
-    return { chain, walletRole, ...normalizeSolanaTemplatePayload(payload, chain, walletRole) }
+    const normalized = normalizeSolanaTemplatePayload(payload, chain, walletRole)
+    return { chain, walletRole, ...normalized, receipts: classifyDeterministicInternalMovements(normalized.receipts) }
   }
   if (chain !== "solana" && payload && (Object.hasOwn(payload, "matchingTransactions") || Object.hasOwn(payload, "matchingReceipts"))) {
-    return { chain, walletRole, ...normalizeEvmTemplatePayload(payload, chain, walletRole) }
+    const normalized = normalizeEvmTemplatePayload(payload, chain, walletRole)
+    return { chain, walletRole, ...normalized, receipts: classifyDeterministicInternalMovements(normalized.receipts) }
   }
   const items = eventItems(payload)
   const receipts = items.map((item, index) => itemReceipt(item, chain, walletRole, index)).filter(Boolean) as ReceiptInput[]
-  return { chain, walletRole, receipts, rejected: items.length - receipts.length }
+  return { chain, walletRole, receipts: classifyDeterministicInternalMovements(receipts), rejected: items.length - receipts.length }
 }
 
 export function revenueWalletsConfigured() {

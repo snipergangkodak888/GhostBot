@@ -20,6 +20,7 @@ import {
 import { teamDateKey } from "@/lib/team-timezone"
 import type { FeeType, RevenueReceiptStatus } from "@/lib/revenue-types"
 import { confirmConsolidation, saveConsolidationPreview } from "@/lib/revenue-consolidation"
+import { confirmConsolidationCandidate, rejectConsolidationCandidate, removeReceiptFromConsolidationCandidate } from "@/lib/revenue-consolidation-candidates"
 
 export const dynamic = "force-dynamic"
 
@@ -60,6 +61,9 @@ export async function POST(req: Request) {
       case "classify_receipt": result = await updateReceiptClassification(String(body.receiptId), String(body.status) as RevenueReceiptStatus, body.amountUsd === undefined ? undefined : body.amountUsd == null ? null : Number(body.amountUsd)); break
       case "create_receipt_fee": result = await createFeeFromReceipt({ receiptId: String(body.receiptId), feeType: String(body.feeType) as FeeType, projectId: body.projectId ? String(body.projectId) : null, amount: body.amount == null || body.amount === "" ? null : Number(body.amount) }); break
       case "create_grouped_receipt_fee": result = await createFeeFromReceipts({ receiptIds: Array.isArray(body.receiptIds) ? body.receiptIds.map(String) : [], feeType: String(body.feeType) as FeeType, projectId: body.projectId ? String(body.projectId) : null, amount: body.amount == null || body.amount === "" ? null : Number(body.amount) }); break
+      case "confirm_consolidation_candidate": result = await confirmConsolidationCandidate(String(body.batchId)); break
+      case "reject_consolidation_candidate": result = await rejectConsolidationCandidate(String(body.batchId)); break
+      case "remove_consolidation_receipt": result = await removeReceiptFromConsolidationCandidate(String(body.batchId), String(body.receiptId)); break
       case "preview_consolidation": result = await saveConsolidationPreview(String(body.date || teamDateKey(0)), Number(body.finalUsdc)); break
       case "confirm_consolidation": result = await confirmConsolidation(String(body.date || teamDateKey(0))); break
       default: return NextResponse.json({ error: "Unknown revenue action" }, { status: 400 })

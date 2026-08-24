@@ -44,9 +44,18 @@ export async function reconcileConsolidationReceipt(receipt: RevenueReceipt) {
   const revenue = role === "revenue" ? receipt : partner
   const date = treasury.date || revenue.date || teamDateKey(0)
   const now = new Date().toISOString()
+  const revenueMovements = await db.collection(RECEIPTS).find({
+    chain: "solana",
+    transactionHash: treasury.transactionHash,
+    walletRole: "revenue",
+    direction: "outgoing",
+  }).toArray()
   await Promise.all([
-    db.collection(RECEIPTS).updateOne({ _id: treasury._id }, { $set: { status: "internal", consolidationMatched: true, pairedReceiptId: String(revenue._id || ""), consolidationDate: date, amountUsd: Number(treasury.amount), valuationStatus: "valued", updatedAt: now } }),
-    db.collection(RECEIPTS).updateOne({ _id: revenue._id }, { $set: { status: "internal", consolidationMatched: true, pairedReceiptId: String(treasury._id || ""), consolidationDate: date, updatedAt: now } }),
+    db.collection(RECEIPTS).updateOne({ _id: treasury._id }, { $set: { status: "internal", autoClassification: "treasury_transfer", internalReason: "treasury_transfer", consolidationMatched: true, pairedReceiptId: String(revenue._id || ""), consolidationDate: date, amountUsd: Number(treasury.amount), valuationStatus: "valued", updatedAt: now } }),
+    ...revenueMovements.map((movement: any) => db.collection(RECEIPTS).updateOne(
+      { _id: movement._id },
+      { $set: { status: "internal", autoClassification: "treasury_transfer", internalReason: movement.asset === "USDC" ? "treasury_transfer" : "network_fee", consolidationMatched: true, pairedReceiptId: String(treasury._id || ""), consolidationDate: date, updatedAt: now } },
+    )),
   ])
   return { matched: true as const, date, amount: Number(treasury.amount), treasuryReceiptId: String(treasury._id || ""), revenueReceiptId: String(revenue._id || ""), transactionHash: treasury.transactionHash }
 }

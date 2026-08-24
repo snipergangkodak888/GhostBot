@@ -17,6 +17,38 @@ function usd(value: unknown) {
   return value == null ? "Awaiting valuation" : Number(value).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 })
 }
 
+function feeInboxChats(subscribed: Array<{ chatId: string | number; kind?: string; label?: string }>) {
+  const chats = [...subscribed]
+  const configured = String(process.env.FEE_INBOX_CHAT_ID || "").trim()
+  if (configured && !chats.some((chat) => String(chat.chatId) === configured)) chats.push({ chatId: configured, kind: configured.startsWith("-") ? "group" : "direct", label: "Fee Inbox" })
+  return chats
+}
+
+export function receiptClassificationButtons(receiptId: string, transactionUrl?: string | null) {
+  return [
+    [{ text: "🏷 Classify revenue", callback_data: `receipt:classify:${receiptId}` }, { text: "↔️ Internal", callback_data: `fee:internal:${receiptId}` }],
+    [{ text: "Ignore", callback_data: `fee:ignore:${receiptId}` }, ...(transactionUrl ? [{ text: "↗️ Transaction", url: transactionUrl }] : [])],
+  ]
+}
+
+export function formatConsolidationCandidate(batch: any) {
+  const receipts = Array.isArray(batch?.receipts) ? batch.receipts : []
+  const sourceCount = (batch?.sourceReceiptIds || []).length
+  const destinationCount = (batch?.destinationReceiptIds || []).length
+  const swapCount = new Set(receipts.filter((receipt: any) => (batch?.swapReceiptIds || []).includes(String(receipt._id))).map((receipt: any) => receipt.transactionHash)).size
+  return [
+    "<b>Possible internal consolidation</b>",
+    "",
+    `Source movements: <b>${sourceCount}</b> · ${usd(batch?.sourceUsd || 0)}`,
+    `Solana USDC arrivals: <b>${destinationCount}</b> · ${usd(batch?.destinationUsd || 0)}`,
+    swapCount ? `Same-transaction swaps: <b>${swapCount}</b>` : "",
+    batch?.estimatedCostUsd == null ? "Estimated bridge/swap cost: <b>waiting for both sides</b>" : `Estimated bridge/swap cost: <b>${usd(batch.estimatedCostUsd)}</b>`,
+    `Confidence: <b>${escapeHtml(String(batch?.confidence || "low"))}</b>`,
+    "",
+    "Wait until the swaps finish, then review once. Nothing is counted as new revenue or moved automatically.",
+  ].filter(Boolean).join("\n")
+}
+
 export async function isFeeInboxChat(chatId: number | string) {
   const configured = String(process.env.FEE_INBOX_CHAT_ID || "").trim()
   if (configured && configured === String(chatId)) return true
@@ -59,9 +91,7 @@ export function formatFeeExpectation(fee: RevenueFeeEvent) {
 
 export async function notifyFeeInboxReceipt(receipt: RevenueReceipt) {
   const [token, subscribed] = await Promise.all([getTelegramBotToken(), getSubscribedChats("fees")])
-  const chats = [...subscribed]
-  const configured = String(process.env.FEE_INBOX_CHAT_ID || "").trim()
-  if (configured && !chats.some((chat) => String(chat.chatId) === configured)) chats.push({ chatId: configured, kind: configured.startsWith("-") ? "group" : "direct", label: "Fee Inbox" })
+  const chats = feeInboxChats(subscribed)
   if (!token || !chats.length) return { sent: 0 }
   const transactionUrl = revenueTransactionUrl(receipt.chain, receipt.transactionHash)
   const text = [
@@ -83,11 +113,26 @@ export async function notifyFeeInboxReceipt(receipt: RevenueReceipt) {
       parse_mode: "HTML",
       disable_web_page_preview: true,
       reply_markup: {
-        inline_keyboard: [
-          [{ text: "🔎 Review", callback_data: `fee:receipt:${receipt._id}` }, ...(transactionUrl ? [{ text: "↗️ View transaction", url: transactionUrl }] : [])],
-          [{ text: "↔️ Internal transfer", callback_data: `fee:internal:${receipt._id}` }, { text: "Ignore", callback_data: `fee:ignore:${receipt._id}` }],
-        ],
+        inline_keyboard: receiptClassificationButtons(String(receipt._id || ""), transactionUrl),
       },
+    }).catch(() => null)
+    if (response) sent += 1
+  }
+  return { sent }
+}
+
+export async function notifyConsolidationCandidate(batch: any) {
+  const [token, subscribed] = await Promise.all([getTelegramBotToken(), getSubscribedChats("fees")])
+  const chats = feeInboxChats(subscribed)
+  if (!token || !chats.length || !batch?._id) return { sent: 0 }
+  let sent = 0
+  for (const chat of chats) {
+    const response = await telegramApi(token, "sendMessage", {
+      chat_id: chat.chatId,
+      text: formatConsolidationCandidate(batch),
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+      reply_markup: { inline_keyboard: [[{ text: "🔎 Review batch", callback_data: `consol:view:${batch._id}` }]] },
     }).catch(() => null)
     if (response) sent += 1
   }
@@ -96,9 +141,7 @@ export async function notifyFeeInboxReceipt(receipt: RevenueReceipt) {
 
 export async function notifyFeeInboxTreasuryReceipt(receipt: RevenueReceipt, reconciliation?: { matched?: boolean } | null) {
   const [token, subscribed] = await Promise.all([getTelegramBotToken(), getSubscribedChats("fees")])
-  const chats = [...subscribed]
-  const configured = String(process.env.FEE_INBOX_CHAT_ID || "").trim()
-  if (configured && !chats.some((chat) => String(chat.chatId) === configured)) chats.push({ chatId: configured, kind: configured.startsWith("-") ? "group" : "direct", label: "Fee Inbox" })
+  const chats = feeInboxChats(subscribed)
   if (!token || !chats.length) return { sent: 0 }
   const transactionUrl = revenueTransactionUrl(receipt.chain, receipt.transactionHash)
   const text = [

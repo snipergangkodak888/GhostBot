@@ -3,8 +3,9 @@ import { NextRequest, NextResponse } from "next/server"
 import { getDb } from "@/lib/db"
 import { cleanRevenueWalletRole, normalizeQuickNodeRevenuePayload, verifyQuickNodeSignature } from "@/lib/quicknode-revenue"
 import { saveRevenueReceipt } from "@/lib/revenue-service"
-import { notifyFeeInboxReceipt, notifyFeeInboxTreasuryReceipt } from "@/lib/revenue-telegram"
+import { notifyConsolidationCandidate, notifyFeeInboxReceipt, notifyFeeInboxTreasuryReceipt } from "@/lib/revenue-telegram"
 import { reconcileConsolidationReceipt } from "@/lib/revenue-consolidation"
+import { markConsolidationCandidateNotified, recordPotentialConsolidation, releaseConsolidationCandidateNotificationClaim } from "@/lib/revenue-consolidation-candidates"
 import { valueRevenueReceipt } from "@/lib/revenue-pricing"
 import { isRevenueReceiptDust, revenueNotificationMinimumUsd } from "@/lib/revenue-dust"
 
@@ -76,10 +77,26 @@ export async function POST(req: NextRequest) {
       inserted += 1
       if (dust) suppressedDust += 1
       savedIds.push(String(saved.receipt._id || ""))
+      const candidate = dust ? { candidate: null, suppressRevenueNotification: false, shouldNotify: false } : await recordPotentialConsolidation(saved.receipt).catch((error) => {
+        console.error("[revenue] consolidation candidate failed", error)
+        return { candidate: null, suppressRevenueNotification: false, shouldNotify: false }
+      })
+      const candidateBatch = candidate.candidate
       const notification = dust ? null : walletRole === "treasury"
         ? notifyFeeInboxTreasuryReceipt(saved.receipt, reconciliation)
-        : saved.receipt.direction === "incoming" ? notifyFeeInboxReceipt(saved.receipt) : null
-      if (notification) await notification.catch((error) => console.error("[revenue] fee inbox notification failed", error))
+        : candidate.shouldNotify && candidateBatch
+          ? notifyConsolidationCandidate(candidateBatch).then(async (result) => {
+            if (result.sent) await markConsolidationCandidateNotified(String(candidateBatch._id))
+            else await releaseConsolidationCandidateNotificationClaim(String(candidateBatch._id))
+            return result
+          })
+          : saved.receipt.direction === "incoming" && saved.receipt.status === "unclassified" && !candidate.suppressRevenueNotification
+            ? notifyFeeInboxReceipt(saved.receipt)
+            : null
+      if (notification) await notification.catch(async (error) => {
+        if (candidate.shouldNotify && candidateBatch) await releaseConsolidationCandidateNotificationClaim(String(candidateBatch._id)).catch(() => {})
+        console.error("[revenue] fee inbox notification failed", error)
+      })
     }
   }
 

@@ -7,11 +7,12 @@ import ts from "typescript"
 
 const require = createRequire(import.meta.url)
 
-function loadTypeScriptModule(path) {
+function loadTypeScriptModule(path, overrides = {}) {
   const source = fs.readFileSync(path, "utf8")
   const output = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
   const module = { exports: {} }
   const localRequire = (id) => {
+    if (Object.hasOwn(overrides, id)) return overrides[id]
     if (id === "@/lib/revenue-types") return { REVENUE_CHAINS: ["ethereum", "base", "bnb", "robinhood", "solana"], REVENUE_WALLET_ROLES: ["revenue", "treasury"] }
     if (id === "@/lib/db") return { getDb: async () => { throw new Error("Database access is not used by this unit test") } }
     if (id === "@/lib/team-timezone") return { teamDateKey: () => "2026-08-20" }
@@ -19,6 +20,49 @@ function loadTypeScriptModule(path) {
   }
   vm.runInNewContext(`(function (exports, require, module, process, Buffer) { ${output}\n})(module.exports, require, module, process, Buffer)`, { module, require: localRequire, process, Buffer })
   return module.exports
+}
+
+function memoryDb(seed = {}) {
+  const collections = new Map(Object.entries(seed).map(([name, docs]) => [name, docs.map((doc) => structuredClone(doc))]))
+  let nextId = 1
+  const matches = (doc, filter = {}) => Object.entries(filter).every(([key, expected]) => {
+    const actual = doc[key]
+    if (expected && typeof expected === "object" && !Array.isArray(expected)) {
+      if (Array.isArray(expected.$in)) return expected.$in.includes(actual)
+      return false
+    }
+    return String(actual) === String(expected)
+  })
+  const collection = (name) => {
+    if (!collections.has(name)) collections.set(name, [])
+    const docs = collections.get(name)
+    return {
+      findOne: async (filter) => docs.find((doc) => matches(doc, filter)) || null,
+      find: (filter = {}) => {
+        let found = docs.filter((doc) => matches(doc, filter))
+        const cursor = {
+          sort(spec) {
+            const [key, direction] = Object.entries(spec)[0]
+            found = found.sort((a, b) => (a[key] > b[key] ? 1 : -1) * direction)
+            return cursor
+          },
+          async toArray() { return found },
+        }
+        return cursor
+      },
+      insertOne: async (doc) => {
+        const saved = { ...structuredClone(doc), _id: doc._id || `memory-${nextId++}` }
+        docs.push(saved)
+        return { insertedId: saved._id }
+      },
+      updateOne: async (filter, update) => {
+        const doc = docs.find((row) => matches(row, filter))
+        if (doc && update.$set) Object.assign(doc, structuredClone(update.$set))
+        return { matchedCount: doc ? 1 : 0 }
+      },
+    }
+  }
+  return { collection, collections }
 }
 
 const evmWallet = "0x00000000000000000000000000000000000000aa"
@@ -32,6 +76,7 @@ const parser = loadTypeScriptModule("lib/revenue-parser.ts")
 const matching = loadTypeScriptModule("lib/revenue-matching.ts")
 const quicknode = loadTypeScriptModule("lib/quicknode-revenue.ts")
 const consolidation = loadTypeScriptModule("lib/revenue-consolidation.ts")
+const consolidationCandidates = loadTypeScriptModule("lib/revenue-consolidation-candidates.ts")
 const pricing = loadTypeScriptModule("lib/revenue-pricing.ts")
 const explorer = loadTypeScriptModule("lib/revenue-explorer.ts")
 const dust = loadTypeScriptModule("lib/revenue-dust.ts")
@@ -45,6 +90,92 @@ assert.equal(dust.isRevenueReceiptDust({ direction: "incoming", amountUsd: 0.99 
 assert.equal(dust.isRevenueReceiptDust({ direction: "incoming", amountUsd: 1 }, 1), false)
 assert.equal(dust.isRevenueReceiptDust({ direction: "outgoing", amountUsd: 0.01 }, 1), false)
 assert.equal(dust.isRevenueReceiptDust({ direction: "incoming", amountUsd: null }, 1), false)
+
+const swapLegs = quicknode.classifyDeterministicInternalMovements([
+  { _id: "swap-out", chain: "solana", walletRole: "revenue", wallet: solanaWallet, direction: "outgoing", transactionHash: "swap-tx", asset: "SOL", amount: 13.1501, amountUsd: 1254.67, status: "unclassified", allocations: [] },
+  { _id: "swap-in", chain: "solana", walletRole: "revenue", wallet: solanaWallet, direction: "incoming", transactionHash: "swap-tx", asset: "USDC", amount: 1252.426666, amountUsd: 1252.426666, status: "unclassified", allocations: [] },
+])
+assert.ok(swapLegs.every((receipt) => receipt.status === "internal"))
+assert.ok(swapLegs.every((receipt) => receipt.autoClassification === "same_transaction_swap"))
+assert.ok(swapLegs.every((receipt) => receipt.notificationSuppressedReason === "internal_swap"))
+
+const sameAssetTransfer = quicknode.classifyDeterministicInternalMovements([
+  { chain: "solana", walletRole: "revenue", wallet: solanaWallet, direction: "outgoing", transactionHash: "same-asset", asset: "USDC", amount: 500, status: "unclassified", allocations: [] },
+  { chain: "solana", walletRole: "revenue", wallet: solanaWallet, direction: "incoming", transactionHash: "same-asset", asset: "USDC", amount: 500, status: "unclassified", allocations: [] },
+])
+assert.ok(sameAssetTransfer.every((receipt) => receipt.status === "unclassified"))
+
+const candidateReceipts = [
+  { _id: "eth-out", direction: "outgoing", chain: "robinhood", asset: "ETH", amountUsd: 479.2 },
+  { _id: "bnb-out", direction: "outgoing", chain: "bnb", asset: "BNB", amountUsd: 1351.42 },
+  { _id: "sol-out", direction: "outgoing", chain: "solana", asset: "SOL", amountUsd: 1254.67 },
+  { _id: "privacy-in-1", direction: "incoming", chain: "solana", asset: "USDC", amount: 476.952981, amountUsd: 476.952981 },
+  { _id: "privacy-in-2", direction: "incoming", chain: "solana", asset: "USDC", amount: 1348.834899, amountUsd: 1348.834899 },
+  { _id: "swap-in", direction: "incoming", chain: "solana", asset: "USDC", amount: 1252.426666, amountUsd: 1252.426666 },
+]
+const candidateMetrics = consolidationCandidates.consolidationCandidateMetrics(candidateReceipts, {
+  sourceReceiptIds: ["eth-out", "bnb-out"],
+  destinationReceiptIds: ["privacy-in-1", "privacy-in-2"],
+  swapReceiptIds: ["sol-out", "swap-in"],
+})
+assert.equal(candidateMetrics.sourceUsd, 3085.29)
+assert.equal(candidateMetrics.destinationUsd, 3078.21)
+assert.equal(candidateMetrics.estimatedCostUsd, 7.08)
+assert.equal(candidateMetrics.confidence, "high")
+
+const candidateDb = memoryDb({
+  revenueReceipts: [
+    { _id: "source", date: "2026-08-20", chain: "bnb", walletRole: "revenue", direction: "outgoing", asset: "BNB", amount: 1.92, amountUsd: 1351.42, status: "unclassified", allocations: [], blockTime: "2026-08-20T12:00:00.000Z", createdAt: "2026-08-20T12:00:00.000Z" },
+    { _id: "destination", date: "2026-08-20", chain: "solana", walletRole: "revenue", direction: "incoming", asset: "USDC", amount: 1348.834899, amountUsd: 1348.834899, status: "unclassified", allocations: [], blockTime: "2026-08-20T12:00:20.000Z", createdAt: "2026-08-20T12:00:20.000Z" },
+  ],
+})
+const candidateState = loadTypeScriptModule("lib/revenue-consolidation-candidates.ts", { "@/lib/db": { getDb: async () => candidateDb } })
+const sourceRecorded = await candidateState.recordPotentialConsolidation(candidateDb.collections.get("revenueReceipts")[0])
+assert.equal(sourceRecorded.candidate.status, "collecting")
+assert.equal(sourceRecorded.shouldNotify, false)
+const destinationRecorded = await candidateState.recordPotentialConsolidation(candidateDb.collections.get("revenueReceipts")[1])
+assert.equal(destinationRecorded.candidate.status, "suggested")
+assert.equal(destinationRecorded.shouldNotify, true)
+assert.equal(destinationRecorded.suppressRevenueNotification, true)
+assert.equal(candidateDb.collections.get("revenueReceipts")[1].notificationSuppressedReason, "consolidation_candidate")
+await candidateState.releaseConsolidationCandidateNotificationClaim(destinationRecorded.candidate._id)
+assert.equal(candidateDb.collections.get("revenueConsolidationCandidates")[0].notificationClaimedAt, null)
+candidateDb.collections.get("revenueReceipts").push({ _id: "destination-retry", date: "2026-08-20", chain: "solana", walletRole: "revenue", direction: "incoming", asset: "USDC", amount: 0.5, amountUsd: 0.5, status: "unclassified", allocations: [], blockTime: "2026-08-20T12:00:30.000Z", createdAt: "2026-08-20T12:00:30.000Z" })
+const destinationRetry = await candidateState.recordPotentialConsolidation(candidateDb.collections.get("revenueReceipts")[2])
+assert.equal(destinationRetry.shouldNotify, true)
+await candidateState.markConsolidationCandidateNotified(destinationRecorded.candidate._id)
+candidateDb.collections.get("revenueReceipts").push({ _id: "destination-later", date: "2026-08-20", chain: "solana", walletRole: "revenue", direction: "incoming", asset: "USDC", amount: 0.25, amountUsd: 0.25, status: "unclassified", allocations: [], blockTime: "2026-08-20T12:00:40.000Z", createdAt: "2026-08-20T12:00:40.000Z" })
+const destinationLater = await candidateState.recordPotentialConsolidation(candidateDb.collections.get("revenueReceipts")[3])
+assert.equal(destinationLater.shouldNotify, false)
+await candidateState.confirmConsolidationCandidate(destinationRecorded.candidate._id, 12345)
+assert.ok(candidateDb.collections.get("revenueReceipts").every((receipt) => receipt.status === "internal"))
+assert.equal(candidateDb.collections.get("revenueConsolidationCandidates")[0].status, "confirmed")
+assert.equal(candidateDb.collections.get("revenueConsolidationCandidates")[0].confirmedByTelegramId, 12345)
+
+const telegramCalls = []
+const revenueTelegram = loadTypeScriptModule("lib/revenue-telegram.ts", {
+  "@/lib/db": { getDb: async () => memoryDb() },
+  "@/lib/chat-subscriptions": { getSubscribedChats: async () => [{ chatId: "-100123", kind: "group", label: "Fees" }] },
+  "@/lib/telegram-bot": {
+    getTelegramBotToken: async () => "test-token",
+    telegramApi: async (_token, method, body) => { telegramCalls.push({ method, body }); return { ok: true } },
+  },
+  "@/lib/revenue-projects": {
+    CHAIN_LABELS: { ethereum: "Ethereum Mainnet", base: "Base", bnb: "BNB Smart Chain", robinhood: "Robinhood Chain", solana: "Solana" },
+    projectFeeConfig: () => ({ chain: "solana", quoteAssets: ["SOL"], dailyTradingFeeEnabled: true, dailyTradingFeeUsd: 500 }),
+  },
+  "@/lib/revenue-explorer": { revenueTransactionUrl: (_chain, hash) => `https://explorer.test/${hash}` },
+})
+await revenueTelegram.notifyFeeInboxReceipt({ _id: "receipt-1", chain: "solana", direction: "incoming", asset: "SOL", amount: 5, amountUsd: 489.51, transactionHash: "tx-1", status: "unclassified" })
+const receiptNotification = telegramCalls.at(-1).body
+assert.match(receiptNotification.text, /New revenue-wallet receipt/)
+assert.equal(receiptNotification.reply_markup.inline_keyboard[0][0].callback_data, "receipt:classify:receipt-1")
+assert.equal(receiptNotification.reply_markup.inline_keyboard[0][1].callback_data, "fee:internal:receipt-1")
+assert.ok(receiptNotification.reply_markup.inline_keyboard.flat().filter((button) => button.callback_data).every((button) => Buffer.byteLength(button.callback_data) <= 64))
+await revenueTelegram.notifyConsolidationCandidate({ _id: "batch-1", sourceReceiptIds: ["source"], destinationReceiptIds: ["destination"], swapReceiptIds: [], sourceUsd: 500, destinationUsd: 496, estimatedCostUsd: 4, confidence: "high", receipts: [] })
+const batchNotification = telegramCalls.at(-1).body
+assert.match(batchNotification.text, /Possible internal consolidation/)
+assert.equal(batchNotification.reply_markup.inline_keyboard[0][0].callback_data, "consol:view:batch-1")
 
 const liquidation = parser.parseFeeMessage(`Cashout Summary:\nA total of 212,574 USDC was withdrawn from the MM balance\n200,050 USDC was sent here.\n12,524 USDC was taken for our 5% liquidations fee + privacy swap fee.`)
 assert.equal(liquidation.feeType, "liquidation")
