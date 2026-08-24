@@ -44,7 +44,13 @@ function capturedTelegramResponse(method: string, body: Record<string, any>) {
 
   const result = createsMessage
     ? { message_id: messageId, chat: { id: body.chat_id }, text: body.text || "" }
-    : true
+    : method === "getChatAdministrators"
+      ? []
+      : method === "getChatMemberCount"
+        ? 1
+        : method === "getChatMember"
+          ? { status: "member", user: { id: Number(body.user_id), first_name: "Bot Lab Member", is_bot: false } }
+          : true
   return new Response(JSON.stringify({ ok: true, result }), {
     status: 200,
     headers: { "Content-Type": "application/json" },
@@ -61,6 +67,7 @@ export async function getTelegramBotToken() {
 let cachedBotUsername = ""
 
 export async function getTelegramBotUsername() {
+  if (isTelegramCaptureActive()) return "ghostbot_local_lab"
   if (cachedBotUsername) return cachedBotUsername
   const envUsername = String(process.env.NEXT_PUBLIC_BOT_USERNAME || "").trim().replace(/^@/, "")
   if (envUsername) {

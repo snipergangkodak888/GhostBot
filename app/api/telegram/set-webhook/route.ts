@@ -14,7 +14,7 @@ export async function POST(req: Request) {
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url: webhook, allowed_updates: ['message', 'callback_query', 'pre_checkout_query'] })
+    body: JSON.stringify({ url: webhook, allowed_updates: ['message', 'callback_query', 'pre_checkout_query', 'chat_member', 'my_chat_member'] })
   })
   const data = await res.json().catch(() => ({}))
   return NextResponse.json({ ok: true, data, webhook })

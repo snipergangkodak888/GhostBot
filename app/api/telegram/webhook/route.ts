@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { answerOpsAi, answerOpsBot, buildConversationContext, chooseOpsAiActionCandidate, executeOpsAiAction, formatOpsProjectDetails, proposeOpsAiAction, rejectOpsAiAction, type OpsAiOptions } from "@/lib/ops-bot"
-import { getMemberTimeZone, getTeamAccess, redeemGuardInviteCode, saveMemberTimeZone } from "@/lib/team-access"
+import { getMemberTimeZone, getTeamAccess, guardCodeFromText, redeemGuardInviteCode, saveMemberTimeZone } from "@/lib/team-access"
 import { getDb } from "@/lib/db"
 import { deleteProjectCascade } from "@/lib/platform-data"
 import { getSheetSchema, SHEET_KIND_ORDER, valuesForKind, type SheetKind } from "@/lib/sheet-schemas"
@@ -10,7 +10,7 @@ import { savePayrollDay } from "@/lib/payroll-day"
 import { loadDailyPayrollReport, parseReportDateFromText } from "@/lib/payroll-daily-report"
 import { renderPayrollReportPng } from "@/lib/payroll-report-image"
 import { miscIncomeCategoryLabel, parseIncomeLogCommand } from "@/lib/payroll-misc"
-import { chatPurposeLabel, listChatSubscriptions, normalizeChatPurpose, setChatSubscription } from "@/lib/chat-subscriptions"
+import { chatProfileLabel, chatPurposeLabel, getChatProfile, listChatSubscriptions, normalizeChatProfile, normalizeChatPurpose, notificationAllowedForProfile, setChatProfile, setChatSubscription, type ChatProfile } from "@/lib/chat-subscriptions"
 import { formatLaunchDaySchedule } from "@/lib/launch-calendar"
 import { projectFeeConfig } from "@/lib/revenue-projects"
 import { revenueTransactionUrl } from "@/lib/revenue-explorer"
@@ -21,6 +21,8 @@ import { isGlobalRevenueFeeType, type FeeType } from "@/lib/revenue-types"
 import { receiptAvailableAmount, receiptAvailableUsd } from "@/lib/revenue-allocations"
 import { LAUNCH_CHAINS, launchPad, padsForChain, type LaunchChainId } from "@/lib/launch-math"
 import { calculateLaunchQuote, defaultMmLiquidity, formatLaunchQuote, getLaunchAssetPrice, parseLaunchNumber, type LaunchTargetMetric } from "@/lib/launch-calculator"
+import { botPermissionDeniedMessage, canUseBotCapability, getBotPermissionContext, type BotCapability, type BotPermissionContext } from "@/lib/bot-permissions"
+import { createGuardEnrollmentLink, guardEnrollmentTokenFromText, guardEnrollmentUrl, handleGuardBotMembershipUpdate, handleGuardChatMemberUpdate, recordGuardChatMember, revokeGuardEnrollmentLinks, syncTelegramChatAdministrators, verifyAndRedeemGuardEnrollment } from "@/lib/guard-enrollment"
 
 type InlineButton = { text: string; callback_data?: string; url?: string; web_app?: { url: string } }
 
@@ -113,6 +115,9 @@ async function setBotCommands(token: string) {
       { command: "notes", description: "Show project notes" },
       { command: "ai", description: "Ask AI about projects and data" },
       { command: "timezone", description: "Set your local timezone" },
+      { command: "setchat", description: "Admin: configure this chat profile" },
+      { command: "chatprofile", description: "Show this chat's access profile" },
+      { command: "guardlink", description: "Admin: show, refresh, or revoke team enrollment" },
       { command: "subscribe", description: "Subscribe this chat to scheduled updates" },
       { command: "subscriptions", description: "Show scheduled updates for this chat" },
     ],
@@ -149,7 +154,9 @@ function helpMessage() {
     "🧠 @me your question",
     "🌍 /timezone - set your local timezone",
     "💰 /fees - show today’s revenue inbox",
-    "📣 /subscribe launches, /subscribe daily, or /subscribe fees",
+    "⚙️ Admins: /setchat launch|trade|fee|finance|management",
+    "🛡️ Admins: /guardlink show|refresh|revoke",
+    "📣 /subscribe launches|fees (within the matching chat profile)",
   ].join("\n")
 }
 
@@ -177,7 +184,7 @@ async function maybeRequestReminderTimeZone(
 ) {
   if (!/\bremind(?:er|ers)?\b/i.test(text)) return false
   if (detectExplicitTimeZone(text) || isRelativeDurationReminder(text) || await getMemberTimeZone(telegramId)) return false
-  await setState(telegramId, { action: stateAction, pendingText: text })
+  await setState(telegramId, { action: stateAction, pendingText: text }, chatId)
   await sendMessage(token, chatId, timeZonePrompt(), timeZoneButtons(telegramId))
   return true
 }
@@ -190,13 +197,6 @@ function inviteMessage() {
     "",
     "Example: GHOST-1A2B3C4D",
   ].join("\n")
-}
-
-function codeFromText(text: string) {
-  const clean = String(text || "").trim()
-  const startCode = clean.match(/^\/start\s+(.+)$/i)?.[1]
-  const value = startCode || clean
-  return /^GHOST-[A-F0-9]{8}$/i.test(value) ? value.toUpperCase() : ""
 }
 
 async function ensureAccess(params: {
@@ -213,6 +213,28 @@ async function ensureAccess(params: {
     return false
   }
 
+  if (guardEnrollmentTokenFromText(params.text)) {
+    const enrollment = await verifyAndRedeemGuardEnrollment({
+      text: params.text,
+      telegramId: params.telegramId,
+      user: {
+        id: params.telegramId,
+        first_name: params.profile?.first_name || "",
+        last_name: params.profile?.last_name || "",
+        username: params.profile?.username || "",
+        language_code: params.profile?.language_code || "en",
+      },
+      token: params.token,
+    })
+    if (!enrollment.ok) {
+      await sendMessage(params.token, params.chatId, `⛔ ${enrollment.error}`)
+      return false
+    }
+    const roleLabel = enrollment.accessRole === "admin" ? "Admin" : "Member"
+    await sendMessage(params.token, params.chatId, `✅ Guard access activated as ${roleLabel}.\n\nVerified through ${enrollment.chatTitle || "your configured team group"}.${enrollment.accessRole === "admin" ? "" : " An admin can promote your role from the Guard Team dashboard."}`)
+    return true
+  }
+
   const access = await getTeamAccess(params.telegramId)
   if (access.allowed) return true
 
@@ -221,7 +243,7 @@ async function ensureAccess(params: {
     return false
   }
 
-  const code = codeFromText(params.text)
+  const code = guardCodeFromText(params.text)
   if (!code) {
     await sendMessage(params.token, params.chatId, inviteMessage())
     return false
@@ -253,6 +275,79 @@ function isGroupChat(chat: any) {
 
 function isGroupChatId(chatId: number | string) {
   return Number(chatId) < 0
+}
+
+async function botPermissions(telegramId: number, chatId: number | string) {
+  if (isTelegramCaptureActive() && isGroupChatId(chatId)) {
+    const chat = await getChatProfile(chatId)
+    return {
+      telegramId,
+      chatId,
+      isGroup: true,
+      role: "admin" as const,
+      profile: (chat?.profile || "management") as ChatProfile,
+      configured: true,
+      capture: true,
+    }
+  }
+  return getBotPermissionContext({ telegramId, chatId, capture: isTelegramCaptureActive() })
+}
+
+async function requireCapability(token: string, context: BotPermissionContext, capability: BotCapability) {
+  if (canUseBotCapability(context, capability)) return true
+  await sendMessage(token, context.chatId, botPermissionDeniedMessage(context, capability))
+  return false
+}
+
+function chatPrimaryCapability(context: BotPermissionContext): BotCapability {
+  if (context.profile === "launch") return "launch"
+  if (context.profile === "trade") return "trade"
+  if (context.profile === "fee" || context.profile === "finance") return "finance"
+  return context.role === "admin" ? "management" : "trade"
+}
+
+function aiPermissionPolicy(context: BotPermissionContext) {
+  if (context.profile === "launch") return { capability: "launch" as const, dataScope: "launch" as const, allowedActionTypes: ["create_project", "update_project", "create_reminder"] }
+  if (context.profile === "trade" || context.role === "member") return { capability: "trade" as const, dataScope: "trade" as const, allowedActionTypes: ["update_project", "create_reminder"] }
+  if (context.profile === "finance") return { capability: "finance" as const, dataScope: "full" as const, allowedActionTypes: ["create_payroll"] }
+  if (context.profile === "fee") return { capability: "finance" as const, dataScope: "full" as const, allowedActionTypes: ["none"] }
+  return { capability: "management" as const, dataScope: "full" as const, allowedActionTypes: ["create_project", "update_project", "create_reminder", "create_payroll", "add_sheet_row", "delete_project", "delete_reminder", "delete_payroll", "delete_sheet", "delete_sheet_row"] }
+}
+
+async function telegramUserIsChatAdmin(token: string, chatId: number | string, telegramId: number) {
+  if (isTelegramCaptureActive()) return true
+  if (!isGroupChatId(chatId)) return false
+  const response = await telegramApiJson(token, "getChatMember", { chat_id: chatId, user_id: telegramId }).catch(() => null)
+  return ["creator", "administrator"].includes(String(response?.result?.status || ""))
+}
+
+function profileAccessSummary(profile: ChatProfile) {
+  return {
+    launch: "launch schedule, launch calculator, natural-language launch management, and this chat's reminders",
+    trade: "project operations, trader notes, and this chat's reminders",
+    fee: "receipt, fee, and consolidation review for admins",
+    finance: "revenue summaries, profit, payroll, and reports for admins",
+    management: "all bot functions for admins",
+  }[profile]
+}
+
+async function prepareGuardEnrollment(token: string, chatId: number | string, telegramId: number, profile: ChatProfile, message?: any, rotate = false) {
+  const chat = {
+    id: chatId,
+    title: message?.chat?.title || message?.chat?.username || String(chatId),
+    username: message?.chat?.username || "",
+    type: message?.chat?.type || "group",
+  }
+  const [link, synced, botUsername] = await Promise.all([
+    createGuardEnrollmentLink({ chatId, chatTitle: chat.title, chatType: chat.type, profile, telegramId, rotate }),
+    syncTelegramChatAdministrators({ token, chat }),
+    getTelegramBotUsername(),
+  ])
+  return {
+    link,
+    synced,
+    url: guardEnrollmentUrl(botUsername, String(link.token || "")),
+  }
 }
 
 function chatTitle(message: any, chatId: number | string) {
@@ -365,6 +460,10 @@ async function resolveGroupMessage(text: string, entities: any[] = [], message?:
 
 async function hostGroupIfAllowed(chat: any, from: any) {
   if (!isGroupChat(chat) || !from?.id) return
+  const configuredChat = await getChatProfile(chat.id)
+  if (configuredChat?.profile) {
+    await recordGuardChatMember({ chat, member: { status: "member", user: from }, source: "message_seen" })
+  }
   const access = await getTeamAccess(Number(from.id))
   if (!access.allowed) return
 
@@ -389,9 +488,9 @@ async function hostGroupIfAllowed(chat: any, from: any) {
   )
 }
 
-async function setState(telegramId: number, state: Record<string, any>) {
+async function setState(telegramId: number, state: Record<string, any>, chatId: number | string) {
   const db = await getDb()
-  await db.collection("opsBotStates").updateOne({ telegramId }, { $set: { telegramId, ...state, updatedAt: new Date() } }, { upsert: true })
+  await db.collection("opsBotStates").updateOne({ telegramId }, { $set: { telegramId, ...state, telegramChatId: String(chatId), updatedAt: new Date() } }, { upsert: true })
 }
 
 async function clearState(telegramId: number) {
@@ -399,9 +498,11 @@ async function clearState(telegramId: number) {
   await db.collection("opsBotStates").deleteOne({ telegramId })
 }
 
-async function takeState(telegramId: number) {
+async function takeState(telegramId: number, chatId?: number | string) {
   const db = await getDb()
-  return db.collection("opsBotStates").findOne({ telegramId })
+  const state = await db.collection("opsBotStates").findOne({ telegramId })
+  if (state?.telegramChatId && chatId != null && String(state.telegramChatId) !== String(chatId)) return null
+  return state
 }
 
 function money(value?: number) {
@@ -490,7 +591,7 @@ async function sendCalculatedLaunchQuote(
     launchTarget: target,
     ...(pad.type === "amm" ? { launchInitialLp: quote.initialLp } : {}),
     launchMmLiquidity: quote.lines.find((line) => line.key === "mm")?.amount ?? defaultMmLiquidity(pad.id),
-  })
+  }, chatId)
   return sendMessage(token, chatId, formatLaunchQuote(quote), [
     [{ text: "🎯 Change target", callback_data: "launch:adjust:target" }, { text: "💧 Change MM reserve", callback_data: "launch:adjust:mm" }],
     [{ text: "🆕 New launch quote", callback_data: "launch:start" }],
@@ -574,7 +675,7 @@ async function sendSheetDetail(token: string, chatId: number | string, sheetId: 
 async function sendReminders(token: string, chatId: number | string) {
   const db = await getDb()
   const rows = await db.collection("opsReminders").find({ status: { $ne: "done" } }).sort({ dueAt: 1 }).toArray()
-  const reminders = rows.filter((reminder: any) => reminder.deliveryScope === "team" || !reminder.telegramChatId || String(reminder.telegramChatId) === String(chatId)).slice(0, 8)
+  const reminders = rows.filter((reminder: any) => reminder.deliveryScope === "chat" && String(reminder.telegramChatId || "") === String(chatId)).slice(0, 8)
   await sendMessage(token, chatId, `🔔 Reminders\n\n${reminders.length ? reminders.map((r: any, i: number) => `${i + 1}. ${r.title || r.message} - ${dateLabel(r.dueAt, String(r.timeZone || TEAM_TIME_ZONE))}${r.targetChatTitle ? ` → ${r.targetChatTitle}` : ""}`).join("\n") : "No reminders yet."}`, [
     [{ text: "➕ Add Reminder", callback_data: "reminder:add" }],
     ...reminders.map((r: any) => [{ text: `Open ${r.title || r.message}`.slice(0, 60), callback_data: `reminder:view:${r._id}` }]),
@@ -590,10 +691,10 @@ async function sendCalendar(token: string, chatId: number | string) {
   ])
   const lines = [
     ...projects.map((p: any) => `📁 ${dateLabel(p.launchDate)} - ${p.name}`),
-    ...reminders.map((r: any) => `🔔 ${dateLabel(r.dueAt, String(r.timeZone || TEAM_TIME_ZONE))} - ${r.title || r.message}`),
+    ...reminders.filter((r: any) => r.deliveryScope === "chat" && String(r.telegramChatId || "") === String(chatId)).map((r: any) => `🔔 ${dateLabel(r.dueAt, String(r.timeZone || TEAM_TIME_ZONE))} - ${r.title || r.message}`),
   ].slice(0, 10)
   await sendMessage(token, chatId, `📅 Calendar\n\n${lines.length ? lines.join("\n") : "No calendar items yet."}`, [
-    [{ text: "➕ Add Reminder", callback_data: "reminder:add" }, { text: "📁 Projects", callback_data: "projects:list" }],
+    [{ text: "➕ Add Reminder", callback_data: "reminder:add" }],
     [{ text: "⬅️ Back", callback_data: "main:menu" }],
   ])
 }
@@ -712,15 +813,18 @@ async function logProjectIncome(token: string, chatId: number | string, text: st
   ].filter(Boolean).join("\n"))
 }
 
-async function buildAiOptions(telegramId: number, chatId: number | string, message?: any): Promise<OpsAiOptions> {
+async function buildAiOptions(telegramId: number, chatId: number | string, message?: any, context?: BotPermissionContext): Promise<OpsAiOptions> {
   const messageTimestamp = Number(message?.date || message?.edit_date || 0) * 1000
   const referenceTime = messageTimestamp > 0 ? new Date(messageTimestamp) : new Date()
+  const policy = aiPermissionPolicy(context || await botPermissions(telegramId, chatId))
   return {
     chatId,
     chatTitle: chatTitle(message, chatId),
     conversation: await buildConversationContext(telegramId, chatId, message),
     referenceTime: referenceTime.toISOString(),
     requestTimeZone: await getMemberTimeZone(telegramId) || TEAM_TIME_ZONE,
+    dataScope: policy.dataScope,
+    allowedActionTypes: policy.allowedActionTypes,
   }
 }
 
@@ -733,9 +837,12 @@ async function maybeProposeAction(text: string, telegramId: number, aiOptions: O
   }
 }
 
-async function sendAiResponse(token: string, chatId: number | string, telegramId: number, text: string, message?: any) {
+async function sendAiResponse(token: string, chatId: number | string, telegramId: number, text: string, message?: any, permissionContext?: BotPermissionContext) {
+  const context = permissionContext || await botPermissions(telegramId, chatId)
+  const policy = aiPermissionPolicy(context)
+  if (!(await requireCapability(token, context, policy.capability))) return
   if (await maybeRequestReminderTimeZone(token, chatId, telegramId, text)) return
-  const aiOptions = await buildAiOptions(telegramId, chatId, message)
+  const aiOptions = await buildAiOptions(telegramId, chatId, message, context)
   await sendAsyncResponse(token, chatId, async () => {
     const proposed = await maybeProposeAction(text, telegramId, aiOptions)
     if (proposed) {
@@ -746,6 +853,9 @@ async function sendAiResponse(token: string, chatId: number | string, telegramId
         ] : undefined),
       }
     }
+    if (policy.dataScope === "launch") return { text: "I can add, update, reschedule, or cancel launches here. Use /calendar to view the schedule or /launchcalc for launch math. Financial questions are unavailable in this chat." }
+    if (policy.dataScope === "trade") return { text: "I can update project operations, post trader notes, and create reminders for this Trade Floor. Financial and revenue questions are unavailable here." }
+    if (context.profile === "fee") return { text: "Use receipt and fee messages in this chat to classify revenue, match expectations, or review consolidations." }
     return { text: await answerOpsAi(text, telegramId, aiOptions) }
   }, "🧠 Working on it…")
 }
@@ -756,15 +866,30 @@ function aiCommandText(text: string) {
   return String(match[1] || "").trim()
 }
 
-async function processState(token: string, chatId: number | string, telegramId: number, text: string, messageDateMs: number, message?: any) {
-  const state = await takeState(telegramId)
+async function processState(token: string, chatId: number | string, telegramId: number, text: string, messageDateMs: number, message?: any, permissionContext?: BotPermissionContext) {
+  const state = await takeState(telegramId, chatId)
   if (!state) return false
   const db = await getDb()
   const now = new Date()
+  const context = permissionContext || await botPermissions(telegramId, chatId)
 
   if (text === "⬅️ Back" || text === "/cancel") {
     await clearState(telegramId)
     await sendMessage(token, chatId, "Cancelled.")
+    return true
+  }
+
+  const stateCapability: BotCapability = String(state.action || "").startsWith("launch_calc")
+    ? "launch"
+    : ["add_project", "edit_project", "add_reminder", "timezone_for_manual_reminder", "timezone_for_reminder"].includes(String(state.action || ""))
+      ? (context.profile === "launch" ? "launch" : "trade")
+      : ["add_project_note", "add_sheet_row"].includes(String(state.action || ""))
+        ? "trade"
+      : ["fee_project_search", "receipt_classification", "receipt_expectation", "add_payroll"].includes(String(state.action || ""))
+        ? "finance"
+        : chatPrimaryCapability(context)
+  if (!(await requireCapability(token, context, stateCapability))) {
+    await clearState(telegramId)
     return true
   }
 
@@ -888,7 +1013,7 @@ async function processState(token: string, chatId: number | string, telegramId: 
       await sendMessage(token, chatId, "That launch venue is no longer available.")
       return true
     }
-    await setState(telegramId, { action: "launch_calc_value", launchInitialLp: initialLp })
+    await setState(telegramId, { action: "launch_calc_value", launchInitialLp: initialLp }, chatId)
     await sendMessage(token, chatId, launchTargetPrompt(state.launchMetric as LaunchTargetMetric, pad.name))
     return true
   }
@@ -926,7 +1051,7 @@ async function processState(token: string, chatId: number | string, telegramId: 
     const startedAt = Number(state.startedAt || 0)
     if (startedAt && messageDateMs && messageDateMs <= startedAt) return true
     await clearState(telegramId)
-    await sendAiResponse(token, chatId, telegramId, text, message)
+    await sendAiResponse(token, chatId, telegramId, text, message, context)
     return true
   }
 
@@ -979,13 +1104,13 @@ async function sendReceiptProjectPicker(token: string, chatId: number | string, 
   const receipt = await getRevenueReceipt(receiptId)
   if (!receipt || receipt.direction !== "incoming" || receipt.status !== "unclassified") return sendMessage(token, chatId, "This receipt is no longer available for revenue classification.")
   const projects = await compatibleReceiptProjects(receipt, feeType)
-  await setState(telegramId, { action: "receipt_classification", receiptId, feeType })
+  await setState(telegramId, { action: "receipt_classification", receiptId, feeType }, chatId)
   if (!projects.length) return sendMessage(token, chatId, `No eligible ${feeTypeLabel(feeType)} project accepts ${receipt.asset} on ${feeTypeLabel(receipt.chain)}. Configure or review it in Revenue Inbox.`)
   return sendMessage(token, chatId, `${receiptSummary(receipt)}\n\nChoose the project:`, projects.slice(0, 12).map((project: any) => [{ text: `${project.name} · ${feeTypeLabel(project.chain)}`.slice(0, 60), callback_data: `receipt:project:${project._id}` }]))
 }
 
 async function sendReceiptConfirmation(token: string, chatId: number | string, telegramId: number, projectId?: string | null) {
-  const state = await takeState(telegramId)
+  const state = await takeState(telegramId, chatId)
   if (state?.action !== "receipt_classification" || !state.receiptId || !DIRECT_RECEIPT_FEE_TYPES.includes(state.feeType)) return sendMessage(token, chatId, "This classification menu expired. Start again from the receipt message.")
   const db = await getDb()
   const [receipt, project] = await Promise.all([
@@ -998,7 +1123,7 @@ async function sendReceiptConfirmation(token: string, chatId: number | string, t
   const availableUsd = receiptAvailableUsd(receipt)
   const expectedUsd = state.feeType === "daily_trading" ? Number(projectFeeConfig(project).dailyTradingFeeUsd || 500) : Number(availableUsd || 0)
   const variance = availableUsd == null ? null : availableUsd - expectedUsd
-  await setState(telegramId, { ...state, projectId: project ? String(project._id) : null })
+  await setState(telegramId, { ...state, projectId: project ? String(project._id) : null }, chatId)
   const text = [
     `<b>Confirm revenue classification</b>`,
     "",
@@ -1023,7 +1148,7 @@ async function sendExistingExpectationPicker(token: string, chatId: number | str
     quoteAsset: receipt.asset,
     status: { $in: ["awaiting_receipt", "match_proposed"] },
   }).sort({ createdAt: -1 }).toArray()
-  await setState(telegramId, { action: "receipt_expectation", receiptId })
+  await setState(telegramId, { action: "receipt_expectation", receiptId }, chatId)
   const eligible = fees.filter((fee: any) => ["liquidation", "launch", "daily_trading"].includes(fee.feeType)).slice(0, 12)
   if (!eligible.length) return sendMessage(token, chatId, "No compatible liquidation, launch, or daily expectation is waiting for this receipt. Forward the standardized cashout message first or use Revenue Inbox.")
   return sendMessage(token, chatId, `${receiptSummary(receipt)}\n\nChoose the existing expectation:`, eligible.map((fee: any) => [{ text: `${fee.projectName || "Project"} · ${feeTypeLabel(fee.feeType)} · ${fee.expectedUsd == null ? `${fee.expectedAssetAmount} ${fee.quoteAsset}` : `$${Number(fee.expectedUsd).toFixed(2)}`}`.slice(0, 60), callback_data: `receipt:expect:${fee._id}` }]))
@@ -1032,20 +1157,33 @@ async function sendExistingExpectationPicker(token: string, chatId: number | str
 async function handleCallback(token: string, chatId: number | string, telegramId: number, data: string, req: NextRequest) {
   const db = await getDb()
   const [area, action, id, extra] = data.split(":")
+  const context = await botPermissions(telegramId, chatId)
+  const callbackCapability: BotCapability | null = area === "launch"
+    ? "launch"
+    : ["reminder", "reminders"].includes(area)
+      ? (context.profile === "launch" ? "launch" : "trade")
+    : ["project", "projects", "notes", "note", "data", "sheet"].includes(area)
+      ? "trade"
+      : ["receipt", "consol", "fee", "payroll"].includes(area)
+        ? "finance"
+        : area === "ai"
+          ? aiPermissionPolicy(context).capability
+          : null
+  if (callbackCapability && !(await requireCapability(token, context, callbackCapability))) return
 
   if (area === "tz" && action === "set") {
     if (extra && Number(extra) !== telegramId) return
     const timeZone = timeZoneFromOption(id)
     const saved = await saveMemberTimeZone(telegramId, timeZone, "bot")
     if (!saved.ok) return sendMessage(token, chatId, `⚠️ ${saved.error}`)
-    const state = await takeState(telegramId)
+    const state = await takeState(telegramId, chatId)
     if (state?.action === "timezone_for_reminder" && state.pendingText) {
       await clearState(telegramId)
       await sendMessage(token, chatId, `✅ Timezone saved as ${teamZoneLabel(saved.timeZone)}. Continuing your reminder…`)
-      return sendAiResponse(token, chatId, telegramId, String(state.pendingText))
+      return sendAiResponse(token, chatId, telegramId, String(state.pendingText), undefined, context)
     }
     if (state?.action === "timezone_for_manual_reminder") {
-      await setState(telegramId, { action: "add_reminder" })
+      await setState(telegramId, { action: "add_reminder" }, chatId)
       return sendMessage(token, chatId, `✅ Timezone saved as ${teamZoneLabel(saved.timeZone)}.\n\n➕ Send reminder like this:\n\nReminder title | YYYY-MM-DD HH:mm | message\n\nSend /cancel to stop.`)
     }
     await clearState(telegramId)
@@ -1062,34 +1200,34 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     const metric = id as LaunchTargetMetric
     if (!pad || !(["supply", "market_cap"] as string[]).includes(metric)) return sendLaunchCalculatorStart(token, chatId, telegramId)
     if (pad.type === "amm") {
-      await setState(telegramId, { action: "launch_calc_lp", launchVenueId: pad.id, launchMetric: metric })
+      await setState(telegramId, { action: "launch_calc_lp", launchVenueId: pad.id, launchMetric: metric }, chatId)
       return sendMessage(token, chatId, `💧 What initial LP should ${pad.name} use?\n\nThis sets the opening price. Type another amount or use the suggested default.`, [
         [{ text: `Use ${pad.defaultLp} ${pad.symbol}`, callback_data: `launch:lp:default:${pad.id}` }],
         [{ text: "⬅️ Target type", callback_data: `launch:venue:${pad.id}` }],
       ])
     }
-    await setState(telegramId, { action: "launch_calc_value", launchVenueId: pad.id, launchMetric: metric })
+    await setState(telegramId, { action: "launch_calc_value", launchVenueId: pad.id, launchMetric: metric }, chatId)
     return sendMessage(token, chatId, launchTargetPrompt(metric, pad.name))
   }
   if (area === "launch" && action === "lp") {
     const pad = launchPad(extra)
-    const state = await takeState(telegramId)
+    const state = await takeState(telegramId, chatId)
     if (!pad || state?.launchVenueId !== pad.id || state?.action !== "launch_calc_lp") return sendLaunchCalculatorStart(token, chatId, telegramId)
     if (id === "default") {
-      await setState(telegramId, { action: "launch_calc_value", launchInitialLp: pad.defaultLp })
+      await setState(telegramId, { action: "launch_calc_value", launchInitialLp: pad.defaultLp }, chatId)
       return sendMessage(token, chatId, launchTargetPrompt(state.launchMetric as LaunchTargetMetric, pad.name))
     }
   }
   if (area === "launch" && action === "adjust") {
-    const state = await takeState(telegramId)
+    const state = await takeState(telegramId, chatId)
     const pad = launchPad(String(state?.launchVenueId || ""))
     if (!pad || state?.action !== "launch_calc_result") return sendLaunchCalculatorStart(token, chatId, telegramId)
     if (id === "target") {
-      await setState(telegramId, { action: "launch_calc_value" })
+      await setState(telegramId, { action: "launch_calc_value" }, chatId)
       return sendMessage(token, chatId, launchTargetPrompt(state.launchMetric as LaunchTargetMetric, pad.name))
     }
     if (id === "mm") {
-      await setState(telegramId, { action: "launch_calc_mm" })
+      await setState(telegramId, { action: "launch_calc_mm" }, chatId)
       return sendMessage(token, chatId, `💧 Enter the ${pad.symbol} amount to reserve for initial MM trading.\n\nCurrent reserve: ${state.launchMmLiquidity} ${pad.symbol}\n\nSend /cancel to stop.`)
     }
   }
@@ -1103,14 +1241,14 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   if (area === "receipt" && action === "type") {
     if (!DIRECT_RECEIPT_FEE_TYPES.includes(extra as any)) return sendMessage(token, chatId, "That receipt classification is unsupported.")
     if (isGlobalRevenueFeeType(extra)) {
-      await setState(telegramId, { action: "receipt_classification", receiptId: id, feeType: extra })
+      await setState(telegramId, { action: "receipt_classification", receiptId: id, feeType: extra }, chatId)
       return sendReceiptConfirmation(token, chatId, telegramId, null)
     }
     return sendReceiptProjectPicker(token, chatId, telegramId, id, extra as FeeType)
   }
   if (area === "receipt" && action === "project") return sendReceiptConfirmation(token, chatId, telegramId, id)
   if (area === "receipt" && action === "confirm") {
-    const state = await takeState(telegramId)
+    const state = await takeState(telegramId, chatId)
     if (state?.action !== "receipt_classification" || String(state.receiptId) !== id || !DIRECT_RECEIPT_FEE_TYPES.includes(state.feeType)) return sendMessage(token, chatId, "This classification menu expired. Start again from the receipt message.")
     const confirmed = await classifyReceiptAsRevenue({ receiptId: id, feeType: state.feeType as FeeType, projectId: state.projectId || null }, telegramId)
     await clearState(telegramId)
@@ -1118,7 +1256,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   }
   if (area === "receipt" && action === "existing") return sendExistingExpectationPicker(token, chatId, telegramId, id)
   if (area === "receipt" && action === "expect") {
-    const state = await takeState(telegramId)
+    const state = await takeState(telegramId, chatId)
     if (state?.action !== "receipt_expectation" || !state.receiptId) return sendMessage(token, chatId, "This expectation menu expired. Start again from the receipt message.")
     const confirmed = await acceptReceiptMatch(id, telegramId, [String(state.receiptId)])
     await clearState(telegramId)
@@ -1177,7 +1315,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     return sendMessage(token, chatId, `✅ Fee verified and ready for payroll accounting.\n\n${formatFeeExpectation(fee)}`)
   }
   if (area === "fee" && action === "search") {
-    await setState(telegramId, { action: "fee_project_search", feeId: id })
+    await setState(telegramId, { action: "fee_project_search", feeId: id }, chatId)
     return sendMessage(token, chatId, "Type part of the existing project name. Send /cancel to stop.")
   }
   if (area === "fee" && action === "receipt") {
@@ -1202,7 +1340,8 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   if (area === "ai" && action === "confirm") {
     return sendAsyncResponse(token, chatId, async () => {
       const pending = await db.collection("opsAiActions").findOne({ _id: id })
-      const text = await executeOpsAiAction(id, telegramId)
+      const policy = aiPermissionPolicy(context)
+      const text = await executeOpsAiAction(id, telegramId, { allowedActionTypes: policy.allowedActionTypes, currentChatId: chatId, dataScope: policy.dataScope })
       const launchDate = pending?.payload?.launchDate || pending?.payload?.startDate
       const changedLaunch = ["create_project", "update_project"].includes(String(pending?.actionType || "")) && launchDate
       if (!text.startsWith("✅") || !changedLaunch) return { text }
@@ -1228,12 +1367,12 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   }
 
   if (area === "project" && action === "add") {
-    await setState(telegramId, { action: "add_project" })
+    await setState(telegramId, { action: "add_project" }, chatId)
     return sendMessage(token, chatId, "➕ Send the new project like this:\n\nProject Name | Owner | YYYY-MM-DD | active\n\nSend /cancel to stop.")
   }
   if (area === "project" && action === "view") return sendProjectDetail(token, chatId, id)
   if (area === "project" && action === "edit") {
-    await setState(telegramId, { action: "edit_project", projectId: id })
+    await setState(telegramId, { action: "edit_project", projectId: id }, chatId)
     return sendMessage(token, chatId, "✏️ Send updated project:\n\nProject Name | Owner | YYYY-MM-DD | active\n\nSend /cancel to stop.")
   }
   if (area === "project" && action === "toggle") {
@@ -1253,7 +1392,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       action: "add_project_note",
       projectId: id,
       authorName: member?.name || member?.firstName || member?.username || "Team member",
-    })
+    }, chatId)
     return sendMessage(token, chatId, "📝 Send the project update as one message.\n\nSend /cancel to stop.")
   }
 
@@ -1277,7 +1416,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   if (area === "sheet" && action === "addrow") {
     const sheet = await db.collection("opsSheets").findOne({ _id: id })
     const headers = getSheetSchema(sheet?.sheetType || "custom").headers
-    await setState(telegramId, { action: "add_sheet_row", sheetId: id })
+    await setState(telegramId, { action: "add_sheet_row", sheetId: id }, chatId)
     return sendMessage(token, chatId, `➕ Send row values separated by |:\n\n${headers.join(" | ")}\n\nSend /cancel to stop.`)
   }
   if (area === "sheet" && action === "delete") {
@@ -1289,14 +1428,14 @@ async function handleCallback(token: string, chatId: number | string, telegramId
 
   if (area === "reminder" && action === "add") {
     if (!(await getMemberTimeZone(telegramId))) {
-      await setState(telegramId, { action: "timezone_for_manual_reminder" })
+      await setState(telegramId, { action: "timezone_for_manual_reminder" }, chatId)
       return sendMessage(token, chatId, timeZonePrompt(), timeZoneButtons(telegramId))
     }
-    await setState(telegramId, { action: "add_reminder" })
+    await setState(telegramId, { action: "add_reminder" }, chatId)
     return sendMessage(token, chatId, "➕ Send reminder like this:\n\nReminder title | YYYY-MM-DD HH:mm | message\n\nSend /cancel to stop.")
   }
   if (area === "reminder" && action === "view") {
-    const reminder = await db.collection("opsReminders").findOne({ _id: id })
+    const reminder = await db.collection("opsReminders").findOne({ _id: id, deliveryScope: "chat", telegramChatId: String(chatId) })
     if (!reminder) return sendReminders(token, chatId)
     return sendMessage(token, chatId, `🔔 ${reminder.title}\n\nDue: ${dateLabel(reminder.dueAt, String(reminder.timeZone || TEAM_TIME_ZONE))}\nStatus: ${reminder.status || "scheduled"}\n\n${reminder.message || ""}`, [
       [{ text: "✅ Mark Done", callback_data: `reminder:done:${id}` }, { text: "🗑 Remove", callback_data: `reminder:delete:${id}` }],
@@ -1304,17 +1443,17 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     ])
   }
   if (area === "reminder" && action === "done") {
-    await db.collection("opsReminders").updateOne({ _id: id }, { $set: { status: "done", updatedAt: new Date() } })
+    await db.collection("opsReminders").updateOne({ _id: id, deliveryScope: "chat", telegramChatId: String(chatId) }, { $set: { status: "done", updatedAt: new Date() } })
     return sendReminders(token, chatId)
   }
   if (area === "reminder" && action === "delete") {
-    await db.collection("opsReminders").deleteOne({ _id: id })
+    await db.collection("opsReminders").deleteOne({ _id: id, deliveryScope: "chat", telegramChatId: String(chatId) })
     return sendReminders(token, chatId)
   }
   if (data === "reminders:list") return sendReminders(token, chatId)
 
   if (area === "payroll" && action === "add") {
-    await setState(telegramId, { action: "add_payroll" })
+    await setState(telegramId, { action: "add_payroll" }, chatId)
     return sendMessage(token, chatId, "➕ Send payroll row like this:\n\nMember | Amount | Project | YYYY-MM-DD\n\nSend /cancel to stop.")
   }
   if (area === "payroll" && action === "paid") {
@@ -1327,12 +1466,91 @@ async function handleCallback(token: string, chatId: number | string, telegramId
 
 async function routeText(token: string, chatId: number | string, telegramId: number, text: string, req: NextRequest, messageDateMs: number, message?: any) {
   const commandText = stripBotCommandSuffix(text)
+  const context = await botPermissions(telegramId, chatId)
+  const setChatCommand = commandText.match(/^\/setchat(?:\s+(.+))?$/i)
+  if (setChatCommand) {
+    if (context.role !== "admin") return sendMessage(token, chatId, botPermissionDeniedMessage(context, "management"))
+    if (!isGroupChatId(chatId)) return sendMessage(token, chatId, "⛔ /setchat must be run inside the Telegram group being configured.")
+    if (!(await telegramUserIsChatAdmin(token, chatId, telegramId))) return sendMessage(token, chatId, "⛔ You must also be a Telegram administrator of this group to change its profile.")
+    const profile = normalizeChatProfile(setChatCommand[1])
+    if (!profile) return sendMessage(token, chatId, "Choose a profile: /setchat launch, /setchat trade, /setchat fee, /setchat finance, or /setchat management.")
+    const configured = await setChatProfile({
+      chatId,
+      profile,
+      title: message?.chat?.title || message?.chat?.username || "",
+      chatType: message?.chat?.type || "group",
+      telegramId,
+    })
+    const enrollment = await prepareGuardEnrollment(token, chatId, telegramId, profile, message)
+    const notifications = configured.notifications.map(chatPurposeLabel)
+    return sendMessage(token, chatId, [
+      `✅ This chat is now the ${chatProfileLabel(profile)}.`,
+      "",
+      `Access: ${profileAccessSummary(profile)}`,
+      `Automatic notifications: ${notifications.length ? notifications.join(", ") : "none"}`,
+      "",
+      `Guard enrollment: ${enrollment.synced.memberCount == null ? "member count unavailable" : `${enrollment.synced.memberCount} Telegram members`} · ${enrollment.synced.administrators} administrator candidate(s) synced`,
+      enrollment.url ? "Existing team members should tap the button once. Telegram membership is verified before access is granted." : "Bot username is missing, so the Guard enrollment button could not be generated.",
+    ].join("\n"), enrollment.url ? [[{ text: "🛡 Join GhostBot Guard", url: enrollment.url }]] : undefined)
+  }
+  if (/^\/chatprofile$/i.test(commandText)) {
+    const profile = await getChatProfile(chatId)
+    if (!profile?.profile) return sendMessage(token, chatId, "This chat is not configured yet. A GhostBot admin can use /setchat.")
+    const notifications = (await listChatSubscriptions(chatId)).map((row: any) => chatPurposeLabel(row.purpose)).filter(Boolean)
+    return sendMessage(token, chatId, `${chatProfileLabel(profile.profile as ChatProfile)}\n\nAccess: ${profileAccessSummary(profile.profile as ChatProfile)}\nAutomatic notifications: ${notifications.length ? notifications.join(", ") : "none"}`)
+  }
+  const guardLinkCommand = commandText.match(/^\/guardlink(?:\s+(show|refresh|revoke))?$/i)
+  if (guardLinkCommand) {
+    if (context.role !== "admin") return sendMessage(token, chatId, botPermissionDeniedMessage(context, "management"))
+    if (!isGroupChatId(chatId)) return sendMessage(token, chatId, "⛔ /guardlink must be run inside the configured Telegram group.")
+    if (!(await telegramUserIsChatAdmin(token, chatId, telegramId))) return sendMessage(token, chatId, "⛔ You must also be a Telegram administrator of this group to manage its Guard enrollment link.")
+    const configuredChat = await getChatProfile(chatId)
+    if (!configuredChat?.profile) return sendMessage(token, chatId, "Configure this group with /setchat before creating a Guard enrollment link.")
+    const action = String(guardLinkCommand[1] || "show").toLowerCase()
+    if (action === "revoke") {
+      const revoked = await revokeGuardEnrollmentLinks(chatId, telegramId)
+      return sendMessage(token, chatId, `✅ Guard enrollment link revoked${revoked.revoked ? "" : "; there was no active link"}. Existing Guard access is unchanged.`)
+    }
+    const enrollment = await prepareGuardEnrollment(token, chatId, telegramId, configuredChat.profile as ChatProfile, message, action === "refresh")
+    if (!enrollment.url) return sendMessage(token, chatId, "The bot username is not configured, so I could not generate the enrollment URL.")
+    return sendMessage(token, chatId, `${action === "refresh" ? "✅ A new Guard enrollment link replaced the previous link." : "🛡 Guard team enrollment"}\n\nTelegram membership is verified before Member access is granted. The link expires ${dateLabel(enrollment.link.expiresAt)}.`, [[{ text: "🛡 Join GhostBot Guard", url: enrollment.url }]])
+  }
   const subscribeCommand = commandText.match(/^\/(subscribe|unsubscribe)(?:\s+(.+))?$/i)
   const naturalLaunchSubscription = /\b(?:make|set|use)\s+this\s+(?:group|chat)\s+(?:as\s+)?(?:the\s+)?launch(?:es)?\s+(?:chat|channel)|\bsend\s+(?:the\s+)?(?:daily\s+|morning\s+)?launch\s+(?:schedule|updates?)\s+to\s+this\s+(?:group|chat)\b/i.test(commandText)
   if (subscribeCommand || naturalLaunchSubscription) {
+    if (context.role !== "admin") return sendMessage(token, chatId, botPermissionDeniedMessage(context, "management"))
+    if (!(await telegramUserIsChatAdmin(token, chatId, telegramId))) return sendMessage(token, chatId, "⛔ You must also be a Telegram administrator of this group to change notifications.")
+    if (naturalLaunchSubscription) {
+      await setChatProfile({ chatId, profile: "launch", title: message?.chat?.title || "", chatType: message?.chat?.type || "group", telegramId })
+      const enrollment = await prepareGuardEnrollment(token, chatId, telegramId, "launch", message)
+      return sendMessage(token, chatId, [
+        "✅ This chat is now the Launch Chat.",
+        "",
+        "Access: launch schedule, launch calculator, natural-language launch management, and this chat's reminders",
+        "Automatic notifications: Launch updates",
+        "",
+        `Guard enrollment: ${enrollment.synced.memberCount == null ? "member count unavailable" : `${enrollment.synced.memberCount} Telegram members`} · ${enrollment.synced.administrators} administrator candidate(s) synced`,
+      ].join("\n"), enrollment.url ? [[{ text: "🛡 Join GhostBot Guard", url: enrollment.url }]] : undefined)
+    }
     const active = naturalLaunchSubscription || subscribeCommand?.[1].toLowerCase() === "subscribe"
-    const purpose = naturalLaunchSubscription ? "launches" : normalizeChatPurpose(subscribeCommand?.[2])
-    if (!purpose) return sendMessage(token, chatId, "Choose an update type: /subscribe launches, /subscribe daily, or /subscribe fees.")
+    const requestedPurpose = String(subscribeCommand?.[2] || "").trim()
+    if (active && /finance|financial/i.test(requestedPurpose)) {
+      return sendMessage(token, chatId, "Finance Chat automatic reports are disabled. Finance functions remain available on demand.")
+    }
+    if (!active && requestedPurpose.toLowerCase() === "all") {
+      for (const purpose of ["launches", "finance", "payroll", "reminders", "fees"] as const) {
+        await setChatSubscription({ chatId, purpose, active: false, title: message?.chat?.title || "", chatType: message?.chat?.type || "group", telegramId })
+      }
+      return sendMessage(token, chatId, "✅ All automatic notifications are disabled for this chat. Its permission profile is unchanged.")
+    }
+    const purpose = naturalLaunchSubscription ? "launches" : normalizeChatPurpose(requestedPurpose)
+    if (!purpose) return sendMessage(token, chatId, /daily|trade|performance/i.test(requestedPurpose)
+      ? "Trade Floor automatic daily updates have been removed. Trade Floor only receives messages and reminders explicitly created there."
+      : "Choose an update type: launches or fees.")
+    if (active && !context.profile) return sendMessage(token, chatId, "⛔ Configure this group with /setchat before changing its automatic notifications.")
+    if (active && context.profile && !notificationAllowedForProfile(context.profile, purpose)) {
+      return sendMessage(token, chatId, `⛔ ${chatPurposeLabel(purpose)} cannot be enabled in a ${chatProfileLabel(context.profile)}. Change the chat profile with /setchat if this group has a different purpose.`)
+    }
     await setChatSubscription({
       chatId,
       purpose,
@@ -1345,8 +1563,8 @@ async function routeText(token: string, chatId: number | string, telegramId: num
       ? "This is now the private Fee Inbox. Forward standardized fee/cashout messages here, and I’ll also post new revenue-wallet receipts."
       : purpose === "launches"
         ? `This chat is subscribed to ${chatPurposeLabel(purpose)}.\n\nI’ll post the complete launch schedule here each morning in ET.`
-        : purpose === "performance"
-          ? `This chat is subscribed to ${chatPurposeLabel(purpose)}.\n\nI’ll post the daily project revenue and performance update only in subscribed chats.`
+        : purpose === "finance"
+          ? `This chat is subscribed to ${chatPurposeLabel(purpose)}.\n\nI’ll post one summarized finance report here.`
           : `This chat is subscribed to ${chatPurposeLabel(purpose)}.`
     return sendMessage(token, chatId, active
       ? `✅ ${confirmation}`
@@ -1369,63 +1587,95 @@ async function routeText(token: string, chatId: number | string, telegramId: num
     }
     const saved = await saveMemberTimeZone(telegramId, requested, "bot")
     if (!saved.ok) return sendMessage(token, chatId, "⚠️ I could not recognize that timezone. Try /timezone America/Los_Angeles or use /timezone to choose.")
-    const state = await takeState(telegramId)
+    const state = await takeState(telegramId, chatId)
     if (state?.action === "timezone_for_reminder" && state.pendingText) {
       await clearState(telegramId)
       await sendMessage(token, chatId, `✅ Timezone saved as ${teamZoneLabel(saved.timeZone)}. Continuing your reminder…`)
-      return sendAiResponse(token, chatId, telegramId, String(state.pendingText), message)
+      return sendAiResponse(token, chatId, telegramId, String(state.pendingText), message, context)
     }
     if (state?.action === "timezone_for_manual_reminder") {
-      await setState(telegramId, { action: "add_reminder" })
+      await setState(telegramId, { action: "add_reminder" }, chatId)
       return sendMessage(token, chatId, `✅ Timezone saved as ${teamZoneLabel(saved.timeZone)}.\n\n➕ Send reminder like this:\n\nReminder title | YYYY-MM-DD HH:mm | message\n\nSend /cancel to stop.`)
     }
     return sendMessage(token, chatId, `✅ Your timezone is now ${saved.timeZone} (${teamZoneLabel(saved.timeZone)}).`)
   }
   const aiCommand = aiCommandText(commandText)
   if (text === "🚀 Launch Calc" || isBotCommand(text, "launchcalc")) {
+    if (!(await requireCapability(token, context, "launch"))) return
     return sendLaunchCalculatorStart(token, chatId, telegramId)
   }
   if (aiCommand !== null) {
+    const policy = aiPermissionPolicy(context)
+    if (!(await requireCapability(token, context, policy.capability))) return
     await clearState(telegramId)
-    if (aiCommand) return sendAiResponse(token, chatId, telegramId, aiCommand, message)
-    await setState(telegramId, { action: "ai", startedAt: messageDateMs || Date.now() })
+    if (aiCommand) return sendAiResponse(token, chatId, telegramId, aiCommand, message, context)
+    await setState(telegramId, { action: "ai", startedAt: messageDateMs || Date.now() }, chatId)
     return sendMessage(token, chatId, "🧠 Send your AI question now.\n\nI will answer only the next message sent after this command.\n\nSend /cancel to stop.")
   }
 
   if (text === "🧠 AI") {
+    const policy = aiPermissionPolicy(context)
+    if (!(await requireCapability(token, context, policy.capability))) return
     await clearState(telegramId)
-    await setState(telegramId, { action: "ai", startedAt: messageDateMs || Date.now() })
+    await setState(telegramId, { action: "ai", startedAt: messageDateMs || Date.now() }, chatId)
     return sendMessage(token, chatId, "🧠 Send your AI question now.\n\nI will answer only the next message sent after this command.\n\nSend /cancel to stop.")
   }
 
-  if (await processState(token, chatId, telegramId, text, messageDateMs, message)) return
+  if (await processState(token, chatId, telegramId, text, messageDateMs, message, context)) return
 
   if (text === "🏠 Home" || isBotCommand(text, "menu", "help", "commands")) return sendMessage(token, chatId, helpMessage())
-  if (/^\/log(?:@\w+)?(?:\s|$)/i.test(text)) return logProjectIncome(token, chatId, text)
-  if (text === "📁 Projects" || text === "🟡 Projects" || isBotCommand(text, "projects")) return sendProjects(token, chatId)
+  if (/^\/log(?:@\w+)?(?:\s|$)/i.test(text)) {
+    if (!(await requireCapability(token, context, "finance"))) return
+    return logProjectIncome(token, chatId, text)
+  }
+  if (text === "📁 Projects" || text === "🟡 Projects" || isBotCommand(text, "projects")) {
+    if (!(await requireCapability(token, context, "trade"))) return
+    return sendProjects(token, chatId)
+  }
   if (text === "📈 Profit" || isBotCommand(text, "profit")) {
+    if (!(await requireCapability(token, context, "finance"))) return
     return sendAsyncResponse(token, chatId, async () => ({
       text: await answerOpsBot("profit today", telegramId),
     }), "📈 Checking…")
   }
-  if (text === "💸 Payroll" || isBotCommand(text, "payroll")) return sendPayroll(token, chatId)
+  if (text === "💸 Payroll" || isBotCommand(text, "payroll")) {
+    if (!(await requireCapability(token, context, "finance"))) return
+    return sendPayroll(token, chatId)
+  }
   if (isBotCommand(text, "fees")) {
+    if (!(await requireCapability(token, context, "finance"))) return
     const day = await listRevenueDay()
     return sendMessage(token, chatId, `💰 Revenue Inbox today\n\nExpected fees: ${day.summary.fees}\nVerified: ${day.summary.confirmedFees}\nNeeds review: ${day.summary.unresolvedFees}\nUnclassified receipts: ${day.summary.unclassifiedReceipts}\nRecognized: ${Number(day.summary.recognizedUsd).toLocaleString("en-US", { style: "currency", currency: "USD" })}`, [[{ text: "Open Revenue Inbox", url: `${appBaseUrl(req)}/admin/revenue` }]])
   }
   if (isBotCommand(text, "report") || /^\/report(?:@\w+)?(?:\s|$)/i.test(text)) {
+    if (!(await requireCapability(token, context, "finance"))) return
     return sendPayrollReport(token, chatId, text, req)
   }
-  if (text === "📅 Calendar" || text === "🟠 Calendar" || isBotCommand(text, "calendar")) return sendCalendar(token, chatId)
-  if (text === "🔔 Reminders" || isBotCommand(text, "reminders")) return sendReminders(token, chatId)
-  if (isBotCommand(text, "setreminder")) {
-    const reminderRequest = commandText.replace(/^\/setreminder(?:\s+|$)/i, "Remind the team ").trim()
-    return sendAiResponse(token, chatId, telegramId, reminderRequest, message)
+  if (text === "📅 Calendar" || text === "🟠 Calendar" || isBotCommand(text, "calendar")) {
+    const capability: BotCapability = context.profile === "trade" ? "trade" : "launch"
+    if (!(await requireCapability(token, context, capability))) return
+    return sendCalendar(token, chatId)
   }
-  if (text === "📝 Notes" || isBotCommand(text, "notes")) return sendProjectNotes(token, chatId, "all")
+  if (text === "🔔 Reminders" || isBotCommand(text, "reminders")) {
+    const capability: BotCapability = context.profile === "launch" ? "launch" : "trade"
+    if (!(await requireCapability(token, context, capability))) return
+    return sendReminders(token, chatId)
+  }
+  if (isBotCommand(text, "setreminder")) {
+    const capability: BotCapability = context.profile === "launch" ? "launch" : "trade"
+    if (!(await requireCapability(token, context, capability))) return
+    const reminderRequest = commandText.replace(/^\/setreminder(?:\s+|$)/i, "Remind the team ").trim()
+    return sendAiResponse(token, chatId, telegramId, reminderRequest, message, context)
+  }
+  if (text === "📝 Notes" || isBotCommand(text, "notes")) {
+    if (!(await requireCapability(token, context, "trade"))) return
+    return sendProjectNotes(token, chatId, "all")
+  }
 
   if (await maybeRequestReminderTimeZone(token, chatId, telegramId, text)) return
-  const aiOptions = await buildAiOptions(telegramId, chatId, message)
+  const policy = aiPermissionPolicy(context)
+  if (!(await requireCapability(token, context, policy.capability))) return
+  const aiOptions = await buildAiOptions(telegramId, chatId, message, context)
   return sendAsyncResponse(token, chatId, async () => {
     const proposed = await maybeProposeAction(text, telegramId, aiOptions)
     if (proposed) {
@@ -1436,6 +1686,9 @@ async function routeText(token: string, chatId: number | string, telegramId: num
         ] : undefined),
       }
     }
+    if (policy.dataScope === "launch") return { text: "I can add, update, reschedule, or cancel launches here. Use /calendar to view the schedule or /launchcalc for launch math." }
+    if (policy.dataScope === "trade") return { text: "I can update project operations, post trader notes, and create reminders for this Trade Floor. Financial and revenue questions are unavailable here." }
+    if (context.profile === "fee") return { text: "Use the receipt and fee controls in this chat to review incoming revenue." }
     return { text: await answerOpsBot(text, telegramId, aiOptions) }
   }, "🧠 Working on it…")
 }
@@ -1445,6 +1698,18 @@ export async function POST(req: NextRequest) {
   if (!token) return NextResponse.json({ error: "Telegram bot token missing" }, { status: 500 })
 
   const update = await req.json().catch(() => ({}))
+  if (update.chat_member) {
+    await handleGuardChatMemberUpdate(update.chat_member).catch((error) => {
+      console.error("[guard-enrollment] chat member sync failed", error)
+    })
+    return NextResponse.json({ ok: true })
+  }
+  if (update.my_chat_member) {
+    await handleGuardBotMembershipUpdate(update.my_chat_member).catch((error) => {
+      console.error("[guard-enrollment] bot membership sync failed", error)
+    })
+    return NextResponse.json({ ok: true })
+  }
   const callback = update.callback_query
   const message = update.message || update.edited_message || callback?.message
   const text = String(update.message?.text || update.message?.caption || update.edited_message?.text || update.edited_message?.caption || "").trim()
@@ -1488,6 +1753,8 @@ export async function POST(req: NextRequest) {
       const ok = await ensureAccess({ token, chatId, telegramId, text, profile: from, req })
       if (ok) await hostGroupIfAllowed(chat, from)
       if (ok && telegramId) {
+        const context = await botPermissions(telegramId, chatId)
+        if (!(await requireCapability(token, context, "finance"))) return NextResponse.json({ ok: true })
         const created = await createForwardedFeeEvent({ chatId, messageId: Number(message.message_id), text, telegramId, messageDate: new Date(forwardedDateMs) })
         const fee = created.fee
         if (created.duplicate) await sendMessage(token, chatId, "This forwarded message is already in Revenue Inbox.")

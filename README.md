@@ -267,6 +267,26 @@ The main Telegram routes are:
 
 You can connect the webhook from the admin settings page.
 
+### Telegram chat profiles and permissions
+
+Guard Team members have either a `Member` or `Admin` role. Set existing admins in Admin → Guard Team before configuring Telegram groups. A user can perform an action only when both their member role and the current chat profile allow it.
+
+Run one of these commands inside each Telegram group. The caller must be both a GhostBot admin and a Telegram group administrator:
+
+- `/setchat launch` — launch schedule, launch calculator, natural-language launch changes, and chat-specific reminders; enables the morning launch schedule.
+- `/setchat trade` — project operations, trader notes, and chat-specific reminders; no automatic digest.
+- `/setchat fee` — admin-only receipt, fee, and consolidation review; enables individual fee/receipt alerts.
+- `/setchat finance` — admin-only revenue, profit, payroll, and reporting; no automatic notifications.
+- `/setchat management` — all functions for admins; no automatic notifications.
+
+`/setchat` also creates a 30-day, group-bound Guard enrollment button and syncs the group's Telegram administrators into the Admin → Guard Team directory as candidates. Telegram does not expose a complete existing member list to bots, so ordinary existing members enroll by tapping that button once. GhostBot verifies that each person is currently in the configured group before granting the default `Member` role. A Telegram administrator is never promoted to GhostBot `Admin` automatically; promote them explicitly in the Guard Team dashboard.
+
+After setup, future joins and leaves are synchronized from Telegram. A member added through group enrollment loses that enrollment-managed access after leaving every configured team group. A role explicitly assigned in the dashboard remains admin-managed. Use `/guardlink show`, `/guardlink refresh`, or `/guardlink revoke` inside the configured group to manage its link. The bot must be a Telegram group administrator, and reconnecting the webhook after this release enables the required `chat_member` updates.
+
+`/chatprofile` shows the effective group profile. `/subscribe launches` and `/subscribe fees` can toggle the matching profile's default alert after setup; a notification cannot be enabled in an incompatible profile. `/unsubscribe all` disables every automatic notification without changing the profile. Trade Floor and Finance Chat have no automatic reports.
+
+Natural-language AI uses the same permission boundary as commands and buttons. Launch Chat receives only launch-safe project fields and launch actions; Trade Floor receives only operational project fields and trade actions. Pending actions and reminders are bound to the chat where they were created.
+
 ## Active API groups
 
 - `/api/admin/*` for admin auth, settings, channels, broadcasts, backup, cron, guard team, profile, and search

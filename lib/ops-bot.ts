@@ -244,6 +244,18 @@ export type OpsAiOptions = {
   conversation?: OpsConversationContext
   referenceTime?: string
   requestTimeZone?: string
+  dataScope?: "launch" | "trade" | "full"
+  allowedActionTypes?: string[]
+}
+
+function scopedActionPayload(actionType: string, payload: Record<string, any>, scope: OpsAiOptions["dataScope"]) {
+  if (!scope || scope === "full") return payload
+  const allowed = actionType === "create_reminder"
+    ? ["title", "message", "dueAt", "timeZone", "deliveryScope", "telegramChatId", "targetChatTitle"]
+    : scope === "launch"
+      ? ["projectName", "name", "owner", "referrer", "status", "service", "startDate", "launchDate", "endDate", "notes", "tags", "_candidates"]
+      : ["projectName", "name", "status", "service", "notes", "tags", "_candidates"]
+  return Object.fromEntries(Object.entries(payload).filter(([key]) => allowed.includes(key)))
 }
 
 function referenceDate(options: OpsAiOptions) {
@@ -971,10 +983,16 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
       needsChoice: false,
     }
   }
-  const [projects, sheets] = await Promise.all([
+  const [projectRows, sheetRows] = await Promise.all([
     db.collection("opsProjects").find({}).toArray(),
     db.collection("opsSheets").find({}).toArray(),
   ])
+  const projects = options.dataScope === "launch"
+    ? projectRows.map((project: any) => ({ _id: project._id, name: project.name, owner: project.owner, referrer: project.referrer, status: project.status, service: project.service, startDate: project.startDate, launchDate: project.launchDate, endDate: project.endDate, notes: project.notes, tags: project.tags, createdAt: project.createdAt, updatedAt: project.updatedAt }))
+    : options.dataScope === "trade"
+      ? projectRows.map((project: any) => ({ _id: project._id, name: project.name, status: project.status, service: project.service, notes: project.notes, tags: project.tags, createdAt: project.createdAt, updatedAt: project.updatedAt }))
+      : projectRows
+  const sheets = options.dataScope && options.dataScope !== "full" ? [] : sheetRows
   const projectNames = projects.slice(0, 40).map((project: any) => project.name).filter(Boolean)
   const sheetRefs = sheets.slice(0, 60).map((sheet: any) => ({
     title: cleanSheetTitle(sheet),
@@ -984,7 +1002,13 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
   }))
 
   let plan: any = inferCapabilityAction(text, projects, requestTimeZone, requestNow)
+  if (plan && options.allowedActionTypes?.length && !options.allowedActionTypes.includes(String(plan.actionType || ""))) {
+    return { actionId: "", message: "⛔ That action is outside this chat's permitted functions.", needsChoice: false }
+  }
   if (!plan) {
+    const supportedActions = options.allowedActionTypes?.length
+      ? [...options.allowedActionTypes, "none"]
+      : ["create_project", "update_project", "create_reminder", "create_payroll", "add_sheet_row", "delete_project", "delete_reminder", "delete_payroll", "delete_sheet", "delete_sheet_row", "none"]
     const raw = await aiChat([
       {
         role: "system",
@@ -993,7 +1017,7 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
           "Decide whether the user wants to invoke one supported capability or is only asking a question.",
           "Return JSON only. No markdown.",
           "If the user is only asking to show, list, explain, summarize, or calculate data, return {\"actionType\":\"none\"}.",
-          "Supported actionType values: create_project, update_project, create_reminder, create_payroll, add_sheet_row, delete_project, delete_reminder, delete_payroll, delete_sheet, delete_sheet_row, none.",
+          `Supported actionType values: ${supportedActions.join(", ")}.`,
           "Capability semantics:",
           "• The launch calendar is backed by a project's launchDate. Requests to add, schedule, move, or reschedule a launch update an existing project, or create a minimally populated project when the named project does not exist.",
           "• Reminders create scheduled Telegram deliveries. They are different from project launches.",
@@ -1046,9 +1070,12 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
   const actionType = String(plan?.actionType || "none")
   if (actionType === "none") return null
   if (!["create_project", "update_project", "create_reminder", "create_payroll", "add_sheet_row", "delete_project", "delete_reminder", "delete_payroll", "delete_sheet", "delete_sheet_row"].includes(actionType)) return null
+  if (options.allowedActionTypes?.length && !options.allowedActionTypes.includes(actionType)) {
+    return { actionId: "", message: "⛔ That action is outside this chat's permitted functions.", needsChoice: false }
+  }
 
   const rawPayload = plan?.payload && typeof plan.payload === "object" ? plan.payload : {}
-  const payload = normalizeActionDates(actionType, rawPayload, text, requestTimeZone, requestNow)
+  const payload = scopedActionPayload(actionType, normalizeActionDates(actionType, rawPayload, text, requestTimeZone, requestNow), options.dataScope)
   if (actionType === "create_reminder") {
     payload.timeZone = explicitTimeZone || payload.timeZone || memberTimeZone || TEAM_TIME_ZONE
     const normalized = normalizeReminderDueAt(payload, requestNow)
@@ -1071,12 +1098,15 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
   const now = new Date()
   const record = {
     telegramId: telegramId || null,
+    chatId: options.chatId == null ? null : String(options.chatId),
     request: text,
     actionType,
     summary,
     payload: resolved.payload,
     preview: resolved.preview,
     warnings,
+    permissionScope: options.dataScope || "full",
+    allowedActionTypes: options.allowedActionTypes || null,
     needsChoice: resolved.needsChoice,
     status: "pending",
     createdAt: now,
@@ -1176,13 +1206,19 @@ export async function rejectOpsAiAction(actionId: string, telegramId?: number | 
   return formatBotText("❌ Refused. I did not change anything.", { allowEmoji: true })
 }
 
-export async function executeOpsAiAction(actionId: string, telegramId?: number | null) {
+export async function executeOpsAiAction(actionId: string, telegramId?: number | null, options: { allowedActionTypes?: string[]; currentChatId?: number | string; dataScope?: OpsAiOptions["dataScope"] } = {}) {
   const db = await getDb()
   const action = await db.collection("opsAiActions").findOne({ _id: actionId })
   if (!action || (telegramId && action.telegramId && Number(action.telegramId) !== Number(telegramId))) {
     return "⚠️ I could not find that pending action."
   }
   if (action.status !== "pending") return `⚠️ This action is already ${action.status}.`
+  if (action.chatId && options.currentChatId != null && String(action.chatId) !== String(options.currentChatId)) return "⛔ This action must be confirmed in the chat where it was created."
+  if (action.permissionScope && options.dataScope && String(action.permissionScope) !== String(options.dataScope)) return "⛔ This action's chat permissions changed. Please create a new request."
+  const recordedAllowed = Array.isArray(action.allowedActionTypes) ? action.allowedActionTypes.map(String) : []
+  if ((recordedAllowed.length && !recordedAllowed.includes(String(action.actionType))) || (options.allowedActionTypes?.length && !options.allowedActionTypes.includes(String(action.actionType)))) {
+    return "⛔ That action is no longer permitted in this chat."
+  }
 
   const now = new Date()
   const payload = action.payload || {}

@@ -38,6 +38,6 @@ The QuickNode management API key is needed only to create/manage streams or webh
 
 - Production public app URL for QuickNode delivery targets.
 - A new random `QUICKNODE_WEBHOOK_SECRET`.
-- Telegram Fee Inbox chat ID, or run `/subscribe fees` in that private team group.
+- Configure the private Telegram group with `/setchat fee`; this applies Fee Inbox permissions and enables receipt alerts together.
 - Treasury wallet address if outgoing treasury-transfer verification should be enabled later.
 - One real sample payload from each QuickNode network to validate network-specific transfer fields before enabling production alerts.

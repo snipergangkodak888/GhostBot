@@ -9,12 +9,26 @@ export type TeamProfile = {
   languageCode?: string
 }
 
+export const TEAM_ACCESS_ROLES = ["member", "admin"] as const
+export type TeamAccessRole = typeof TEAM_ACCESS_ROLES[number]
+
+export function normalizeTeamAccessRole(value: unknown): TeamAccessRole {
+  return String(value || "").trim().toLowerCase() === "admin" ? "admin" : "member"
+}
+
 export function generateGuardCode() {
   return `GHOST-${randomBytes(4).toString("hex").toUpperCase()}`
 }
 
 function normalizeCode(code: string) {
   return String(code || "").trim().toUpperCase().replace(/\s+/g, "")
+}
+
+export function guardCodeFromText(text: string) {
+  const clean = String(text || "").trim()
+  const startCode = clean.match(/^\/start(?:@\w+)?\s+(.+)$/i)?.[1]
+  const value = normalizeCode(startCode || clean)
+  return /^GHOST-[A-F0-9]{8}$/.test(value) ? value : ""
 }
 
 function isExpired(value?: string | Date | null) {
@@ -66,7 +80,7 @@ export async function saveMemberTimeZone(telegramId: number | string, value: unk
   return { ok: true as const, timeZone }
 }
 
-export async function createGuardInviteCode(daysValid = 7) {
+export async function createGuardInviteCode(daysValid = 7, accessRole: TeamAccessRole = "member") {
   const db = await getDb()
   const now = new Date()
   const expiresAt = daysValid > 0 ? new Date(now.getTime() + daysValid * 24 * 60 * 60 * 1000).toISOString() : null
@@ -79,6 +93,7 @@ export async function createGuardInviteCode(daysValid = 7) {
   const doc = {
     code,
     status: "unused",
+    accessRole: normalizeTeamAccessRole(accessRole),
     expiresAt,
     createdAt: now,
     updatedAt: now,
@@ -127,6 +142,7 @@ export async function redeemGuardInviteCode(params: {
         lastName: profile.lastName || "",
         username: profile.username || "",
         languageCode: profile.languageCode || "en",
+        accessRole: normalizeTeamAccessRole(invite.accessRole),
         status: "active",
         inviteCode: code,
         inviteCodeId: invite._id,
@@ -145,12 +161,37 @@ export async function redeemGuardInviteCode(params: {
   return { ok: true }
 }
 
+export async function updateGuardMemberRole(id: string, accessRole: TeamAccessRole, actor = "admin") {
+  const db = await getDb()
+  const member = await db.collection("guardMembers").findOne({ _id: id })
+  if (!member) return { ok: false as const, error: "Member not found" }
+  const role = normalizeTeamAccessRole(accessRole)
+  const now = new Date()
+  await db.collection("guardMembers").updateOne(
+    { _id: id },
+    { $set: { accessRole: role, enrollmentManaged: false, updatedAt: now } },
+  )
+  await db.collection("opsPermissionAudit").insertOne({
+    action: "update_member_role",
+    memberId: String(id),
+    telegramId: member.telegramId,
+    previousRole: normalizeTeamAccessRole(member.accessRole),
+    accessRole: role,
+    actor,
+    createdAt: now,
+  })
+  return { ok: true as const, accessRole: role }
+}
+
 export async function deactivateGuardMember(id: string) {
   const db = await getDb()
   const member = await db.collection("guardMembers").findOne({ _id: id })
   if (!member) return { ok: false, error: "Member not found" }
   const now = new Date()
-  await db.collection("guardMembers").updateOne({ _id: id }, { $set: { status: "deactivated", deactivatedAt: now, updatedAt: now } })
+  await db.collection("guardMembers").updateOne(
+    { _id: id },
+    { $set: { status: "deactivated", enrollmentManaged: false, deactivatedAt: now, updatedAt: now } },
+  )
   await db.collection("users").updateOne({ telegramId: member.telegramId }, { $set: { guardAccess: "deactivated", updatedAt: now } })
   return { ok: true }
 }

@@ -20,6 +20,13 @@ function responseText(data) {
   return (data.messages || []).map((message) => message.text || "").join("\n")
 }
 
+function responseButtonUrls(data) {
+  return (data.messages || []).flatMap((message) => message.replyMarkup?.inline_keyboard || [])
+    .flatMap((row) => row || [])
+    .map((button) => String(button?.url || ""))
+    .filter(Boolean)
+}
+
 try {
   server = await ensureBotLabServer(config, { quiet: true })
   await resetBotLab(config)
@@ -37,13 +44,16 @@ try {
       ? { callbackData: scenario.callbackData }
       : { text: scenario.text })
     const text = responseText(data)
+    const buttonUrls = responseButtonUrls(data)
     const missing = (scenario.expectIncludes || []).filter((expected) => !text.includes(expected))
     const unexpected = (scenario.expectExcludes || []).filter((expected) => text.includes(expected))
-    if (missing.length || unexpected.length) {
+    const missingButtonUrls = (scenario.expectButtonUrlIncludes || []).filter((expected) => !buttonUrls.some((url) => url.includes(expected)))
+    if (missing.length || unexpected.length || missingButtonUrls.length) {
       failed++
       console.log(`FAIL  ${scenario.name}`)
       if (missing.length) console.log(`      Missing: ${missing.join(", ")}`)
       if (unexpected.length) console.log(`      Unexpected: ${unexpected.join(", ")}`)
+      if (missingButtonUrls.length) console.log(`      Missing button URL: ${missingButtonUrls.join(", ")}`)
       console.log(`      Response: ${text.replace(/\n/g, " ").slice(0, 240)}`)
     } else {
       console.log(`PASS  ${scenario.name}`)

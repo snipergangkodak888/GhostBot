@@ -160,13 +160,14 @@
     "expectIncludes": ["two different dates", "tomorrow is", "2099-08-31", "Which date should I use"]
   },
   {
-    "name": "subscribes a group to launch schedules",
+    "name": "configures a Launch Chat with its default schedule",
     "telegramId": 990000099,
     "chatId": 990000987,
     "chatType": "group",
-    "text": "/subscribe launches",
+    "text": "/setchat launch",
     "resetBefore": true,
-    "expectIncludes": ["subscribed to Launch updates", "each morning in ET"]
+    "expectIncludes": ["Launch Chat", "Automatic notifications: Launch updates", "Guard enrollment:"],
+    "expectButtonUrlIncludes": ["https://t.me/ghostbot_local_lab?start=guard_"]
   },
   {
     "name": "lists launch schedule subscriptions",
@@ -185,20 +186,68 @@
     "expectIncludes": ["no longer subscribed to Launch updates"]
   },
   {
-    "name": "subscribes a chat to the daily project update",
+    "name": "resubscribes a Launch Chat to launch schedules",
+    "telegramId": 990000099,
+    "chatId": 990000987,
+    "chatType": "group",
+    "text": "/subscribe launches",
+    "expectIncludes": ["subscribed to Launch updates", "each morning in ET"]
+  },
+  {
+    "name": "configures a Trade Floor without automatic updates",
+    "telegramId": 990000099,
+    "chatId": 990000988,
+    "chatType": "group",
+    "text": "/setchat trade",
+    "resetBefore": true,
+    "expectIncludes": ["Trade Floor", "Automatic notifications: none"]
+  },
+  {
+    "name": "rejects the removed daily Trade Floor digest",
     "telegramId": 990000099,
     "chatId": 990000988,
     "chatType": "group",
     "text": "/subscribe daily",
-    "resetBefore": true,
-    "expectIncludes": ["subscribed to Daily project updates", "only in subscribed chats"]
+    "expectIncludes": ["Trade Floor automatic daily updates have been removed"]
   },
   {
-    "name": "unsubscribes a chat from the daily project update",
+    "name": "configures a Launch Chat with launch notifications",
     "telegramId": 990000099,
     "chatId": 990000988,
     "chatType": "group",
-    "text": "/unsubscribe daily",
-    "expectIncludes": ["no longer subscribed to Daily project updates"]
+    "text": "/setchat launch",
+    "expectIncludes": ["Launch Chat", "Automatic notifications: Launch updates"]
+  },
+  {
+    "name": "blocks revenue commands inside a Launch Chat",
+    "telegramId": 990000099,
+    "chatId": 990000988,
+    "chatType": "group",
+    "text": "/fees",
+    "expectIncludes": ["Financial, revenue, receipt, and payroll information is not available"]
+  },
+  {
+    "name": "rejects the disabled automatic finance report",
+    "telegramId": 990000099,
+    "chatId": 990000988,
+    "chatType": "group",
+    "text": "/subscribe finance",
+    "expectIncludes": ["Finance Chat automatic reports are disabled"]
+  },
+  {
+    "name": "blocks revenue callbacks inside a Launch Chat",
+    "telegramId": 990000099,
+    "chatId": 990000988,
+    "chatType": "group",
+    "callbackData": "receipt:classify:not-a-real-receipt",
+    "expectIncludes": ["Financial, revenue, receipt, and payroll information is not available"]
+  },
+  {
+    "name": "allows natural-language launch actions inside a Launch Chat",
+    "telegramId": 990000099,
+    "chatId": 990000988,
+    "chatType": "group",
+    "text": "/ai launch Permissions Test Project tomorrow at 3pm ET",
+    "expectIncludes": ["Action: Create project", "Permissions Test", "Confirm before I change anything?"]
   }
 ]

@@ -17,13 +17,6 @@ function usd(value: unknown) {
   return value == null ? "Awaiting valuation" : Number(value).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 })
 }
 
-function feeInboxChats(subscribed: Array<{ chatId: string | number; kind?: string; label?: string }>) {
-  const chats = [...subscribed]
-  const configured = String(process.env.FEE_INBOX_CHAT_ID || "").trim()
-  if (configured && !chats.some((chat) => String(chat.chatId) === configured)) chats.push({ chatId: configured, kind: configured.startsWith("-") ? "group" : "direct", label: "Fee Inbox" })
-  return chats
-}
-
 export function receiptClassificationButtons(receiptId: string, transactionUrl?: string | null) {
   return [
     [{ text: "🏷 Classify revenue", callback_data: `receipt:classify:${receiptId}` }, { text: "↔️ Internal", callback_data: `fee:internal:${receiptId}` }],
@@ -50,10 +43,8 @@ export function formatConsolidationCandidate(batch: any) {
 }
 
 export async function isFeeInboxChat(chatId: number | string) {
-  const configured = String(process.env.FEE_INBOX_CHAT_ID || "").trim()
-  if (configured && configured === String(chatId)) return true
   const db = await getDb()
-  return Boolean(await db.collection("opsChatSubscriptions").findOne({ chatId: String(chatId), purpose: "fees", status: "active" }))
+  return Boolean(await db.collection("opsChatProfiles").findOne({ chatId: String(chatId), profile: "fee", status: "active" }))
 }
 
 export async function feeProjectButtons(feeId: string, limit = 8) {
@@ -90,8 +81,7 @@ export function formatFeeExpectation(fee: RevenueFeeEvent) {
 }
 
 export async function notifyFeeInboxReceipt(receipt: RevenueReceipt) {
-  const [token, subscribed] = await Promise.all([getTelegramBotToken(), getSubscribedChats("fees")])
-  const chats = feeInboxChats(subscribed)
+  const [token, chats] = await Promise.all([getTelegramBotToken(), getSubscribedChats("fees")])
   if (!token || !chats.length) return { sent: 0 }
   const transactionUrl = revenueTransactionUrl(receipt.chain, receipt.transactionHash)
   const text = [
@@ -122,8 +112,7 @@ export async function notifyFeeInboxReceipt(receipt: RevenueReceipt) {
 }
 
 export async function notifyConsolidationCandidate(batch: any) {
-  const [token, subscribed] = await Promise.all([getTelegramBotToken(), getSubscribedChats("fees")])
-  const chats = feeInboxChats(subscribed)
+  const [token, chats] = await Promise.all([getTelegramBotToken(), getSubscribedChats("fees")])
   if (!token || !chats.length || !batch?._id) return { sent: 0 }
   let sent = 0
   for (const chat of chats) {
@@ -140,8 +129,7 @@ export async function notifyConsolidationCandidate(batch: any) {
 }
 
 export async function notifyFeeInboxTreasuryReceipt(receipt: RevenueReceipt, reconciliation?: { matched?: boolean } | null) {
-  const [token, subscribed] = await Promise.all([getTelegramBotToken(), getSubscribedChats("fees")])
-  const chats = feeInboxChats(subscribed)
+  const [token, chats] = await Promise.all([getTelegramBotToken(), getSubscribedChats("fees")])
   if (!token || !chats.length) return { sent: 0 }
   const transactionUrl = revenueTransactionUrl(receipt.chain, receipt.transactionHash)
   const text = [

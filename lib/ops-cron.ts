@@ -1,5 +1,4 @@
 import { getDb } from "@/lib/db"
-import { calculateSheetFinancials } from "@/lib/ops-sheets"
 import { getTelegramBotToken, sendTelegramText } from "@/lib/telegram-bot"
 import { formatTeamDateTime, nextRecurringDueAt, TEAM_TIME_ZONE } from "@/lib/team-timezone"
 import { getSubscribedChats } from "@/lib/chat-subscriptions"
@@ -25,25 +24,6 @@ function estDateKey(date = new Date()) {
   return `${value("year")}-${value("month")}-${value("day")}`
 }
 
-function estDateLabel(date = new Date()) {
-  return new Intl.DateTimeFormat("en-US", {
-    timeZone: EST_TIME_ZONE,
-    weekday: "long",
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  }).format(date)
-}
-
-function money(value: number) {
-  return Number(value || 0).toLocaleString("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
-  })
-}
-
 function escapeHtml(value: unknown) {
   return String(value || "")
     .replace(/&/g, "&amp;")
@@ -65,39 +45,6 @@ async function claimDelivery(key: string, type: string) {
   const now = new Date()
   await db.collection("opsCronDeliveries").insertOne({ key, type, createdAt: now, updatedAt: now })
   return true
-}
-
-async function getRecipients(extraChatId?: string) {
-  const db = await getDb()
-  const [members, groups] = await Promise.all([
-    db.collection("guardMembers").find({ status: "active" }).toArray(),
-    db.collection("opsHostedGroups").find({ status: "active" }).toArray(),
-  ])
-  const recipients = new Map<string, CronRecipient>()
-
-  for (const member of members) {
-    if (!member.telegramId) continue
-    recipients.set(String(member.telegramId), {
-      chatId: Number(member.telegramId),
-      kind: "member",
-      label: member.username ? `@${member.username}` : [member.firstName, member.lastName].filter(Boolean).join(" ") || String(member.telegramId),
-    })
-  }
-
-  for (const group of groups) {
-    if (!group.chatId) continue
-    recipients.set(String(group.chatId), {
-      chatId: group.chatId,
-      kind: "group",
-      label: group.title || String(group.chatId),
-    })
-  }
-
-  if (extraChatId) {
-    recipients.set(String(extraChatId), { chatId: extraChatId, kind: "direct", label: String(extraChatId) })
-  }
-
-  return Array.from(recipients.values())
 }
 
 function directRecipient(reminder: any): CronRecipient[] | null {
@@ -143,7 +90,15 @@ async function processDueReminders(token: string, now: Date) {
       continue
     }
 
-    const recipients = directRecipient(reminder) || await getRecipients()
+    const recipients = directRecipient(reminder)
+    if (!recipients) {
+      skipped += 1
+      await db.collection("opsReminders").updateOne(
+        { _id: reminder._id },
+        { $set: { status: "done", deliverySuppressedReason: "chat_target_required", updatedAt: now } },
+      )
+      continue
+    }
     const reminderTimeZone = String(reminder.timeZone || TEAM_TIME_ZONE)
     const text = [
       "🔔 <b>Team Reminder</b>",
@@ -226,56 +181,6 @@ export async function runLaunchScheduleCron(now = new Date()) {
   }
 }
 
-async function processDailyPerformance(token: string, now: Date) {
-  const db = await getDb()
-  const today = estDateKey(now)
-  const recipients = await getSubscribedChats("performance")
-  if (!recipients.length) return { recipients: 0, sent: 0, failed: 0, skipped: 0 }
-
-  const [projects, reminders, payroll, sheets] = await Promise.all([
-    db.collection("opsProjects").find({}).toArray(),
-    db.collection("opsReminders").find({}).toArray(),
-    db.collection("opsPayroll").find({}).toArray(),
-    db.collection("opsSheets").find({}).toArray(),
-  ])
-  const financials = calculateSheetFinancials(sheets, now)
-  const activeProjects = projects.filter((project: any) => project.status !== "inactive")
-  const pendingPayroll = payroll.filter((row: any) => row.status !== "paid")
-  const scheduledReminders = reminders.filter((reminder: any) => reminder.status !== "done")
-
-  const text = [
-    "<b>Daily Project Performance</b>",
-    estDateLabel(now),
-    "",
-    `🟢 Income today: <b>${money(financials.incomeToday)}</b>`,
-    `🔴 Expenses today: <b>${money(financials.expenseToday + financials.payrollToday)}</b>`,
-    `💰 Profit today: <b>${money(financials.profitToday)}</b>`,
-    "",
-    `📅 Weekly profit: <b>${money(financials.profitThisWeek)}</b>`,
-    `🗓️ Monthly profit: <b>${money(financials.profitThisMonth)}</b>`,
-    "",
-    `📁 Active projects: <b>${activeProjects.length}</b>`,
-    `💸 Pending payroll rows: <b>${pendingPayroll.length}</b>`,
-    `🔔 Scheduled reminders: <b>${scheduledReminders.length}</b>`,
-  ].join("\n")
-
-  let sent = 0
-  let failed = 0
-  let skipped = 0
-  for (const recipient of recipients) {
-    const key = `daily-performance:${recipient.chatId}:${today}`
-    if (!(await claimDelivery(key, "daily-performance"))) {
-      skipped += 1
-      continue
-    }
-    const ok = await sendTelegramText(token, recipient.chatId, text)
-    if (ok) sent += 1
-    else failed += 1
-  }
-
-  return { recipients: recipients.length, sent, failed, skipped }
-}
-
 export async function runOpsSuperCron(now = new Date()) {
   const startedAt = now
   const db = await getDb()
@@ -290,7 +195,6 @@ export async function runOpsSuperCron(now = new Date()) {
 
   const reminders = await processDueReminders(token, startedAt)
   const calendar = await processLaunchMorningDigest(token, startedAt)
-  const dailyPerformance = await processDailyPerformance(token, startedAt)
   const finishedAt = new Date()
   const result = {
     ok: true,
@@ -298,7 +202,6 @@ export async function runOpsSuperCron(now = new Date()) {
     estDate: estDateKey(startedAt),
     reminders,
     calendar,
-    dailyPerformance,
     revenueDailyFees,
     revenueValuation,
     startedAt: startedAt.toISOString(),

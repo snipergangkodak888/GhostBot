@@ -5,7 +5,7 @@ import ts from "typescript"
 
 const deliveries = new Map()
 const sentMessages = []
-const subscriptions = [{ chatId: "-100200300", kind: "group", label: "Daily Updates" }]
+const subscriptions = [{ chatId: "-100200300", kind: "group", label: "Finance Chat" }]
 
 function cursor(rows) {
   return {
@@ -60,7 +60,7 @@ function localRequire(id) {
     return { TEAM_TIME_ZONE: "America/New_York", formatTeamDateTime: () => "test time", nextRecurringDueAt: () => null }
   }
   if (id === "@/lib/chat-subscriptions") {
-    return { getSubscribedChats: async (purpose) => purpose === "performance" ? subscriptions : [] }
+    return { getSubscribedChats: async (purpose) => purpose === "finance" ? subscriptions : [] }
   }
   if (id === "@/lib/launch-calendar") {
     return { LAUNCH_TIME_ZONE: "America/New_York", formatLaunchDaySchedule: async () => "launches", getLaunchesForDay: async () => [], launchDateKey: () => "2026-08-22" }
@@ -79,22 +79,18 @@ vm.runInNewContext(`(function (exports, require, module, process) { ${output}\n}
 
 const now = new Date("2026-08-22T15:00:00.000Z")
 const first = await module.exports.runOpsSuperCron(now)
-assert.equal(first.dailyPerformance.recipients, 1)
-assert.equal(first.dailyPerformance.sent, 1)
-assert.deepEqual(sentMessages.map((message) => message.chatId), ["-100200300"])
-assert.match(sentMessages[0].text, /Daily Project Performance/)
+assert.equal(Object.hasOwn(first, "financeSummary"), false)
+assert.deepEqual(sentMessages, [])
 assert.equal(sentMessages.some((message) => message.chatId === "111"), false)
 assert.equal(sentMessages.some((message) => message.chatId === "-999"), false)
 
 const second = await module.exports.runOpsSuperCron(now)
-assert.equal(second.dailyPerformance.sent, 0)
-assert.equal(second.dailyPerformance.skipped, 1)
-assert.equal(sentMessages.length, 1)
+assert.equal(Object.hasOwn(second, "financeSummary"), false)
+assert.equal(sentMessages.length, 0)
 
 subscriptions.length = 0
 const nextDay = await module.exports.runOpsSuperCron(new Date("2026-08-23T15:00:00.000Z"))
-assert.equal(nextDay.dailyPerformance.recipients, 0)
-assert.equal(nextDay.dailyPerformance.sent, 0)
-assert.equal(sentMessages.length, 1)
+assert.equal(Object.hasOwn(nextDay, "financeSummary"), false)
+assert.equal(sentMessages.length, 0)
 
-console.log("PASS: daily project updates are sent once only to explicitly subscribed chats.")
+console.log("PASS: no automatic Trade Floor or Finance Chat report is sent.")
