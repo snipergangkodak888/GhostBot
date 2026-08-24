@@ -53,6 +53,8 @@ function localRequire(id) {
   if (id === "@/lib/revenue-service") return { ensureDailyTradingFeeExpectations: async () => ({}), valuePendingRevenueReceipts: async () => ({}) }
   if (id === "@/lib/project-lifecycle") return {
     projectLaunchAt: (project) => project.launchAt ? new Date(project.launchAt) : null,
+    projectLaunchTimingStatus: (project) => project.tentativeLaunchDate && !project.launchAt ? "tentative" : "confirmed",
+    projectLaunchDateKey: (project) => project.tentativeLaunchDate || (project.launchAt ? "2026-08-24" : ""),
     projectActivationReadiness: (project) => project.referrerStatus === "pending"
       ? ({ ready: false, missing: ["referrer decision"], chain: "solana", quoteToken: "SOL" })
       : ({ ready: true, missing: [], chain: "solana", quoteToken: "SOL" }),
@@ -101,4 +103,19 @@ assert.equal(messages.length, 4)
 assert.match(messages.at(-1).text, /referrer decision/)
 assert.equal(messages.at(-1).options.replyMarkup.inline_keyboard[0][0].callback_data, "lifecycle:refnone:needs-setup:1")
 
-console.log("PASS: pre-launch readiness and launch-time confirmation prompts target Launch Chat, repeat twice, and stop in overdue state.")
+projects.push({ _id: "tentative", name: "Tentative today", status: "scheduled", launchAt: null, tentativeLaunchDate: "2026-08-24", launchTimingStatus: "tentative", launchTimeZone: "America/New_York", launchChatId: "-1001", scheduleVersion: 1, launchVenue: "pumpfun", chain: "solana", quoteToken: "SOL" })
+await module.exports.processDueLaunchConfirmations("test", new Date("2026-08-24T21:00:00.000Z"))
+assert.equal(messages.length, 4, "tentative launches must not receive launch-time activation prompts")
+const followup = await module.exports.processTentativeLaunchTimingFollowups("test", new Date("2026-08-24T16:00:00.000Z"))
+assert.equal(followup.due, 1)
+assert.equal(messages.length, 5)
+assert.match(messages.at(-1).text, /exact time is still TBD/)
+assert.deepEqual(JSON.parse(JSON.stringify(messages.at(-1).options.replyMarkup.inline_keyboard.flat().map((button) => button.callback_data))), [
+  "lifecycle:settime:tentative:1",
+  "lifecycle:tentativeday:tentative:1",
+  "lifecycle:cancel:tentative:1",
+])
+await module.exports.processTentativeLaunchTimingFollowups("test", new Date("2026-08-24T16:05:00.000Z"))
+assert.equal(messages.length, 5, "the same tentative follow-up must only send once")
+
+console.log("PASS: exact launch prompts and one-time tentative timing follow-ups target Launch Chat without activating Time TBD launches.")

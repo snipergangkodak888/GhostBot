@@ -4,7 +4,7 @@ import { getMemberTimeZone, getTeamAccess, guardCodeFromText, redeemGuardInviteC
 import { getDb } from "@/lib/db"
 import { deleteProjectCascade } from "@/lib/platform-data"
 import { getSheetSchema, SHEET_KIND_ORDER, valuesForKind, type SheetKind } from "@/lib/sheet-schemas"
-import { detectExplicitTimeZone, formatTeamDateTime, parseNaturalTeamDateTime, parseTeamDateTime, teamZoneLabel, TIME_ZONE_OPTIONS, timeZoneFromOption, TEAM_TIME_ZONE } from "@/lib/team-timezone"
+import { dateKeyInTimeZone, detectExplicitTimeZone, formatTeamDateTime, parseNaturalTeamDate, parseNaturalTeamDateTime, parseTeamDateTime, teamZoneLabel, TIME_ZONE_OPTIONS, timeZoneFromOption, TEAM_TIME_ZONE } from "@/lib/team-timezone"
 import { editTelegramMessage, getTelegramBotToken, getTelegramBotUsername, isTelegramCaptureActive, sendChatAction, sendTelegramDocument, sendTelegramMessage, sendTelegramPhoto, telegramApi, telegramApiJson, withTelegramLoading } from "@/lib/telegram-bot"
 import { savePayrollDay } from "@/lib/payroll-day"
 import { loadDailyPayrollReport, parseReportDateFromText } from "@/lib/payroll-daily-report"
@@ -23,7 +23,7 @@ import { LAUNCH_CHAINS, launchPad, padsForChain, type LaunchChainId } from "@/li
 import { calculateLaunchQuote, defaultMmLiquidity, formatLaunchQuote, getLaunchAssetPrice, parseLaunchNumber, type LaunchTargetMetric } from "@/lib/launch-calculator"
 import { botPermissionDeniedMessage, canUseBotCapability, getBotPermissionContext, type BotCapability, type BotPermissionContext } from "@/lib/bot-permissions"
 import { createGuardEnrollmentLink, guardEnrollmentTokenFromText, guardEnrollmentUrl, handleGuardBotMembershipUpdate, handleGuardChatMemberUpdate, recordGuardChatMember, revokeGuardEnrollmentLinks, syncTelegramChatAdministrators, verifyAndRedeemGuardEnrollment } from "@/lib/guard-enrollment"
-import { activateScheduledProject, activationLifecycleFields, cancelScheduledProject, cleanLaunchProjectName, confirmNoProjectReferrer, confirmStandardProjectFees, projectActivationReadiness, projectLaunchAt, rescheduleProject } from "@/lib/project-lifecycle"
+import { activateScheduledProject, activationLifecycleFields, cancelScheduledProject, cleanLaunchProjectName, confirmNoProjectReferrer, confirmStandardProjectFees, projectActivationReadiness, projectLaunchAt, projectLaunchDateKey, projectLaunchTimingStatus, rescheduleProject, setTentativeProjectLaunchDate } from "@/lib/project-lifecycle"
 import { formatLaunchSetupReview, launchChainButtons, launchChainConfig, launchChainIdForProject, launchQuoteButtons, launchSetupButtons, launchSetupReady, launchVenueButtons, launchVenueSelection } from "@/lib/launch-setup"
 
 type InlineButton = { text: string; callback_data?: string; url?: string; web_app?: { url: string } }
@@ -690,14 +690,35 @@ async function sendReminders(token: string, chatId: number | string) {
 async function sendCalendar(token: string, chatId: number | string) {
   const db = await getDb()
   const [projects, reminders] = await Promise.all([
-    db.collection("opsProjects").find({ launchDate: { $exists: true } }).sort({ launchDate: 1 }).limit(6).toArray(),
+    db.collection("opsProjects").find({ status: { $ne: "inactive" } }).toArray(),
     db.collection("opsReminders").find({ status: { $ne: "done" } }).sort({ dueAt: 1 }).limit(6).toArray(),
   ])
+  const today = dateKeyInTimeZone(new Date(), TEAM_TIME_ZONE)
+  const launches = projects
+    .map((project: any) => ({ project, dateKey: projectLaunchDateKey(project, TEAM_TIME_ZONE), launchAt: projectLaunchAt(project) }))
+    .filter((row: any) => row.dateKey && row.dateKey >= today)
+    .sort((a: any, b: any) => a.dateKey.localeCompare(b.dateKey) || (a.launchAt && b.launchAt ? a.launchAt.getTime() - b.launchAt.getTime() : a.launchAt ? -1 : b.launchAt ? 1 : String(a.project.name || "").localeCompare(String(b.project.name || ""))))
+    .slice(0, 8)
+  const launchLines = launches.map(({ project, dateKey, launchAt }: any) => {
+    const tentative = projectLaunchTimingStatus(project) === "tentative"
+    const day = new Intl.DateTimeFormat("en-US", { timeZone: TEAM_TIME_ZONE, month: "short", day: "numeric" }).format(new Date(`${dateKey}T12:00:00Z`))
+    const timing = launchAt ? formatTeamDateTime(launchAt, project.launchTimeZone || TEAM_TIME_ZONE) : `${day} · Time TBD`
+    const status = project.status === "active" ? "Active" : tentative ? "Tentative" : "Scheduled"
+    return `🚀 ${timing} — ${project.name} · ${status}`
+  })
   const lines = [
-    ...projects.map((p: any) => `📁 ${dateLabel(p.launchDate)} - ${p.name}`),
+    ...launchLines,
     ...reminders.filter((r: any) => r.deliveryScope === "chat" && String(r.telegramChatId || "") === String(chatId)).map((r: any) => `🔔 ${dateLabel(r.dueAt, String(r.timeZone || TEAM_TIME_ZONE))} - ${r.title || r.message}`),
   ].slice(0, 10)
+  const timingButtons = launches
+    .filter(({ project }: any) => projectLaunchTimingStatus(project) === "tentative")
+    .slice(0, 5)
+    .flatMap(({ project }: any) => [
+      [{ text: `🕒 Set time: ${String(project.name || "Launch").slice(0, 35)}`, callback_data: `lifecycle:settime:${project._id}:${Number(project.scheduleVersion || 0)}` }],
+      [{ text: `📆 Move day: ${String(project.name || "Launch").slice(0, 35)}`, callback_data: `lifecycle:tentativeday:${project._id}:${Number(project.scheduleVersion || 0)}` }],
+    ])
   await sendMessage(token, chatId, `📅 Calendar\n\n${lines.length ? lines.join("\n") : "No calendar items yet."}`, [
+    ...timingButtons,
     [{ text: "➕ Add Reminder", callback_data: "reminder:add" }],
     [{ text: "⬅️ Back", callback_data: "main:menu" }],
   ])
@@ -883,7 +904,7 @@ async function processState(token: string, chatId: number | string, telegramId: 
     return true
   }
 
-  const stateCapability: BotCapability = String(state.action || "").startsWith("launch_calc") || String(state.action || "").startsWith("launch_setup") || state.action === "schedule_launch_request" || state.action === "reschedule_launch"
+  const stateCapability: BotCapability = String(state.action || "").startsWith("launch_calc") || String(state.action || "").startsWith("launch_setup") || state.action === "schedule_launch_request" || state.action === "reschedule_launch" || state.action === "tentative_launch_day"
     ? "launch"
     : ["add_project", "edit_project", "add_reminder", "timezone_for_manual_reminder", "timezone_for_reminder"].includes(String(state.action || ""))
       ? (context.profile === "launch" ? "launch" : "trade")
@@ -903,7 +924,7 @@ async function processState(token: string, chatId: number | string, telegramId: 
     return true
   }
 
-  if (["launch_setup_name", "launch_setup_referrer", "launch_setup_refpct"].includes(String(state.action || ""))) {
+  if (["launch_setup_name", "launch_setup_referrer", "launch_setup_refpct", "launch_setup_exact_time", "launch_setup_tentative_day"].includes(String(state.action || ""))) {
     const draft = await getLaunchSetupAction(db, String(state.actionId || ""), telegramId, chatId)
     if (!draft.ok) {
       await clearState(telegramId)
@@ -911,6 +932,35 @@ async function processState(token: string, chatId: number | string, telegramId: 
       return true
     }
     let action = draft.action
+    if (state.action === "launch_setup_exact_time") {
+      const timeZone = detectExplicitTimeZone(text) || String(state.timeZone || action.payload?.launchTimeZone || TEAM_TIME_ZONE)
+      const hasDate = /\b(?:today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{4}-\d{2}-\d{2}|january|february|march|april|may|june|july|august|september|october|november|december)\b/i.test(text)
+      const hasTime = /\b(?:noon|midnight|\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?))\b/i.test(text) || /\bat\s+\d{1,2}:\d{2}\b/i.test(text)
+      const source = !hasDate && state.tentativeLaunchDate ? `${state.tentativeLaunchDate} at ${text}` : text
+      const launchAt = hasTime ? parseNaturalTeamDateTime(source, timeZone, now) : null
+      if (!launchAt) {
+        await setState(telegramId, state, chatId)
+        await sendMessage(token, chatId, "I could not read an exact launch time. Send a date and time such as “August 25 at 3:30 PM ET”. Send /cancel to stop.")
+        return true
+      }
+      action = await updateLaunchSetupAction(db, action, { launchAt: launchAt.toISOString(), launchDate: launchAt.toISOString(), tentativeLaunchDate: null, launchTimingStatus: "confirmed", launchTimeZone: timeZone, status: "scheduled" })
+      await clearState(telegramId)
+      await showLaunchSetupReview(token, chatId, action, Number(state.reviewMessageId || 0) || null, "Exact launch time updated.")
+      return true
+    }
+    if (state.action === "launch_setup_tentative_day") {
+      const timeZone = detectExplicitTimeZone(text) || String(state.timeZone || action.payload?.launchTimeZone || TEAM_TIME_ZONE)
+      const tentativeLaunchDate = parseNaturalTeamDate(text, timeZone, now)
+      if (!tentativeLaunchDate) {
+        await setState(telegramId, state, chatId)
+        await sendMessage(token, chatId, "I could not read that launch day. Send today, tomorrow, a calendar date, or YYYY-MM-DD. Send /cancel to stop.")
+        return true
+      }
+      action = await updateLaunchSetupAction(db, action, { launchAt: null, launchDate: null, tentativeLaunchDate, launchTimingStatus: "tentative", launchTimeZone: timeZone, status: "scheduled" })
+      await clearState(telegramId)
+      await showLaunchSetupReview(token, chatId, action, Number(state.reviewMessageId || 0) || null, "Tentative launch day updated. Exact time can be added later.")
+      return true
+    }
     if (state.action === "launch_setup_name") {
       const name = cleanLaunchProjectName(text).slice(0, 80)
       if (!name) {
@@ -962,7 +1012,25 @@ async function processState(token: string, chatId: number | string, telegramId: 
       return true
     }
     await clearState(telegramId)
-    await sendMessage(token, chatId, `✅ ${(result.project as any).name} rescheduled for ${formatTeamDateTime(launchAt, timeZone)}.\n\nThe old activation buttons are now invalid.`)
+    await sendMessage(token, chatId, `✅ ${(result.project as any).name} now has a confirmed launch time: ${formatTeamDateTime(launchAt, timeZone)}.\n\nIt is Scheduled, and the old timing buttons are now invalid.`)
+    return true
+  }
+
+  if (state.action === "tentative_launch_day") {
+    const timeZone = String(state.timeZone || await getMemberTimeZone(telegramId) || TEAM_TIME_ZONE)
+    const tentativeLaunchDate = parseNaturalTeamDate(text, timeZone, now)
+    if (!tentativeLaunchDate) {
+      await setState(telegramId, state, chatId)
+      await sendMessage(token, chatId, `I could not read that launch day. Send today, tomorrow, a calendar date, or YYYY-MM-DD.\n\nCurrent schedule timezone: ${teamZoneLabel(timeZone)}. Send /cancel to stop.`)
+      return true
+    }
+    const result = await setTentativeProjectLaunchDate({ projectId: String(state.projectId), tentativeLaunchDate, telegramId, chatId, timeZone, expectedScheduleVersion: Number(state.scheduleVersion) })
+    if (!result.ok) {
+      await sendMessage(token, chatId, `⚠️ ${result.error}`)
+      return true
+    }
+    await clearState(telegramId)
+    await sendMessage(token, chatId, `✅ ${(result.project as any).name} is tentatively set for ${tentativeLaunchDate} · Time TBD.\n\nUse /calendar when you are ready to set the exact time.`)
     return true
   }
 
@@ -1229,7 +1297,7 @@ async function sendExistingExpectationPicker(token: string, chatId: number | str
 
 async function getLaunchSetupAction(db: any, actionId: string, telegramId: number, chatId: number | string) {
   const action = await db.collection("opsAiActions").findOne({ _id: actionId })
-  if (!action || String(action.actionType || "") !== "create_project" || !(action.payload?.launchAt || action.payload?.launchDate)) return { ok: false as const, error: "This launch draft was not found." }
+  if (!action || String(action.actionType || "") !== "create_project" || !(action.payload?.launchAt || action.payload?.launchDate || action.payload?.tentativeLaunchDate)) return { ok: false as const, error: "This launch draft was not found." }
   if (action.telegramId && Number(action.telegramId) !== telegramId) return { ok: false as const, error: "Only the person who started this launch draft can change it." }
   if (action.chatId && String(action.chatId) !== String(chatId)) return { ok: false as const, error: "This launch draft must be completed in the chat where it was started." }
   if (action.status !== "pending") return { ok: false as const, error: `This launch draft is already ${action.status}.` }
@@ -1284,6 +1352,21 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     const messageId = Number(callbackMessage?.message_id || 0) || null
 
     if (action === "review") return showLaunchSetupReview(token, chatId, launchAction, messageId)
+    if (action === "timing") {
+      return showLaunchSetupPicker(token, chatId, messageId, `🕒 <b>Choose timing for ${String(launchAction.payload?.name || "this launch")}</b>`, [
+        [{ text: "Set exact date and time", callback_data: `launchsetup:exacttime:${id}` }],
+        [{ text: "Set tentative day · Time TBD", callback_data: `launchsetup:tentativeday:${id}` }],
+        [{ text: "⬅️ Back to review", callback_data: `launchsetup:review:${id}` }],
+      ])
+    }
+    if (action === "exacttime") {
+      await setState(telegramId, { action: "launch_setup_exact_time", actionId: id, reviewMessageId: messageId, tentativeLaunchDate: launchAction.payload?.tentativeLaunchDate, timeZone: launchAction.payload?.launchTimeZone || TEAM_TIME_ZONE }, chatId)
+      return sendMessage(token, chatId, `Send the exact launch date and time.\n\nExample: August 25 at 3:30 PM ET${launchAction.payload?.tentativeLaunchDate ? `\nOr just send the time for ${launchAction.payload.tentativeLaunchDate}: 3:30 PM ET` : ""}\nSend /cancel to stop.`)
+    }
+    if (action === "tentativeday") {
+      await setState(telegramId, { action: "launch_setup_tentative_day", actionId: id, reviewMessageId: messageId, timeZone: launchAction.payload?.launchTimeZone || TEAM_TIME_ZONE }, chatId)
+      return sendMessage(token, chatId, "Send the tentative launch day.\n\nExamples: today, tomorrow, August 25, or 2026-08-25\nSend /cancel to stop.")
+    }
     if (action === "name") {
       await setState(telegramId, { action: "launch_setup_name", actionId: id, reviewMessageId: messageId }, chatId)
       return sendMessage(token, chatId, `Send the exact project name for this launch.\n\nCurrent name: ${launchAction.payload?.name || "Not selected"}\nSend /cancel to stop.`)
@@ -1411,7 +1494,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       if (!launchSetupReady(launchAction.payload)) return showLaunchSetupReview(token, chatId, launchAction, messageId, "Complete the remaining setup before creating this launch.")
       const policy = aiPermissionPolicy(context)
       const text = await executeOpsAiAction(id, telegramId, { allowedActionTypes: policy.allowedActionTypes, currentChatId: chatId, dataScope: policy.dataScope })
-      const launchDate = launchAction.payload?.launchAt || launchAction.payload?.launchDate
+      const launchDate = launchAction.payload?.launchAt || launchAction.payload?.launchDate || launchAction.payload?.tentativeLaunchDate
       const schedule = text.startsWith("✅") && launchDate ? await formatLaunchDaySchedule(launchDate) : ""
       const finalText = [text, schedule].filter(Boolean).join("\n\n")
       if (messageId) {
@@ -1425,6 +1508,18 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   if (area === "lifecycle") {
     if (context.profile !== "launch") return sendMessage(token, chatId, "⛔ Launch activation confirmations must be handled in the configured Launch Chat.")
     const scheduleVersion = Number(extra || 0)
+    if (action === "settime") {
+      const project = await db.collection("opsProjects").findOne({ _id: id })
+      if (!project || !["scheduled", "in_progress"].includes(String(project.status || "")) || Number(project.scheduleVersion || 0) !== scheduleVersion) return sendMessage(token, chatId, "⚠️ This launch schedule was already updated. Open /calendar for the newest timing controls.")
+      await setState(telegramId, { action: "reschedule_launch", projectId: id, scheduleVersion, timeZone: project.launchTimeZone || TEAM_TIME_ZONE }, chatId)
+      return sendMessage(token, chatId, `🕒 Send the exact launch date and time for ${project.name}.\n\nExample: today at 5:10 PM ET\nI’ll use ${teamZoneLabel(project.launchTimeZone || TEAM_TIME_ZONE)} unless you include another timezone. Send /cancel to stop.`)
+    }
+    if (action === "tentativeday") {
+      const project = await db.collection("opsProjects").findOne({ _id: id })
+      if (!project || !["scheduled", "in_progress"].includes(String(project.status || "")) || Number(project.scheduleVersion || 0) !== scheduleVersion) return sendMessage(token, chatId, "⚠️ This launch schedule was already updated. Open /calendar for the newest timing controls.")
+      await setState(telegramId, { action: "tentative_launch_day", projectId: id, scheduleVersion, timeZone: project.launchTimeZone || TEAM_TIME_ZONE }, chatId)
+      return sendMessage(token, chatId, `📆 Send the new tentative launch day for ${project.name}.\n\nExamples: today, tomorrow, August 25, or 2026-08-25\nThe launch will remain Time TBD. Send /cancel to stop.`)
+    }
     if (action === "ontime" || action === "now") {
       const result = await activateScheduledProject({ projectId: id, telegramId, actual: action === "ontime" ? "scheduled" : "now", expectedScheduleVersion: scheduleVersion })
       if (!result.ok) {
@@ -1633,7 +1728,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
 
   if (area === "ai" && action === "confirm") {
     const pendingLaunch = await db.collection("opsAiActions").findOne({ _id: id })
-    if (pendingLaunch?.status === "pending" && pendingLaunch.actionType === "create_project" && (pendingLaunch.payload?.launchAt || pendingLaunch.payload?.launchDate) && aiPermissionPolicy(context).dataScope === "launch") {
+    if (pendingLaunch?.status === "pending" && pendingLaunch.actionType === "create_project" && (pendingLaunch.payload?.launchAt || pendingLaunch.payload?.launchDate || pendingLaunch.payload?.tentativeLaunchDate) && aiPermissionPolicy(context).dataScope === "launch") {
       return showLaunchSetupReview(token, chatId, pendingLaunch, Number(callbackMessage?.message_id || 0) || null, "Review every launch detail before creating it.")
     }
     return sendAsyncResponse(token, chatId, async () => {

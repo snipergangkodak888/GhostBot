@@ -15,6 +15,8 @@ const telegramId = 990000199
 const config = botLabConfig({ telegramId, chatId: telegramId, chatType: "group" })
 const suffix = Date.now().toString().slice(-6)
 const projectName = `SnapGame${suffix}`
+const tentativeProjectName = `Tentative${suffix}`
+const testProjectNames = new Set([projectName, tentativeProjectName])
 const launchChatId = String(-Math.abs(config.chatId))
 const launchProfileId = `codex-launch-profile-${telegramId}`
 let server
@@ -56,13 +58,13 @@ async function seedLaunchChatProfile() {
   if (!response.ok) throw new Error(`Launch Chat profile setup failed: ${response.status} ${await response.text()}`)
 }
 
-async function lookupTestProject() {
+async function lookupTestProject(name = projectName) {
   const { url, key } = supabaseCredentials()
   const query = new URLSearchParams({ select: "id,data,collection", collection: "eq.opsProjects", limit: "1000" })
   const response = await fetch(`${url}/rest/v1/documents?${query}`, { headers: { apikey: key, Authorization: `Bearer ${key}` } })
   if (!response.ok) throw new Error(`Project verification failed: ${response.status} ${await response.text()}`)
   const rows = await response.json()
-  return rows.find((row) => row.data?.name === projectName)?.data || null
+  return rows.find((row) => row.data?.name === name)?.data || null
 }
 
 async function cleanup() {
@@ -76,11 +78,10 @@ async function cleanup() {
   const response = await fetch(`${url}/rest/v1/documents?${query}`, { headers })
   if (!response.ok) throw new Error(`Cleanup lookup failed: ${response.status} ${await response.text()}`)
   const rows = await response.json()
-  const project = rows.find((row) => row.collection === "opsProjects" && row.data?.name === projectName)
-  const projectId = String(project?.data?._id || "")
+  const projectIds = new Set(rows.filter((row) => row.collection === "opsProjects" && testProjectNames.has(row.data?.name)).map((row) => String(row.data?._id || "")))
   const ids = rows.filter((row) => {
-    if (row.collection === "opsProjects") return row.data?.name === projectName
-    if (row.collection === "opsSheets") return row.data?.projectName === projectName || (projectId && String(row.data?.projectId) === projectId)
+    if (row.collection === "opsProjects") return testProjectNames.has(row.data?.name)
+    if (row.collection === "opsSheets") return testProjectNames.has(row.data?.projectName) || projectIds.has(String(row.data?.projectId || ""))
     return Number(row.data?.telegramId) === telegramId
   }).map((row) => row.id)
   for (const id of ids) {
@@ -124,8 +125,40 @@ try {
   }
   if (project.referrerStatus !== "none") throw new Error(`Expected no-referrer decision to be stored, received ${project.referrerStatus}`)
 
+  const tentativeProposed = await sendBotLabUpdate(config, { text: `/schedulelaunch ${tentativeProjectName} pumpfun sol launch today time TBD` })
+  const tentativeReview = responseText(tentativeProposed)
+  for (const requiredField of ["Review launch", `Project name: <b>${tentativeProjectName}</b>`, "Time TBD (tentative)", "Pump.fun", "Solana", "Quote token: <b>SOL</b>"]) {
+    if (!tentativeReview.includes(requiredField)) throw new Error(`Tentative review is missing ${requiredField}. Response: ${tentativeReview}`)
+  }
+  const tentativeNoRefCallback = callbackStartingWith(tentativeProposed, "launchsetup:noref:")
+  const tentativeNoRef = await sendBotLabUpdate(config, { callbackData: tentativeNoRefCallback, messageId: tentativeProposed.messages?.[0]?.messageId })
+  const tentativeCreateCallback = callbackStartingWith(tentativeNoRef, "launchsetup:create:")
+  if (!tentativeCreateCallback) throw new Error(`Tentative review did not become ready. Response: ${responseText(tentativeNoRef)}`)
+  const tentativeCreated = await sendBotLabUpdate(config, { callbackData: tentativeCreateCallback, messageId: tentativeNoRef.messages?.[0]?.messageId || tentativeProposed.messages?.[0]?.messageId })
+  const tentativeCreatedText = responseText(tentativeCreated)
+  for (const requiredField of [`✅ Tentative launch added: ${tentativeProjectName}`, "Time TBD", "Tentative"]) {
+    if (!tentativeCreatedText.includes(requiredField)) throw new Error(`Tentative creation is missing ${requiredField}. Response: ${tentativeCreatedText}`)
+  }
+  const tentativeProject = await lookupTestProject(tentativeProjectName)
+  if (!tentativeProject) throw new Error("The tentative project was not stored.")
+  if (tentativeProject.launchAt || tentativeProject.launchDate) throw new Error("Tentative launch incorrectly stored a fake exact timestamp.")
+  if (tentativeProject.launchTimingStatus !== "tentative" || !/^\d{4}-\d{2}-\d{2}$/.test(String(tentativeProject.tentativeLaunchDate || ""))) throw new Error(`Tentative timing fields are invalid: ${JSON.stringify(tentativeProject)}`)
+
+  const calendar = await sendBotLabUpdate(config, { text: "/calendar" })
+  const calendarText = responseText(calendar)
+  if (!calendarText.includes(tentativeProjectName) || !calendarText.includes("Time TBD")) throw new Error(`Calendar did not display the tentative launch. Response: ${calendarText}`)
+  const setTimeCallback = callbackStartingWith(calendar, `lifecycle:settime:${tentativeProject._id}:`)
+  if (!setTimeCallback) throw new Error(`Calendar did not include Set time for the tentative launch. Response: ${calendarText}`)
+  const setTimePrompt = await sendBotLabUpdate(config, { callbackData: setTimeCallback, messageId: calendar.messages?.[0]?.messageId })
+  if (!responseText(setTimePrompt).includes("Send the exact launch date and time")) throw new Error(`Set-time action did not prompt for an exact time. Response: ${responseText(setTimePrompt)}`)
+  const exactTime = await sendBotLabUpdate(config, { text: "/time today at 6:20 PM ET" })
+  if (!responseText(exactTime).includes("now has a confirmed launch time")) throw new Error(`Tentative launch did not accept an exact time. Response: ${responseText(exactTime)}`)
+  const confirmedTentativeProject = await lookupTestProject(tentativeProjectName)
+  if (confirmedTentativeProject.launchTimingStatus !== "confirmed" || !confirmedTentativeProject.launchAt || confirmedTentativeProject.tentativeLaunchDate) throw new Error(`Tentative launch was not converted cleanly to confirmed timing: ${JSON.stringify(confirmedTentativeProject)}`)
+
   console.log(text)
-  console.log("\nPASS: guided launch review corrected the name, preserved launch configuration, required the referrer decision, and created only after final confirmation.")
+  console.log(tentativeCreatedText)
+  console.log("\nPASS: guided launch setup handles exact and Time TBD launches, keeps tentative dates timestamp-free, exposes calendar timing controls, and confirms the exact time later.")
 } finally {
   const deleted = await cleanup().catch((error) => {
     console.error(`Cleanup warning: ${error instanceof Error ? error.message : String(error)}`)

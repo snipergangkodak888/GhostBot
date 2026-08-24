@@ -22,6 +22,7 @@ import {
   detectExplicitTimeZone,
   formatTeamDateTime,
   normalizeReminderDueAt,
+  parseNaturalTeamDate,
   parseNaturalTeamDateTime,
   parseTeamDateTime,
   partsInTimeZone,
@@ -29,7 +30,7 @@ import {
   TEAM_TIME_ZONE,
 } from "@/lib/team-timezone"
 import { getSheetSchema, normalizeSheetKind, valuesForKind, type SheetKind } from "@/lib/sheet-schemas"
-import { cleanLaunchProjectName, cleanLaunchProjectNameFromRequest, inferLaunchConfiguration, normalizeProjectStatus, projectActivationReadiness, projectLaunchAt, scheduledLifecycleFields } from "@/lib/project-lifecycle"
+import { cleanLaunchProjectName, cleanLaunchProjectNameFromRequest, inferLaunchConfiguration, normalizeProjectStatus, projectActivationReadiness, projectLaunchAt, scheduledLifecycleFields, tentativeLifecycleFields } from "@/lib/project-lifecycle"
 import { formatLaunchSetupReview, launchSetupButtons, launchSetupReady } from "@/lib/launch-setup"
 import { cleanProjectFeeFields } from "@/lib/revenue-projects"
 
@@ -256,7 +257,7 @@ function scopedActionPayload(actionType: string, payload: Record<string, any>, s
   const allowed = actionType === "create_reminder"
     ? ["title", "message", "dueAt", "timeZone", "deliveryScope", "telegramChatId", "targetChatTitle"]
     : scope === "launch"
-      ? ["projectName", "name", "owner", "referrer", "referrerWallet", "referrerAccountId", "referralPercentage", "referrerStatus", "status", "service", "startDate", "launchAt", "launchDate", "launchTimeZone", "launchVenue", "launchFundingAsset", "chain", "revenueChain", "quoteToken", "quoteAssets", "dailyTradingFeeEnabled", "dailyTradingFeeUsd", "launchFeeUsd", "feeConfigurationConfirmed", "endDate", "notes", "tags", "_candidates"]
+      ? ["projectName", "name", "owner", "referrer", "referrerWallet", "referrerAccountId", "referralPercentage", "referrerStatus", "status", "service", "startDate", "launchAt", "launchDate", "tentativeLaunchDate", "launchTimingStatus", "launchTimeZone", "launchVenue", "launchFundingAsset", "chain", "revenueChain", "quoteToken", "quoteAssets", "dailyTradingFeeEnabled", "dailyTradingFeeUsd", "launchFeeUsd", "feeConfigurationConfirmed", "endDate", "notes", "tags", "_candidates"]
       : ["projectName", "name", "status", "service", "notes", "tags", "_candidates"]
   return Object.fromEntries(Object.entries(payload).filter(([key]) => allowed.includes(key)))
 }
@@ -702,17 +703,29 @@ function launchProjectName(text: string, projects: any[]) {
   return null
 }
 
+function hasExplicitLaunchTime(text: string) {
+  return /\b(?:noon|midnight|\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?))\b/i.test(text)
+    || /\bat\s+\d{1,2}:\d{2}\b/i.test(text)
+}
+
+function tentativeLaunchTimingRequested(text: string) {
+  if (/\b(?:time\s*(?:is\s*)?(?:tbd|unknown|tentative|not\s+set)|tbd|no\s+exact\s+time|time\s+to\s+be\s+(?:decided|confirmed)|sometime\s+(?:today|tomorrow)|later\s+(?:today|tomorrow))\b/i.test(text)) return true
+  const hasLaunchDay = /\b(?:today|tomorrow|tonight|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{4}-\d{2}-\d{2}|january|february|march|april|may|june|july|august|september|october|november|december)\b/i.test(text)
+  return hasLaunchDay && !hasExplicitLaunchTime(text)
+}
+
 function inferCapabilityAction(text: string, projects: any[], timeZone: string, now: Date) {
   if (!/\b(?:launch|launches|launching|launch\s+calendar)\b/i.test(text)) return null
   if (!isActionRequest(text)) return null
-  const launchAt = parseNaturalTeamDateTime(text, timeZone, now)
+  const tentativeTiming = tentativeLaunchTimingRequested(text)
+  const launchAt = tentativeTiming ? null : parseNaturalTeamDateTime(text, timeZone, now)
+  const tentativeLaunchDate = tentativeTiming ? parseNaturalTeamDate(text, timeZone, now) : ""
   const target = launchProjectName(text, projects)
-  if (!launchAt || !target?.name) return null
+  if ((!launchAt && !tentativeLaunchDate) || !target?.name) return null
   const config = inferLaunchConfiguration(text)
   const launchTimeZone = detectExplicitTimeZone(text) || timeZone
   const configuration = {
-    launchAt: launchAt.toISOString(),
-    launchDate: launchAt.toISOString(),
+    ...(launchAt ? { launchAt: launchAt.toISOString(), launchDate: launchAt.toISOString(), launchTimingStatus: "confirmed", tentativeLaunchDate: null } : { launchAt: null, launchDate: null, launchTimingStatus: "tentative", tentativeLaunchDate, status: "scheduled" }),
     launchTimeZone,
     ...(config.launchVenue ? { launchVenue: config.launchVenue } : {}),
     ...(config.launchFundingAsset ? { launchFundingAsset: config.launchFundingAsset } : {}),
@@ -725,14 +738,14 @@ function inferCapabilityAction(text: string, projects: any[], timeZone: string, 
   if (target.project) {
     return {
       actionType: "update_project",
-      summary: `Schedule ${target.project.name} to launch ${formatTeamDateTime(launchAt, timeZone)}`,
+      summary: launchAt ? `Schedule ${target.project.name} to launch ${formatTeamDateTime(launchAt, timeZone)}` : `Mark ${target.project.name} as tentatively launching on ${tentativeLaunchDate}, time TBD`,
       payload: { projectName: target.project.name, ...configuration },
       warnings: [],
     }
   }
   return {
     actionType: "create_project",
-    summary: `Add ${target.name} to the launch calendar for ${formatTeamDateTime(launchAt, timeZone)}`,
+    summary: launchAt ? `Add ${target.name} to the launch calendar for ${formatTeamDateTime(launchAt, timeZone)}` : `Add ${target.name} to the launch calendar for ${tentativeLaunchDate}, time TBD`,
     payload: { name: target.name, ...configuration },
     warnings: [],
   }
@@ -741,12 +754,30 @@ function inferCapabilityAction(text: string, projects: any[], timeZone: string, 
 function normalizeActionDates(actionType: string, payload: any, text: string, timeZone: string, now: Date) {
   const next = { ...(payload || {}) }
   if (actionType === "create_project" || actionType === "update_project") {
-    const launchSource = next.launchAt ?? next.launchDate
-    const launchAt = parseNaturalTeamDateTime(launchSource, timeZone, now)
-      || (/\b(?:launch|launches|launching|launch\s+calendar)\b/i.test(text) ? parseNaturalTeamDateTime(text, timeZone, now) : null)
-    if (launchAt) {
-      next.launchAt = launchAt.toISOString()
-      next.launchDate = launchAt.toISOString()
+    const tentativeTiming = next.launchTimingStatus === "tentative" || Boolean(next.tentativeLaunchDate) || tentativeLaunchTimingRequested(text)
+    if (tentativeTiming) {
+      const tentativeLaunchDate = parseNaturalTeamDate(next.tentativeLaunchDate || text, timeZone, now)
+      if (tentativeLaunchDate) {
+        next.launchAt = null
+        next.launchDate = null
+        next.tentativeLaunchDate = tentativeLaunchDate
+        next.launchTimingStatus = "tentative"
+        next.status = "scheduled"
+        next.launchTimeZone = next.launchTimeZone || detectExplicitTimeZone(text) || timeZone
+      }
+    } else {
+      const launchSource = next.launchAt ?? next.launchDate
+      const launchAt = parseNaturalTeamDateTime(launchSource, timeZone, now)
+        || (/\b(?:launch|launches|launching|launch\s+calendar)\b/i.test(text) ? parseNaturalTeamDateTime(text, timeZone, now) : null)
+      if (launchAt) {
+        next.launchAt = launchAt.toISOString()
+        next.launchDate = launchAt.toISOString()
+        next.tentativeLaunchDate = null
+        next.launchTimingStatus = "confirmed"
+        next.launchTimeZone = next.launchTimeZone || detectExplicitTimeZone(text) || timeZone
+      }
+    }
+    if (next.launchAt || next.tentativeLaunchDate) {
       next.launchTimeZone = next.launchTimeZone || detectExplicitTimeZone(text) || timeZone
     }
     const inferred = inferLaunchConfiguration(text)
@@ -806,13 +837,19 @@ async function resolveActionPreview(actionType: string, payload: any, context: {
     warnings.push("I could not identify the project to update.")
   }
 
-  if ((actionType === "create_project" || actionType === "update_project") && (nextPayload.launchAt || nextPayload.launchDate)) {
-    const launchDate = new Date(nextPayload.launchAt || nextPayload.launchDate)
-    if (!Number.isNaN(launchDate.getTime())) {
+  if ((actionType === "create_project" || actionType === "update_project") && (nextPayload.launchAt || nextPayload.launchDate || nextPayload.tentativeLaunchDate)) {
+    if (nextPayload.tentativeLaunchDate && !nextPayload.launchAt && !nextPayload.launchDate) {
+      preview.push(`📅 Tentative launch day: ${nextPayload.tentativeLaunchDate} · Time TBD`)
+      const readiness = projectActivationReadiness({ ...(project || {}), ...nextPayload })
+      preview.push(`🚦 Activation setup: ${readiness.ready ? "ready" : `still needs ${readiness.missing.join(", ")}`}`)
+    } else {
+      const launchDate = new Date(nextPayload.launchAt || nextPayload.launchDate)
+      if (!Number.isNaN(launchDate.getTime())) {
       const timeZone = context.timeZone || detectExplicitTimeZone(context.request) || TEAM_TIME_ZONE
       preview.push(`📅 Launch: ${formatTeamDateTime(launchDate, timeZone)}`)
       const readiness = projectActivationReadiness({ ...(project || {}), ...nextPayload })
       preview.push(`🚦 Activation setup: ${readiness.ready ? "ready" : `still needs ${readiness.missing.join(", ")}`}`)
+      }
     }
   }
 
@@ -1007,7 +1044,7 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
     db.collection("opsSheets").find({}).toArray(),
   ])
   const projects = options.dataScope === "launch"
-    ? projectRows.map((project: any) => ({ _id: project._id, name: project.name, owner: project.owner, referrer: project.referrer, referrerAccountId: project.referrerAccountId, referrerStatus: project.referrerStatus, status: project.status, service: project.service, startDate: project.startDate, launchAt: project.launchAt, launchDate: project.launchDate, launchTimeZone: project.launchTimeZone, launchVenue: project.launchVenue, launchFundingAsset: project.launchFundingAsset, chain: project.chain, quoteToken: project.quoteToken, dailyTradingFeeEnabled: project.dailyTradingFeeEnabled, dailyTradingFeeUsd: project.dailyTradingFeeUsd, launchFeeUsd: project.launchFeeUsd, feeConfigurationConfirmed: project.feeConfigurationConfirmed, endDate: project.endDate, notes: project.notes, tags: project.tags, createdAt: project.createdAt, updatedAt: project.updatedAt }))
+    ? projectRows.map((project: any) => ({ _id: project._id, name: project.name, owner: project.owner, referrer: project.referrer, referrerAccountId: project.referrerAccountId, referrerStatus: project.referrerStatus, status: project.status, service: project.service, startDate: project.startDate, launchAt: project.launchAt, launchDate: project.launchDate, tentativeLaunchDate: project.tentativeLaunchDate, launchTimingStatus: project.launchTimingStatus, launchTimeZone: project.launchTimeZone, launchVenue: project.launchVenue, launchFundingAsset: project.launchFundingAsset, chain: project.chain, quoteToken: project.quoteToken, dailyTradingFeeEnabled: project.dailyTradingFeeEnabled, dailyTradingFeeUsd: project.dailyTradingFeeUsd, launchFeeUsd: project.launchFeeUsd, feeConfigurationConfirmed: project.feeConfigurationConfirmed, endDate: project.endDate, notes: project.notes, tags: project.tags, createdAt: project.createdAt, updatedAt: project.updatedAt }))
     : options.dataScope === "trade"
       ? projectRows.map((project: any) => ({ _id: project._id, name: project.name, status: project.status, service: project.service, notes: project.notes, tags: project.tags, createdAt: project.createdAt, updatedAt: project.updatedAt }))
       : projectRows
@@ -1039,13 +1076,14 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
           `Supported actionType values: ${supportedActions.join(", ")}.`,
           "Capability semantics:",
           "• The launch calendar is backed by a project's launchAt timestamp. Requests to add, schedule, move, or reschedule a launch update an existing project, or create a scheduled project when the named project does not exist.",
+          "• If the team knows the launch day but not the exact time, use launchTimingStatus=tentative and tentativeLaunchDate=YYYY-MM-DD, with launchAt and launchDate null. Never invent a time for a tentative launch.",
           "• Launch scheduling should capture launchAt, launchTimeZone, launchVenue, chain, and one quoteToken whenever the user supplied them. The project's quote token is used for both launch-fee and daily-fee receipts.",
           "• A scheduled project is not active until a trusted Launch Chat member confirms the launch. Never mark a newly scheduled launch active.",
           "• Reminders create scheduled Telegram deliveries. They are different from project launches.",
           "• Payroll actions add or remove payroll rows. Data-row actions modify a project's existing data file.",
           "Payload shapes:",
-          "create_project: {name, referrer, referrerWallet, referrerStatus, status, service, startDate, launchAt, launchTimeZone, launchVenue, launchFundingAsset, chain, quoteToken, dailyTradingFeeEnabled, dailyTradingFeeUsd, launchFeeUsd, feeConfigurationConfirmed, endDate, currentProfitLoss, notes, tags}",
-          "update_project: {projectName, name, referrer, referrerWallet, referrerStatus, status, service, startDate, launchAt, launchTimeZone, launchVenue, launchFundingAsset, chain, quoteToken, dailyTradingFeeEnabled, dailyTradingFeeUsd, launchFeeUsd, feeConfigurationConfirmed, endDate, currentProfitLoss, notes, tags}",
+          "create_project: {name, referrer, referrerWallet, referrerStatus, status, service, startDate, launchAt, tentativeLaunchDate, launchTimingStatus, launchTimeZone, launchVenue, launchFundingAsset, chain, quoteToken, dailyTradingFeeEnabled, dailyTradingFeeUsd, launchFeeUsd, feeConfigurationConfirmed, endDate, currentProfitLoss, notes, tags}",
+          "update_project: {projectName, name, referrer, referrerWallet, referrerStatus, status, service, startDate, launchAt, tentativeLaunchDate, launchTimingStatus, launchTimeZone, launchVenue, launchFundingAsset, chain, quoteToken, dailyTradingFeeEnabled, dailyTradingFeeUsd, launchFeeUsd, feeConfigurationConfirmed, endDate, currentProfitLoss, notes, tags}",
           "create_reminder: {title, message, dueAt, timeZone?}",
           "create_payroll: {member, amount, projectName, date, status, currency, notes}",
           "add_sheet_row: {projectName, sheetType, row}",
@@ -1135,7 +1173,7 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
   }
   const result = await db.collection("opsAiActions").insertOne(record)
   const actionId = String(result.insertedId)
-  if (actionType === "create_project" && (resolved.payload.launchAt || resolved.payload.launchDate) && options.dataScope === "launch") {
+  if (actionType === "create_project" && (resolved.payload.launchAt || resolved.payload.launchDate || resolved.payload.tentativeLaunchDate) && options.dataScope === "launch") {
     const launchAction = { ...record, _id: actionId }
     return {
       actionId,
@@ -1258,7 +1296,8 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
     const name = String(payload.name || "").trim()
     if (!name) return "⚠️ Missing project name. I did not change anything."
     const launchAt = payload.launchAt || payload.launchDate
-    if (launchAt && options.dataScope === "launch" && !launchSetupReady(payload)) return "⚠️ Complete the launch review before creating this project. I did not change anything."
+    const tentativeLaunchDate = String(payload.tentativeLaunchDate || "").trim()
+    if ((launchAt || tentativeLaunchDate) && options.dataScope === "launch" && !launchSetupReady(payload)) return "⚠️ Complete the launch review before creating this project. I did not change anything."
     const currentProfitLoss = Number(payload.currentProfitLoss || 0)
     const project = {
       name,
@@ -1266,12 +1305,14 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
       referrerWallet: String(payload.referrerWallet || "").trim(),
       referrerAccountId: payload.referrerAccountId ? String(payload.referrerAccountId).trim() : null,
       referralPercentage: Math.max(0, Number(payload.referralPercentage || payload.referrerPercentage || 0)),
-      status: normalizeProjectStatus(payload.status, launchAt),
+      status: tentativeLaunchDate ? "scheduled" : normalizeProjectStatus(payload.status, launchAt),
       service: String(payload.service || "").trim(),
       startDate: payload.startDate ? new Date(payload.startDate).toISOString() : null,
       endDate: payload.endDate ? new Date(payload.endDate).toISOString() : null,
       launchAt: launchAt ? new Date(launchAt).toISOString() : null,
       launchDate: launchAt ? new Date(launchAt).toISOString() : null,
+      tentativeLaunchDate: tentativeLaunchDate || null,
+      launchTimingStatus: tentativeLaunchDate && !launchAt ? "tentative" : "confirmed",
       launchTimeZone: String(payload.launchTimeZone || TEAM_TIME_ZONE),
       launchVenue: String(payload.launchVenue || "").trim(),
       launchFundingAsset: String(payload.launchFundingAsset || "").trim().toUpperCase(),
@@ -1286,12 +1327,16 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
       createdAt: now,
       updatedAt: now,
     }
-    const lifecycle = launchAt && project.status !== "inactive"
-      ? scheduledLifecycleFields({ launchAt, launchTimeZone: project.launchTimeZone, launchChatId: options.dataScope === "launch" ? options.currentChatId : undefined, telegramId: telegramId || null })
-      : {}
+    const lifecycle = project.status === "inactive"
+      ? {}
+      : launchAt
+        ? scheduledLifecycleFields({ launchAt, launchTimeZone: project.launchTimeZone, launchChatId: options.dataScope === "launch" ? options.currentChatId : undefined, telegramId: telegramId || null })
+        : tentativeLaunchDate
+          ? tentativeLifecycleFields({ tentativeLaunchDate, launchTimeZone: project.launchTimeZone, launchChatId: options.dataScope === "launch" ? options.currentChatId : undefined, telegramId: telegramId || null })
+          : {}
     const result = await db.collection("opsProjects").insertOne({ ...project, ...lifecycle })
     await createDefaultSheetsForProject(String(result.insertedId), name)
-    done = launchAt ? `✅ Launch scheduled successfully: ${name}` : `✅ Project created: ${name}`
+    done = launchAt ? `✅ Launch scheduled successfully: ${name}` : tentativeLaunchDate ? `✅ Tentative launch added: ${name} · ${tentativeLaunchDate} · Time TBD` : `✅ Project created: ${name}`
   }
 
   if (action.actionType === "update_project") {
@@ -1304,7 +1349,10 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
     if (payload.referrerWallet !== undefined) update.referrerWallet = String(payload.referrerWallet || "").trim()
     if (payload.service !== undefined) update.service = String(payload.service || "").trim()
     if (payload.startDate !== undefined) update.startDate = payload.startDate ? new Date(payload.startDate).toISOString() : null
-    if (payload.launchAt !== undefined || payload.launchDate !== undefined) {
+    if (payload.tentativeLaunchDate && payload.launchTimingStatus === "tentative") {
+      if (project.status === "active") return "⚠️ An active project cannot be moved back to tentative timing."
+      Object.assign(update, tentativeLifecycleFields({ tentativeLaunchDate: String(payload.tentativeLaunchDate), launchTimeZone: payload.launchTimeZone || project.launchTimeZone, launchChatId: options.dataScope === "launch" ? options.currentChatId : undefined, telegramId: telegramId || null, previous: project }))
+    } else if (payload.launchAt !== undefined || payload.launchDate !== undefined) {
       const launchAt = payload.launchAt || payload.launchDate
       if (launchAt && project.status !== "active") Object.assign(update, scheduledLifecycleFields({ launchAt, launchTimeZone: payload.launchTimeZone || project.launchTimeZone, launchChatId: options.dataScope === "launch" ? options.currentChatId : undefined, telegramId: telegramId || null, previous: project }))
       else if (launchAt) {
@@ -1325,7 +1373,7 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
     if (payload.notes !== undefined) update.notes = String(payload.notes || "").trim()
     if (Array.isArray(payload.tags)) update.tags = payload.tags.map(String)
     await db.collection("opsProjects").updateOne({ _id: project._id }, { $set: update })
-    done = (payload.launchAt !== undefined || payload.launchDate !== undefined)
+    done = (payload.launchAt !== undefined || payload.launchDate !== undefined || payload.tentativeLaunchDate !== undefined)
       ? `✅ Launch schedule updated successfully: ${project.name}`
       : `✅ Project updated: ${project.name}`
   }

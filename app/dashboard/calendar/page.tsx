@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react"
 import { CalendarDays, Plus, Save, X } from "lucide-react"
 import { toast } from "sonner"
 
-type Project = { _id: string; name: string; status: string; owner?: string; launchDate?: string }
+type Project = { _id: string; name: string; status: string; owner?: string; launchDate?: string; launchAt?: string; tentativeLaunchDate?: string; launchTimingStatus?: "tentative" | "confirmed" }
 type Reminder = { _id: string; title: string; dueAt?: string; status?: string }
 type HostedGroup = { chatId: string; title: string }
 
@@ -76,12 +76,12 @@ export default function CalendarPage() {
 
   const events = useMemo(() => {
     const rows = [
-      ...projects.filter((project) => project.launchDate).map((project) => ({
+      ...projects.filter((project) => project.launchAt || project.launchDate || project.tentativeLaunchDate).map((project) => ({
         id: `project-${project._id}`,
-        date: project.launchDate || "",
+        date: project.launchAt || project.launchDate || `${project.tentativeLaunchDate}T12:00:00`,
         title: project.name,
-        meta: project.owner || project.status,
-        type: "Launch",
+        meta: project.tentativeLaunchDate && !project.launchAt ? "Time TBD · Tentative" : project.owner || project.status,
+        type: project.tentativeLaunchDate && !project.launchAt ? "Tentative launch" : "Launch",
       })),
       ...reminders.filter((reminder) => reminder.dueAt).map((reminder) => ({
         id: `reminder-${reminder._id}`,

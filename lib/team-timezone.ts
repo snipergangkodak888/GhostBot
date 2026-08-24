@@ -292,6 +292,13 @@ export function parseNaturalTeamDateTime(value: unknown, timeZone = TEAM_TIME_ZO
   return parseTeamDateTime(raw, timeZone)
 }
 
+export function parseNaturalTeamDate(value: unknown, timeZone = TEAM_TIME_ZONE, now = new Date()) {
+  const raw = String(value || "").trim()
+  if (!raw) return ""
+  const parsed = parseNaturalTeamDateTime(raw, timeZone, now)
+  return parsed ? dateKeyInTimeZone(parsed, timeZone) : ""
+}
+
 export function temporalDateConflict(value: unknown, timeZone = TEAM_TIME_ZONE, now = new Date()) {
   const raw = String(value || "").trim()
   const relativeOffset = /\btomorrow\b/i.test(raw) ? 1 : /\btoday\b|\btonight\b/i.test(raw) ? 0 : null

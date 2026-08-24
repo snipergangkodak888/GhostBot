@@ -39,6 +39,8 @@ type Project = {
   currentProfitLoss?: number
   launchDate?: string | null
   launchAt?: string | null
+  tentativeLaunchDate?: string | null
+  launchTimingStatus?: "tentative" | "confirmed"
   launchTimeZone?: string
   launchVenue?: string
   launchFundingAsset?: string
@@ -900,12 +902,12 @@ export function AdminCalendarPage() {
 
   const events = useMemo(() => {
     const rows = [
-      ...projects.filter((project) => project.launchAt || project.launchDate).map((project) => ({
+      ...projects.filter((project) => project.launchAt || project.launchDate || project.tentativeLaunchDate).map((project) => ({
         id: `project-${project._id}`,
-        date: project.launchAt || project.launchDate || "",
-        type: "Launch",
+        date: project.launchAt || project.launchDate || `${project.tentativeLaunchDate}T12:00:00`,
+        type: project.tentativeLaunchDate && !project.launchAt ? "Tentative launch" : "Launch",
         title: project.name,
-        detail: project.service || project.referrer || "Project",
+        detail: project.tentativeLaunchDate && !project.launchAt ? "Time TBD" : project.service || project.referrer || "Project",
       })),
       ...reminders.filter((reminder) => reminder.dueAt).map((reminder) => ({
         id: `reminder-${reminder._id}`,

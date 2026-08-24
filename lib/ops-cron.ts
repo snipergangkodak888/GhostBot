@@ -4,7 +4,7 @@ import { formatTeamDateTime, nextRecurringDueAt, TEAM_TIME_ZONE } from "@/lib/te
 import { getSubscribedChats } from "@/lib/chat-subscriptions"
 import { formatLaunchDaySchedule, getLaunchesForDay, launchDateKey, LAUNCH_TIME_ZONE } from "@/lib/launch-calendar"
 import { ensureDailyTradingFeeExpectations, valuePendingRevenueReceipts } from "@/lib/revenue-service"
-import { activateScheduledProject, projectActivationReadiness, projectLaunchAt } from "@/lib/project-lifecycle"
+import { activateScheduledProject, projectActivationReadiness, projectLaunchAt, projectLaunchDateKey, projectLaunchTimingStatus } from "@/lib/project-lifecycle"
 
 const EST_TIME_ZONE = LAUNCH_TIME_ZONE
 
@@ -174,6 +174,58 @@ async function processLaunchMorningDigest(token: string, now: Date) {
   return { events: launches.length, recipients: recipients.length, sent, failed, skipped, waiting: false, hourEt: digestHour }
 }
 
+export async function processTentativeLaunchTimingFollowups(token: string, now: Date) {
+  const configuredHour = Number(process.env.TENTATIVE_LAUNCH_FOLLOWUP_HOUR_ET || 12)
+  const followupHour = Number.isInteger(configuredHour) && configuredHour >= 0 && configuredHour <= 23 ? configuredHour : 12
+  if (hourInTimeZone(now, EST_TIME_ZONE) !== followupHour) {
+    return { due: 0, sent: 0, failed: 0, skipped: 0, waiting: true, hourEt: followupHour }
+  }
+
+  const db = await getDb()
+  const today = launchDateKey(now)
+  const projects = await db.collection("opsProjects").find({ status: { $in: ["scheduled", "in_progress"] } }).toArray()
+  const tentative = projects.filter((project: any) => projectLaunchTimingStatus(project) === "tentative" && projectLaunchDateKey(project, EST_TIME_ZONE) === today)
+  const fallbackRecipients = await getSubscribedChats("launches")
+  let sent = 0
+  let failed = 0
+  let skipped = 0
+
+  for (const project of tentative) {
+    const version = Number(project.scheduleVersion || 0)
+    const recipients = project.launchChatId
+      ? [{ chatId: String(project.launchChatId), kind: "group" as const, label: "Launch Chat" }]
+      : fallbackRecipients
+    const text = [
+      `🕒 <b>${escapeHtml(project.name || "Tentative launch")}</b> is planned for today, but the exact time is still TBD.`,
+      "",
+      `${escapeHtml(project.launchVenue || "Launch venue not set")} · ${escapeHtml(project.chain || project.revenueChain || "chain not set")} · ${escapeHtml(project.quoteToken || "quote token not set")}`,
+      "Set the time when the client confirms it, or move the tentative day if plans changed.",
+    ].join("\n")
+    const replyMarkup = {
+      inline_keyboard: [
+        [{ text: "🕒 Set exact time", callback_data: `lifecycle:settime:${project._id}:${version}` }],
+        [{ text: "📆 Move tentative day", callback_data: `lifecycle:tentativeday:${project._id}:${version}` }],
+        [{ text: "❌ Launch cancelled", callback_data: `lifecycle:cancel:${project._id}:${version}` }],
+      ],
+    }
+    for (const recipient of recipients) {
+      const key = `tentative-launch-followup:${project._id}:${version}:${today}:${recipient.chatId}`
+      if (!(await claimDelivery(key, "tentative-launch-followup"))) {
+        skipped += 1
+        continue
+      }
+      const messageId = await sendTelegramMessage(token, recipient.chatId, text, { parseMode: "HTML", replyMarkup })
+      if (messageId) sent += 1
+      else {
+        failed += 1
+        await releaseDelivery(key)
+      }
+    }
+  }
+
+  return { due: tentative.length, sent, failed, skipped, waiting: false, hourEt: followupHour }
+}
+
 export async function processDueLaunchConfirmations(token: string, now: Date) {
   const db = await getDb()
   const projects = await db.collection("opsProjects").find({}).toArray()
@@ -337,11 +389,13 @@ export async function runLaunchScheduleCron(now = new Date()) {
   const readiness = await processUpcomingLaunchReadiness(token, now)
   const confirmations = await processDueLaunchConfirmations(token, now)
   const calendar = await processLaunchMorningDigest(token, now)
+  const tentativeTiming = await processTentativeLaunchTimingFollowups(token, now)
   return {
     ok: true,
     timezone: EST_TIME_ZONE,
     estDate: estDateKey(now),
     calendar,
+    tentativeTiming,
     confirmations,
     readiness,
     runAt: now.toISOString(),
@@ -364,6 +418,7 @@ export async function runOpsSuperCron(now = new Date()) {
   const readiness = await processUpcomingLaunchReadiness(token, startedAt)
   const confirmations = await processDueLaunchConfirmations(token, startedAt)
   const calendar = await processLaunchMorningDigest(token, startedAt)
+  const tentativeTiming = await processTentativeLaunchTimingFollowups(token, startedAt)
   const finishedAt = new Date()
   const result = {
     ok: true,
@@ -371,6 +426,7 @@ export async function runOpsSuperCron(now = new Date()) {
     estDate: estDateKey(startedAt),
     reminders,
     calendar,
+    tentativeTiming,
     confirmations,
     readiness,
     revenueDailyFees,

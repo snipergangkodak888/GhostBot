@@ -174,9 +174,32 @@ const cancelled = { _id: "cancelled", name: "Cancelled", ...lifecycle.scheduledL
 rows.opsProjects.push(cancelled)
 assert.equal((await lifecycle.cancelScheduledProject("cancelled", 202, new Date("2026-08-24T18:10:00.000Z"), 1)).project.status, "inactive")
 
+const tentative = {
+  _id: "tentative",
+  name: "Tentative launch",
+  ...lifecycle.tentativeLifecycleFields({ tentativeLaunchDate: "2026-08-24", launchTimeZone: "America/New_York", launchChatId: "-1001", telegramId: 101 }),
+  chain: "solana", quoteToken: "SOL", quoteAssets: ["SOL"], dailyTradingFeeEnabled: true, dailyTradingFeeUsd: 500,
+  feeConfigurationConfirmed: true, referrerStatus: "none",
+}
+rows.opsProjects.push(tentative)
+assert.equal(lifecycle.projectLaunchTimingStatus(tentative), "tentative")
+assert.equal(lifecycle.projectLaunchAt(tentative), null)
+assert.equal(lifecycle.projectLaunchDateKey(tentative, "America/New_York"), "2026-08-24")
+const movedTentative = await lifecycle.setTentativeProjectLaunchDate({ projectId: "tentative", tentativeLaunchDate: "2026-08-25", telegramId: 202, expectedScheduleVersion: 1 })
+assert.equal(movedTentative.ok, true)
+assert.equal(movedTentative.project.scheduleVersion, 2)
+assert.equal(movedTentative.project.launchAt, null)
+assert.equal(movedTentative.project.tentativeLaunchDate, "2026-08-25")
+const confirmedTentative = await lifecycle.rescheduleProject({ projectId: "tentative", launchAt: "2026-08-25T21:10:00.000Z", telegramId: 202, expectedScheduleVersion: 2, timeZone: "America/New_York" })
+assert.equal(confirmedTentative.ok, true)
+assert.equal(confirmedTentative.project.scheduleVersion, 3)
+assert.equal(confirmedTentative.project.launchTimingStatus, "confirmed")
+assert.equal(confirmedTentative.project.tentativeLaunchDate, null)
+assert.equal(confirmedTentative.project.launchAt, "2026-08-25T21:10:00.000Z")
+
 const previewInput = [{ _id: "future", name: "Future legacy", status: "active", launchDate: "2026-09-01T18:00:00.000Z" }]
 const preview = lifecycle.launchLifecycleMigrationPreview(previewInput, new Date("2026-08-24T18:00:00.000Z"))
 assert.equal(preview[0].proposedStatus, "scheduled")
 assert.equal(previewInput[0].status, "active")
 
-console.log("PASS: lifecycle readiness resumes blocked activation, stays idempotent, starts next-day fees, versions delays, handles cancellation, and previews migration.")
+console.log("PASS: lifecycle handles activation, next-day fees, delays, cancellation, and tentative-to-confirmed launch timing without fake timestamps.")

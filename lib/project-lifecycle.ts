@@ -5,6 +5,8 @@ import { dateKeyInTimeZone, TEAM_TIME_ZONE } from "@/lib/team-timezone"
 
 export const PROJECT_STATUSES = ["scheduled", "active", "inactive"] as const
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number]
+export const PROJECT_LAUNCH_TIMING_STATUSES = ["tentative", "confirmed"] as const
+export type ProjectLaunchTimingStatus = (typeof PROJECT_LAUNCH_TIMING_STATUSES)[number]
 
 const CHAIN_BY_LAUNCH_CHAIN = {
   sol: "solana",
@@ -21,6 +23,22 @@ function validDate(value: unknown) {
 
 export function projectLaunchAt(project: any) {
   return validDate(project?.launchAt || project?.launchDate)
+}
+
+export function projectTentativeLaunchDate(project: any) {
+  const value = String(project?.tentativeLaunchDate || "").trim()
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : ""
+}
+
+export function projectLaunchTimingStatus(project: any): ProjectLaunchTimingStatus {
+  return projectTentativeLaunchDate(project) && !projectLaunchAt(project) ? "tentative" : "confirmed"
+}
+
+export function projectLaunchDateKey(project: any, timeZone = TEAM_TIME_ZONE) {
+  const tentative = projectTentativeLaunchDate(project)
+  if (tentative && !projectLaunchAt(project)) return tentative
+  const launchAt = projectLaunchAt(project)
+  return launchAt ? dateKeyInTimeZone(launchAt, project?.launchTimeZone || timeZone) : ""
 }
 
 export function nextDateKey(value: string | Date, timeZone = TEAM_TIME_ZONE) {
@@ -170,10 +188,53 @@ export function activationLifecycleFields(project: any, params: {
     dailyFeeStartDate: nextDateKey(actualLaunchAt, project.launchTimeZone || TEAM_TIME_ZONE),
     activationOverdue: false,
     nextActivationPromptAt: null,
+    launchTimingStatus: "confirmed" as const,
+    tentativeLaunchDate: null,
     pendingActivationIntent: null,
     pendingActivationRequestedAt: null,
     pendingActivationRequestedByTelegramId: null,
     updatedAt: now,
+  }
+}
+
+export function tentativeLifecycleFields(params: {
+  tentativeLaunchDate: string
+  launchTimeZone?: string
+  launchChatId?: number | string | null
+  telegramId?: number | null
+  previous?: any
+}) {
+  const tentativeLaunchDate = String(params.tentativeLaunchDate || "").trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(tentativeLaunchDate)) throw new Error("A valid tentative launch day is required")
+  const previousLaunchAt = projectLaunchAt(params.previous)
+  const previousTentativeDate = projectTentativeLaunchDate(params.previous)
+  const changed = previousLaunchAt || (previousTentativeDate && previousTentativeDate !== tentativeLaunchDate)
+  const history = changed
+    ? [{
+        launchAt: previousLaunchAt?.toISOString() || null,
+        tentativeLaunchDate: previousTentativeDate || null,
+        changedAt: new Date().toISOString(),
+        changedByTelegramId: params.telegramId || null,
+      }]
+    : []
+  return {
+    status: "scheduled" as const,
+    launchAt: null,
+    launchDate: null,
+    launchTimingStatus: "tentative" as const,
+    tentativeLaunchDate,
+    launchTimeZone: params.launchTimeZone || params.previous?.launchTimeZone || TEAM_TIME_ZONE,
+    launchChatId: params.launchChatId == null ? params.previous?.launchChatId || null : String(params.launchChatId),
+    scheduledByTelegramId: params.telegramId || params.previous?.scheduledByTelegramId || null,
+    scheduleVersion: Number(params.previous?.scheduleVersion || 0) + 1,
+    ...(history.length ? { launchScheduleHistory: [...(params.previous?.launchScheduleHistory || []), ...history] } : {}),
+    activationPromptCount: 0,
+    activationPromptSentAt: null,
+    nextActivationPromptAt: null,
+    activationOverdue: false,
+    pendingActivationIntent: null,
+    pendingActivationRequestedAt: null,
+    pendingActivationRequestedByTelegramId: null,
   }
 }
 
@@ -187,13 +248,16 @@ export function scheduledLifecycleFields(params: {
   const launchAt = validDate(params.launchAt)
   if (!launchAt) throw new Error("A valid launch time is required")
   const previousLaunch = projectLaunchAt(params.previous)
-  const history = previousLaunch && previousLaunch.getTime() !== launchAt.getTime()
-    ? [{ launchAt: previousLaunch.toISOString(), changedAt: new Date().toISOString(), changedByTelegramId: params.telegramId || null }]
+  const previousTentativeDate = projectTentativeLaunchDate(params.previous)
+  const history = (previousLaunch && previousLaunch.getTime() !== launchAt.getTime()) || previousTentativeDate
+    ? [{ launchAt: previousLaunch?.toISOString() || null, tentativeLaunchDate: previousTentativeDate || null, changedAt: new Date().toISOString(), changedByTelegramId: params.telegramId || null }]
     : []
   return {
     status: "scheduled" as const,
     launchAt: launchAt.toISOString(),
     launchDate: launchAt.toISOString(),
+    launchTimingStatus: "confirmed" as const,
+    tentativeLaunchDate: null,
     launchTimeZone: params.launchTimeZone || params.previous?.launchTimeZone || TEAM_TIME_ZONE,
     launchChatId: params.launchChatId == null ? params.previous?.launchChatId || null : String(params.launchChatId),
     scheduledByTelegramId: params.telegramId || params.previous?.scheduledByTelegramId || null,
@@ -264,6 +328,26 @@ export async function rescheduleProject(params: { projectId: string; launchAt: s
   const result = await db.collection("opsProjects").updateOne({ _id: project._id, status: project.status, scheduleVersion: project.scheduleVersion }, { $set: { ...fields, updatedAt: now } })
   if (!result.modifiedCount) return { ok: false as const, error: "The project changed before it could be rescheduled. Use the newest schedule." }
   await db.collection("opsProjectLifecycleEvents").insertOne({ projectId: String(project._id), projectName: project.name, action: "rescheduled", previousLaunchAt: projectLaunchAt(project)?.toISOString() || null, launchAt: fields.launchAt, telegramId: params.telegramId, createdAt: now })
+  return { ok: true as const, project: { ...project, ...fields } }
+}
+
+export async function setTentativeProjectLaunchDate(params: { projectId: string; tentativeLaunchDate: string; telegramId: number; chatId?: number | string; timeZone?: string; expectedScheduleVersion?: number }) {
+  const db = await getDb()
+  const project = await db.collection("opsProjects").findOne({ _id: params.projectId })
+  if (!project) return { ok: false as const, error: "Project not found" }
+  if (project.status === "active") return { ok: false as const, error: "An active project cannot be moved back to tentative timing." }
+  if (project.status === "inactive") return { ok: false as const, error: "An inactive project cannot be rescheduled." }
+  if (params.expectedScheduleVersion != null && Number(project.scheduleVersion || 0) !== params.expectedScheduleVersion) return { ok: false as const, error: "This launch schedule was already updated. Use the newest schedule." }
+  let fields
+  try {
+    fields = tentativeLifecycleFields({ tentativeLaunchDate: params.tentativeLaunchDate, launchTimeZone: params.timeZone, launchChatId: params.chatId, telegramId: params.telegramId, previous: project })
+  } catch (error) {
+    return { ok: false as const, error: error instanceof Error ? error.message : "A valid tentative launch day is required" }
+  }
+  const now = new Date()
+  const result = await db.collection("opsProjects").updateOne({ _id: project._id, status: project.status, scheduleVersion: project.scheduleVersion }, { $set: { ...fields, updatedAt: now } })
+  if (!result.modifiedCount) return { ok: false as const, error: "The project changed before it could be rescheduled. Use the newest schedule." }
+  await db.collection("opsProjectLifecycleEvents").insertOne({ projectId: String(project._id), projectName: project.name, action: "timing_marked_tentative", previousLaunchAt: projectLaunchAt(project)?.toISOString() || null, tentativeLaunchDate: fields.tentativeLaunchDate, telegramId: params.telegramId, createdAt: now })
   return { ok: true as const, project: { ...project, ...fields } }
 }
 

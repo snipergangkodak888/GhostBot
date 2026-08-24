@@ -1,10 +1,11 @@
 import { getDb } from "@/lib/db"
-import { projectLaunchAt } from "@/lib/project-lifecycle"
+import { projectLaunchAt, projectLaunchDateKey, projectLaunchTimingStatus } from "@/lib/project-lifecycle"
 
 export const LAUNCH_TIME_ZONE = "America/New_York"
 
 function dateParts(value: string | Date, timeZone = LAUNCH_TIME_ZONE) {
-  const date = value instanceof Date ? value : new Date(value)
+  const raw = String(value || "")
+  const date = value instanceof Date ? value : new Date(/^\d{4}-\d{2}-\d{2}$/.test(raw) ? `${raw}T12:00:00Z` : raw)
   if (Number.isNaN(date.getTime())) return null
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone,
@@ -21,7 +22,8 @@ export function launchDateKey(value: string | Date = new Date()) {
 }
 
 function launchDayLabel(value: string | Date) {
-  const date = value instanceof Date ? value : new Date(value)
+  const raw = String(value || "")
+  const date = value instanceof Date ? value : new Date(/^\d{4}-\d{2}-\d{2}$/.test(raw) ? `${raw}T12:00:00Z` : raw)
   return new Intl.DateTimeFormat("en-US", {
     timeZone: LAUNCH_TIME_ZONE,
     weekday: "long",
@@ -48,10 +50,16 @@ export async function getLaunchesForDay(value: string | Date) {
   const projects = await db.collection("opsProjects").find({}).toArray()
   return projects
     .filter((project: any) => {
-      const launchAt = projectLaunchAt(project)
-      return project.status !== "inactive" && launchAt && launchDateKey(launchAt) === targetKey
+      return project.status !== "inactive" && projectLaunchDateKey(project, LAUNCH_TIME_ZONE) === targetKey
     })
-    .sort((a: any, b: any) => Number(projectLaunchAt(a)) - Number(projectLaunchAt(b)))
+    .sort((a: any, b: any) => {
+      const aLaunch = projectLaunchAt(a)
+      const bLaunch = projectLaunchAt(b)
+      if (aLaunch && bLaunch) return aLaunch.getTime() - bLaunch.getTime()
+      if (aLaunch) return -1
+      if (bLaunch) return 1
+      return String(a.name || "").localeCompare(String(b.name || ""))
+    })
 }
 
 export async function formatLaunchDaySchedule(value: string | Date, options: { morning?: boolean } = {}) {
@@ -61,9 +69,10 @@ export async function formatLaunchDaySchedule(value: string | Date, options: { m
   const header = options.morning ? "☀️ Today’s Launch Schedule" : "📅 Launch Schedule"
   const lines = launches.map((project: any) => {
     const owner = String(project.referrer || project.owner || "").trim()
-    const launchAt = projectLaunchAt(project)!
-    const status = project.status === "active" ? "Active" : project.activationOverdue ? "Awaiting confirmation" : "Scheduled"
-    return `• ${launchTimeLabel(launchAt)} — ${project.name || "Unnamed project"}${owner ? ` (${owner})` : ""} · ${status}`
+    const launchAt = projectLaunchAt(project)
+    const tentative = projectLaunchTimingStatus(project) === "tentative"
+    const status = project.status === "active" ? "Active" : tentative ? "Tentative" : project.activationOverdue ? "Awaiting confirmation" : "Scheduled"
+    return `• ${launchAt ? launchTimeLabel(launchAt) : "Time TBD"} — ${project.name || "Unnamed project"}${owner ? ` (${owner})` : ""} · ${status}`
   })
   return [
     header,

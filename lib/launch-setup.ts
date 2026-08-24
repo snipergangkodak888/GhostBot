@@ -42,8 +42,9 @@ export function launchSetupIssues(payload: any) {
   const issues: string[] = []
   const name = String(payload?.name || "").trim()
   const launchAt = payload?.launchAt || payload?.launchDate
+  const tentativeLaunchDate = String(payload?.tentativeLaunchDate || "").trim()
   if (!name) issues.push("project name")
-  if (!launchAt || Number.isNaN(new Date(launchAt).getTime())) issues.push("launch time")
+  if ((!launchAt || Number.isNaN(new Date(launchAt).getTime())) && !/^\d{4}-\d{2}-\d{2}$/.test(tentativeLaunchDate)) issues.push("launch day or exact time")
   if (!String(payload?.launchVenue || "").trim()) issues.push("launchpad / DEX")
   const readiness = projectActivationReadiness(payload)
   issues.push(...readiness.missing)
@@ -61,9 +62,15 @@ export function formatLaunchSetupReview(action: any, notice = "") {
   const chainId = launchChainIdForProject(payload.chain)
   const chainLabel = LAUNCH_CHAINS.find((chain) => chain.id === chainId)?.name || String(payload.chain || "Not selected")
   const launchAt = payload.launchAt || payload.launchDate
+  const tentativeLaunchDate = String(payload.tentativeLaunchDate || "").trim()
+  const tentativeDayLabel = /^\d{4}-\d{2}-\d{2}$/.test(tentativeLaunchDate)
+    ? new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: payload.launchTimeZone || TEAM_TIME_ZONE }).format(new Date(`${tentativeLaunchDate}T12:00:00Z`))
+    : ""
   const launchLabel = launchAt && !Number.isNaN(new Date(launchAt).getTime())
     ? formatTeamDateTime(new Date(launchAt), payload.launchTimeZone || TEAM_TIME_ZONE)
-    : "Not selected"
+    : tentativeDayLabel
+      ? `${tentativeDayLabel} · Time TBD (tentative)`
+      : "Not selected"
   const referrerStatus = String(payload.referrerStatus || (payload.referrer || payload.referrerAccountId ? "assigned" : "pending"))
   const referralPercentage = Number(payload.referralPercentage || payload.referrerPercentage || 0)
   const referrer = referrerStatus === "none"
@@ -103,6 +110,9 @@ export function launchSetupButtons(action: any): LaunchSetupButton[][] {
     [
       { text: "🚀 Change launchpad", callback_data: `launchsetup:venue:${id}` },
       { text: "💱 Change quote", callback_data: `launchsetup:quote:${id}` },
+    ],
+    [
+      { text: payload.tentativeLaunchDate && !payload.launchAt ? "🕒 Set exact time" : "🕒 Edit timing", callback_data: `launchsetup:timing:${id}` },
     ],
     referrerStatus === "pending"
       ? [
