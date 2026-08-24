@@ -15,7 +15,7 @@ import { formatLaunchDaySchedule } from "@/lib/launch-calendar"
 import { projectFeeConfig } from "@/lib/revenue-projects"
 import { revenueTransactionUrl } from "@/lib/revenue-explorer"
 import { acceptReceiptMatch, assignFeeProject, classifyReceiptAsRevenue, confirmFeeExpectation, createForwardedFeeEvent, ensureDailyTradingFeeExpectations, getRevenueReceipt, listRevenueDay, setFeeQuoteAsset, setFeeType, updateReceiptClassification } from "@/lib/revenue-service"
-import { feeProjectButtons, formatConsolidationCandidate, formatFeeExpectation, isFeeInboxChat, receiptClassificationButtons } from "@/lib/revenue-telegram"
+import { feeProjectButtons, formatConsolidationCandidate, formatFeeExpectation, isFeeInboxChat, receiptClassificationButtons, revenueChainLabel } from "@/lib/revenue-telegram"
 import { confirmConsolidationCandidate, getConsolidationCandidate, rejectConsolidationCandidate } from "@/lib/revenue-consolidation-candidates"
 import { isGlobalRevenueFeeType, type FeeType } from "@/lib/revenue-types"
 import { receiptAvailableAmount, receiptAvailableUsd } from "@/lib/revenue-allocations"
@@ -1220,7 +1220,7 @@ function receiptSummary(receipt: any) {
   const availableUsd = receiptAvailableUsd(receipt)
   const value = availableUsd == null ? "Awaiting USD value" : availableUsd.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 })
   const prior = available < original - 0.00000001 ? ` available from ${original.toLocaleString("en-US", { maximumFractionDigits: 8 })} received` : ""
-  return `${available.toLocaleString("en-US", { maximumFractionDigits: 8 })} ${receipt.asset}${prior} · ${value} · ${feeTypeLabel(receipt.chain)}`
+  return `${available.toLocaleString("en-US", { maximumFractionDigits: 8 })} ${receipt.asset}${prior} · ${value} · ${revenueChainLabel(receipt.chain)}`
 }
 
 async function compatibleReceiptProjects(receipt: any, feeType: FeeType) {
@@ -1246,8 +1246,8 @@ async function sendReceiptProjectPicker(token: string, chatId: number | string, 
   if (!receipt || receipt.direction !== "incoming" || receipt.status !== "unclassified") return sendMessage(token, chatId, "This receipt is no longer available for revenue classification.")
   const projects = await compatibleReceiptProjects(receipt, feeType)
   await setState(telegramId, { action: "receipt_classification", receiptId, feeType }, chatId)
-  if (!projects.length) return sendMessage(token, chatId, `No eligible ${feeTypeLabel(feeType)} project accepts ${receipt.asset} on ${feeTypeLabel(receipt.chain)}. Configure or review it in Revenue Inbox.`)
-  return sendMessage(token, chatId, `${receiptSummary(receipt)}\n\nChoose the project:`, projects.slice(0, 12).map((project: any) => [{ text: `${project.name} · ${feeTypeLabel(project.chain)}`.slice(0, 60), callback_data: `receipt:project:${project._id}` }]))
+  if (!projects.length) return sendMessage(token, chatId, `No eligible ${feeTypeLabel(feeType)} project accepts ${receipt.asset} on ${revenueChainLabel(receipt.chain)}. Configure or review it in Revenue Inbox.`)
+  return sendMessage(token, chatId, `${receiptSummary(receipt)}\n\nChoose the project:`, projects.slice(0, 12).map((project: any) => [{ text: `${project.name} · ${revenueChainLabel(project.chain)}`.slice(0, 60), callback_data: `receipt:project:${project._id}` }]))
 }
 
 async function sendReceiptConfirmation(token: string, chatId: number | string, telegramId: number, projectId?: string | null) {
@@ -1711,7 +1711,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     const receipt = await getRevenueReceipt(id)
     if (!receipt) return sendMessage(token, chatId, "Receipt was not found.")
     const transactionUrl = revenueTransactionUrl(receipt.chain, receipt.transactionHash)
-    return sendMessage(token, chatId, `Revenue receipt\n\n${receipt.amount} ${receipt.asset}\nChain: ${receipt.chain}\nStatus: ${receipt.status}\nTransaction: ${receipt.transactionHash}`, receiptClassificationButtons(id, transactionUrl))
+    return sendMessage(token, chatId, `Revenue receipt\n\n${receipt.amount} ${receipt.asset}\nChain: ${revenueChainLabel(receipt.chain)}\nStatus: ${receipt.status}\nTransaction: ${receipt.transactionHash}`, receiptClassificationButtons(id, transactionUrl))
   }
   if (area === "fee" && (action === "internal" || action === "ignore")) {
     const receipt = await getRevenueReceipt(id)

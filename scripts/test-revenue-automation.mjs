@@ -266,6 +266,7 @@ const revenueTelegram = loadTypeScriptModule("lib/revenue-telegram.ts", {
 await revenueTelegram.notifyFeeInboxReceipt({ _id: "receipt-1", chain: "solana", direction: "incoming", asset: "SOL", amount: 5, amountUsd: 489.51, transactionHash: "tx-1", status: "unclassified" })
 const receiptNotification = telegramCalls.at(-1).body
 assert.match(receiptNotification.text, /New revenue-wallet receipt/)
+assert.match(receiptNotification.text, /🟣 Solana/)
 assert.equal(receiptNotification.reply_markup.inline_keyboard[0][0].callback_data, "receipt:classify:receipt-1")
 assert.equal(receiptNotification.reply_markup.inline_keyboard[0][1].callback_data, "fee:internal:receipt-1")
 assert.ok(receiptNotification.reply_markup.inline_keyboard.flat().filter((button) => button.callback_data).every((button) => Buffer.byteLength(button.callback_data) <= 64))
@@ -274,6 +275,11 @@ const batchNotification = telegramCalls.at(-1).body
 assert.match(batchNotification.text, /Possible internal consolidation/)
 assert.equal(batchNotification.reply_markup.inline_keyboard[0][0].callback_data, "consol:view:batch-1")
 assert.ok(Buffer.byteLength(`receipt:type:${"x".repeat(24)}:sumo_ref_claim`) <= 64)
+assert.equal(revenueTelegram.revenueChainLabel("bnb"), "🟡 BNB Smart Chain")
+assert.equal(revenueTelegram.revenueChainLabel("ethereum"), "🔵 Ethereum Mainnet")
+assert.equal(revenueTelegram.revenueChainLabel("base"), "🔵 Base")
+assert.equal(revenueTelegram.revenueChainLabel("solana"), "🟣 Solana")
+assert.equal(revenueTelegram.revenueChainLabel("robinhood"), "🟢 Robinhood Chain")
 
 const liquidation = parser.parseFeeMessage(`Cashout Summary:\nA total of 212,574 USDC was withdrawn from the MM balance\n200,050 USDC was sent here.\n12,524 USDC was taken for our 5% liquidations fee + privacy swap fee.`)
 assert.equal(liquidation.feeType, "liquidation")

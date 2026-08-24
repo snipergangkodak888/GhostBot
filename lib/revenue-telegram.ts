@@ -2,7 +2,7 @@ import { getDb } from "@/lib/db"
 import { getSubscribedChats } from "@/lib/chat-subscriptions"
 import { getTelegramBotToken, telegramApi } from "@/lib/telegram-bot"
 import { CHAIN_LABELS, projectFeeConfig } from "@/lib/revenue-projects"
-import type { RevenueFeeEvent, RevenueReceipt } from "@/lib/revenue-types"
+import type { RevenueChain, RevenueFeeEvent, RevenueReceipt } from "@/lib/revenue-types"
 import { revenueTransactionUrl } from "@/lib/revenue-explorer"
 
 function escapeHtml(value: unknown) {
@@ -15,6 +15,18 @@ function amount(value: unknown, asset: unknown) {
 
 function usd(value: unknown) {
   return value == null ? "Awaiting valuation" : Number(value).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 })
+}
+
+const CHAIN_COLOR_MARKERS: Record<RevenueChain, string> = {
+  bnb: "🟡",
+  ethereum: "🔵",
+  base: "🔵",
+  solana: "🟣",
+  robinhood: "🟢",
+}
+
+export function revenueChainLabel(chain: RevenueChain) {
+  return `${CHAIN_COLOR_MARKERS[chain]} ${CHAIN_LABELS[chain]}`
 }
 
 export function receiptClassificationButtons(receiptId: string, transactionUrl?: string | null) {
@@ -59,7 +71,7 @@ export async function feeProjectButtons(feeId: string, limit = 8) {
     return config.chain && (!explicitAsset || explicitAsset === "USD" || config.quoteAssets.includes(explicitAsset))
   }).slice(0, limit)
   const rows = configured.map((project: any) => [{
-    text: `${project.name} · ${CHAIN_LABELS[projectFeeConfig(project).chain as keyof typeof CHAIN_LABELS]}`.slice(0, 60),
+    text: `${project.name} · ${revenueChainLabel(projectFeeConfig(project).chain as RevenueChain)}`.slice(0, 60),
     callback_data: `fee:project:${feeId}:${project._id}`,
   }])
   rows.push([{ text: "🔎 Search projects", callback_data: `fee:search:${feeId}` }])
@@ -69,7 +81,7 @@ export async function feeProjectButtons(feeId: string, limit = 8) {
 export function formatFeeExpectation(fee: RevenueFeeEvent) {
   const lines = [
     `<b>${fee.projectName ? `${escapeHtml(fee.projectName)} · ` : ""}${escapeHtml(String(fee.feeType || "Unclassified").replace(/_/g, " "))}</b>`,
-    fee.chain ? `Chain: <b>${escapeHtml(CHAIN_LABELS[fee.chain])}</b>` : "",
+    fee.chain ? `Chain: <b>${escapeHtml(revenueChainLabel(fee.chain))}</b>` : "",
     fee.grossAmount != null ? `Gross cashout: <b>${amount(fee.grossAmount, fee.grossAsset)}</b>` : "",
     fee.liquidationPercentage != null ? `Rule: <b>${fee.liquidationPercentage}% of gross cashout</b>` : "",
     fee.expectedAssetAmount != null ? `Expected fee: <b>${amount(fee.expectedAssetAmount, fee.quoteAsset || fee.grossAsset)}</b>` : "",
@@ -87,7 +99,7 @@ export async function notifyFeeInboxReceipt(receipt: RevenueReceipt) {
   const text = [
     `<b>New revenue-wallet ${receipt.direction === "incoming" ? "receipt" : "movement"}</b>`,
     "",
-    `Chain: <b>${escapeHtml(CHAIN_LABELS[receipt.chain])}</b>`,
+    `Chain: <b>${escapeHtml(revenueChainLabel(receipt.chain))}</b>`,
     `Amount: <b>${escapeHtml(amount(receipt.amount, receipt.asset))}</b>`,
     `Direction: <b>${escapeHtml(receipt.direction)}</b>`,
     `USD value: <b>${escapeHtml(usd(receipt.amountUsd))}</b>`,
@@ -136,7 +148,7 @@ export async function notifyFeeInboxTreasuryReceipt(receipt: RevenueReceipt, rec
     "<b>Treasury consolidation received</b>",
     "",
     `Amount: <b>${escapeHtml(amount(receipt.amount, receipt.asset))}</b>`,
-    `Chain: <b>${escapeHtml(CHAIN_LABELS[receipt.chain])}</b>`,
+    `Chain: <b>${escapeHtml(revenueChainLabel(receipt.chain))}</b>`,
     `Revenue-wallet send matched: <b>${reconciliation?.matched ? "yes" : "waiting"}</b>`,
     transactionUrl ? `Transaction: <a href="${escapeHtml(transactionUrl)}">${escapeHtml(receipt.transactionHash.slice(0, 16))}…</a>` : `Transaction: <code>${escapeHtml(receipt.transactionHash.slice(0, 16))}…</code>`,
     "",
