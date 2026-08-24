@@ -24,6 +24,19 @@ export function sumoSubscribeCommand(channelId: number | string, profileId: unkn
   return `/subscribe_channel ${String(channelId).trim()} ${String(profileId || "").trim()}`
 }
 
+export function organicChannelCompletionMessage(inviteLink: unknown, command: unknown, sumoBotUsername = SUMO_TRADE_BOT_USERNAME) {
+  const username = String(sumoBotUsername || SUMO_TRADE_BOT_USERNAME).trim().replace(/^@/, "")
+  return [
+    "Channel created successfully.",
+    "",
+    "Invite link:",
+    String(inviteLink || "").trim(),
+    "",
+    `DM this to @${username} once token is live:`,
+    String(command || "").trim(),
+  ].join("\n")
+}
+
 export function addBotToChannelUrl(username: unknown, permissions: string[]) {
   const botUsername = String(username || "").trim().replace(/^@/, "")
   if (!botUsername) return ""

@@ -8,18 +8,23 @@ import {
 } from "./organic-channel-automation"
 import { createTelegramUserGateway, telegramUserAutomationConfig } from "./telegram-user-client"
 import { getTelegramBotToken, sendTelegramMessage } from "./telegram-bot"
-import { normalizeOrganicTicker, validOrganicTicker, validSumoProfileId } from "./organic-channel-setup"
+import { normalizeOrganicTicker, organicChannelCompletionMessage, validOrganicTicker, validSumoProfileId } from "./organic-channel-setup"
 
 export async function queueOrganicChannelJob(params: {
   ticker: string
   profileId: string
   sourceChatId: string
   requestedByTelegramId: number
+  requestedByUsername: string
 }) {
   const ticker = normalizeOrganicTicker(params.ticker)
   const profileId = String(params.profileId || "").trim()
   if (!validOrganicTicker(ticker)) throw new Error("Invalid organic channel ticker")
   if (!validSumoProfileId(profileId)) throw new Error("Invalid Sumo profile ID")
+  const requestedByUsername = String(params.requestedByUsername || "").trim().replace(/^@/, "")
+  if (!/^[A-Za-z0-9_]{5,32}$/.test(requestedByUsername)) {
+    throw new Error("A Telegram username is required so the requester can be added as a channel administrator")
+  }
 
   const db = await getDb()
   const active = await db.collection(ORGANIC_CHANNEL_JOB_COLLECTION).findOne({
@@ -36,6 +41,7 @@ export async function queueOrganicChannelJob(params: {
     profileId,
     sourceChatId: String(params.sourceChatId),
     requestedByTelegramId: Number(params.requestedByTelegramId),
+    requestedByUsername,
     stage: "queued",
     status: "queued",
     attempts: 0,
@@ -115,16 +121,11 @@ async function runOneOrganicChannelJob() {
       },
       { upsert: true },
     )
-    await notifySource(completed, [
-      `✅ $${completed.ticker} organic notifications are live.`,
-      `Channel ID: ${completed.channelBotApiId}`,
-      `Invite: ${completed.inviteLink}`,
-      "",
-      `Send this in your DM with @${connection.sumoBotUsername}:`,
-      String(completed.subscribeCommand || ""),
-      "",
-      "The subscription command was generated but not sent automatically.",
-    ].join("\n"))
+    await notifySource(completed, organicChannelCompletionMessage(
+      completed.inviteLink,
+      completed.subscribeCommand,
+      connection.sumoBotUsername,
+    ))
     return { ok: true, processed: 1, jobId: completed._id, status: "complete" }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)

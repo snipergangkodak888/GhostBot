@@ -30,5 +30,9 @@ assert.equal(
   setup.sumoBotChannelUrl(),
   "https://t.me/sumo_trade_bot?startchannel&admin=post_messages",
 )
+assert.equal(
+  setup.organicChannelCompletionMessage("https://t.me/+test", "/subscribe_channel -1001 profile"),
+  "Channel created successfully.\n\nInvite link:\nhttps://t.me/+test\n\nDM this to @sumo_trade_bot once token is live:\n/subscribe_channel -1001 profile",
+)
 
 console.log("Organic channel setup helpers passed")

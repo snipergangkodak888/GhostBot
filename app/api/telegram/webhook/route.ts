@@ -25,7 +25,7 @@ import { botPermissionDeniedMessage, canUseBotCapability, getBotPermissionContex
 import { createGuardEnrollmentLink, guardEnrollmentTokenFromText, guardEnrollmentUrl, handleGuardBotMembershipUpdate, handleGuardChatMemberUpdate, recordGuardChatMember, revokeGuardEnrollmentLinks, syncTelegramChatAdministrators, verifyAndRedeemGuardEnrollment } from "@/lib/guard-enrollment"
 import { activateScheduledProject, activationLifecycleFields, cancelScheduledProject, cleanLaunchProjectName, confirmNoProjectReferrer, confirmStandardProjectFees, projectActivationReadiness, projectLaunchAt, projectLaunchDateKey, projectLaunchTimingStatus, rescheduleProject, setTentativeProjectLaunchDate } from "@/lib/project-lifecycle"
 import { formatLaunchSetupReview, launchChainButtons, launchChainConfig, launchChainIdForProject, launchQuoteButtons, launchSetupButtons, launchSetupReady, launchVenueButtons, launchVenueSelection } from "@/lib/launch-setup"
-import { ghostBotOrganicChannelUrl, normalizeOrganicTicker, organicChannelTitle, SUMO_TRADE_BOT_USERNAME, sumoBotChannelUrl, sumoSubscribeCommand, validOrganicTicker, validSumoProfileId } from "@/lib/organic-channel-setup"
+import { ghostBotOrganicChannelUrl, normalizeOrganicTicker, organicChannelCompletionMessage, organicChannelTitle, SUMO_TRADE_BOT_USERNAME, sumoBotChannelUrl, sumoSubscribeCommand, validOrganicTicker, validSumoProfileId } from "@/lib/organic-channel-setup"
 import { telegramUserAutomationConfigured } from "@/lib/telegram-user-client"
 import { queueOrganicChannelJob } from "@/lib/organic-channel-jobs"
 
@@ -514,24 +514,30 @@ async function takeState(telegramId: number, chatId?: number | string) {
   return state
 }
 
-async function startOrganicChannelSetup(token: string, chatId: number | string, telegramId: number, tickerInput: unknown) {
+async function startOrganicChannelSetup(token: string, chatId: number | string, telegramId: number, tickerInput: unknown, requesterUsername: unknown) {
   const inputParts = String(tickerInput || "").trim().split(/\s+/).filter(Boolean)
   const ticker = normalizeOrganicTicker(inputParts[0] || "")
   const suppliedProfileId = String(inputParts[1] || "").trim()
+  const username = String(requesterUsername || "").trim().replace(/^@/, "")
   if (!validOrganicTicker(ticker)) {
-    await setState(telegramId, { action: "organic_setup_ticker" }, chatId)
+    await setState(telegramId, { action: "organic_setup_ticker", requestedByUsername: username }, chatId)
     await sendMessage(token, chatId, "Send the token ticker only, without spaces.\n\nExample: SUMO\nSend /cancel to stop.")
     return
   }
 
   if (telegramUserAutomationConfigured()) {
+    if (!/^[A-Za-z0-9_]{5,32}$/.test(username)) {
+      await sendMessage(token, chatId, "⚠️ Set a Telegram username on your account, then run this command again. The username is required so GhostBot can add you as an administrator of the new channel.")
+      return
+    }
     if (validSumoProfileId(suppliedProfileId)) {
-      await queueOrganicSetup(token, chatId, telegramId, ticker, suppliedProfileId)
+      await queueOrganicSetup(token, chatId, telegramId, ticker, suppliedProfileId, username)
       return
     }
     await setState(telegramId, {
       action: "organic_auto_profile_id",
       ticker,
+      requestedByUsername: username,
       startedAt: Date.now(),
     }, chatId)
     await sendMessage(token, chatId, [
@@ -580,12 +586,14 @@ async function queueOrganicSetup(
   telegramId: number,
   ticker: string,
   profileId: string,
+  requestedByUsername: string,
 ) {
   const queued = await queueOrganicChannelJob({
     ticker,
     profileId,
     sourceChatId: String(sourceChatId),
     requestedByTelegramId: telegramId,
+    requestedByUsername,
   })
   await clearState(telegramId)
   await sendMessage(token, sourceChatId, [
@@ -1082,7 +1090,7 @@ async function processState(token: string, chatId: number | string, telegramId: 
       await sendMessage(token, chatId, "Send a ticker using up to 20 letters, numbers, dots, dashes, or underscores.\n\nExample: SUMO\nSend /cancel to stop.")
       return true
     }
-    await startOrganicChannelSetup(token, chatId, telegramId, inputParts.join(" "))
+    await startOrganicChannelSetup(token, chatId, telegramId, inputParts.join(" "), state.requestedByUsername || message?.from?.username)
     return true
   }
 
@@ -1093,7 +1101,7 @@ async function processState(token: string, chatId: number | string, telegramId: 
       await sendMessage(token, chatId, "That does not look like a Sumo profile ID. Send the full UUID, for example:\n<code>67f9d846-8d06-47ed-b6e0-63380ed7d1d3</code>\n\nSend /cancel to stop.")
       return true
     }
-    await queueOrganicSetup(token, chatId, telegramId, normalizeOrganicTicker(state.ticker), profileId)
+    await queueOrganicSetup(token, chatId, telegramId, normalizeOrganicTicker(state.ticker), profileId, String(state.requestedByUsername || message?.from?.username || ""))
     return true
   }
 
@@ -1138,20 +1146,10 @@ async function processState(token: string, chatId: number | string, telegramId: 
       { upsert: true },
     )
     await clearState(telegramId)
-    await sendMessage(token, chatId, [
-      `✅ <b>$${ticker} organic notification channel is ready</b>`,
-      "",
-      `Channel ID: <code>${channelId}</code>`,
-      `Profile ID: <code>${profileId}</code>`,
-      "",
-      `Send this in your DM with @${SUMO_TRADE_BOT_USERNAME}:`,
-      `<code>${command}</code>`,
-      "",
-      sumoIsAdmin ? "✅ Sumo Bot is an administrator." : "⚠️ I could not verify Sumo Bot as an administrator. Add it with the button below before subscribing.",
-      inviteLink ? `Invite link: ${inviteLink}` : "⚠️ Create an invite link in the notification channel manually.",
-      "",
-      "The subscription command is intentionally returned for manual review and sending.",
-    ].join("\n"), [
+    const completion = organicChannelCompletionMessage(inviteLink || "Create an invite link in the notification channel manually.", command)
+    await sendMessage(token, chatId, [completion, ...(
+      sumoIsAdmin ? [] : ["", "⚠️ I could not verify Sumo Bot as an administrator. Add it before sending the command."]
+    )].join("\n"), [
       [{ text: "Open Sumo Bot", url: `https://t.me/${SUMO_TRADE_BOT_USERNAME}` }, { text: "Add / verify Sumo admin", url: sumoBotChannelUrl() }],
       ...(inviteLink ? [[{ text: "Open notification channel", url: inviteLink }]] : []),
     ])
@@ -1562,7 +1560,7 @@ async function showLaunchSetupPicker(token: string, chatId: number | string, mes
   await sendMessage(token, chatId, text, buttons)
 }
 
-async function handleCallback(token: string, chatId: number | string, telegramId: number, data: string, req: NextRequest, callbackMessage?: any) {
+async function handleCallback(token: string, chatId: number | string, telegramId: number, data: string, req: NextRequest, callbackMessage?: any, requesterUsername?: string) {
   const db = await getDb()
   const [area, action, id, extra] = data.split(":")
   const context = await botPermissions(telegramId, chatId)
@@ -1582,7 +1580,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   if (area === "organic" && action === "start") {
     const launchAction = await db.collection("opsAiActions").findOne({ _id: id })
     const suggestedTicker = normalizeOrganicTicker(launchAction?.payload?.ticker || launchAction?.payload?.symbol || launchAction?.payload?.name || "")
-    return startOrganicChannelSetup(token, chatId, telegramId, validOrganicTicker(suggestedTicker) ? suggestedTicker : "")
+    return startOrganicChannelSetup(token, chatId, telegramId, validOrganicTicker(suggestedTicker) ? suggestedTicker : "", requesterUsername)
   }
 
   if (area === "launchsetup") {
@@ -2259,7 +2257,7 @@ async function routeText(token: string, chatId: number | string, telegramId: num
   if (organicSetupCommand) {
     if (!(await requireCapability(token, context, "launch"))) return
     await clearState(telegramId)
-    return startOrganicChannelSetup(token, chatId, telegramId, String(organicSetupCommand[1] || ""))
+    return startOrganicChannelSetup(token, chatId, telegramId, String(organicSetupCommand[1] || ""), message?.from?.username)
   }
   if (text === "🚀 Launch Calc" || isBotCommand(text, "launchcalc")) {
     if (!(await requireCapability(token, context, "launch"))) return
@@ -2390,7 +2388,7 @@ export async function POST(req: NextRequest) {
     if (ok) await hostGroupIfAllowed(message?.chat, from)
     if (ok && telegramId) {
       try {
-        await handleCallback(token, chatId, telegramId, String(callback.data || ""), req, callback.message)
+        await handleCallback(token, chatId, telegramId, String(callback.data || ""), req, callback.message, String(from?.username || ""))
       } catch (error) {
         await sendMessage(token, chatId, `⚠️ ${error instanceof Error ? error.message : "That revenue action could not be completed."}`)
       }

@@ -38,6 +38,7 @@ function baseJob(overrides = {}) {
     profileId,
     sourceChatId: "10",
     requestedByTelegramId: 10,
+    requestedByUsername: "launch_operator",
     stage: "queued",
     status: "queued",
     ...overrides,
@@ -55,6 +56,7 @@ function mocks(options = {}) {
     async clearChannelAbout() { events.push("clear-about") },
     async setChannelPhoto() { events.push("photo") },
     async addSumoBotAsAdmin() { events.push("admin") },
+    async addRequesterAsAdmin(_channel, requester) { events.push(`requester-admin:${requester.id}:@${requester.username}`) },
     async createInviteLink() { events.push("invite"); return "https://t.me/+organic-test" },
   }
   return {
@@ -78,6 +80,7 @@ function mocks(options = {}) {
     "clear-about",
     "photo",
     "admin",
+    "requester-admin:10:@launch_operator",
     "invite",
   ])
   assert.equal(test.events.some((event) => event.startsWith("subscribe:")), false, "the command must only be returned")

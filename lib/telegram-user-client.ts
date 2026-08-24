@@ -75,11 +75,24 @@ export async function createTelegramUserGateway(): Promise<{
     throw new Error("TELEGRAM_USER_SESSION is no longer authorized; run the authorization script again")
   }
 
+  let requesterInput: any = null
+  async function resolveRequester(requester: { id: number; username: string }) {
+    const username = String(requester.username || "").trim().replace(/^@/, "")
+    if (!username) throw new Error("The requester needs a Telegram username before starting channel setup")
+    const user: any = await client.getEntity(`@${username}`)
+    if (!(user instanceof Api.User) || user.id?.toString?.() !== String(requester.id)) {
+      throw new Error(`@${username} does not match the Telegram account that requested this channel`)
+    }
+    requesterInput = await client.getInputEntity(user)
+    return requesterInput
+  }
+
   const gateway: OrganicAutomationGateway = {
-    async preflight() {
+    async preflight(requester) {
       if (!fs.existsSync(config.logoPath)) throw new Error(`Sumo logo not found at ${config.logoPath}`)
       if (!(await client.checkAuthorization())) throw new Error("Telegram user session is not authorized")
       await client.getInputEntity(`@${config.sumoBotUsername}`)
+      await resolveRequester(requester)
     },
 
     async findChannelByMarker(marker) {
@@ -137,6 +150,28 @@ export async function createTelegramUserGateway(): Promise<{
         userId: bot,
         adminRights: new Api.ChatAdminRights({ postMessages: true, editMessages: true }),
         rank: "Sumo Trade Bot",
+      }))
+    },
+
+    async addRequesterAsAdmin(channel, requester) {
+      const user = requesterInput || await resolveRequester(requester)
+      await client.invoke(new Api.channels.EditAdmin({
+        channel: inputChannel(channel),
+        userId: user,
+        adminRights: new Api.ChatAdminRights({
+          changeInfo: true,
+          postMessages: true,
+          editMessages: true,
+          deleteMessages: true,
+          inviteUsers: true,
+          addAdmins: true,
+          manageCall: true,
+          postStories: true,
+          editStories: true,
+          deleteStories: true,
+          manageDirectMessages: true,
+        }),
+        rank: "Launch Operator",
       }))
     },
 

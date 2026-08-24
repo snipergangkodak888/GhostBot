@@ -13,6 +13,7 @@ export type OrganicChannelStage =
   | "about_cleared"
   | "photo_set"
   | "sumo_admin_set"
+  | "requester_admin_set"
   | "command_ready"
   | "invite_created"
   | "complete"
@@ -23,6 +24,7 @@ export type OrganicChannelJob = {
   profileId: string
   sourceChatId: string
   requestedByTelegramId: number
+  requestedByUsername: string
   stage: OrganicChannelStage
   status: "queued" | "running" | "retry" | "complete" | "failed"
   channel?: OrganicChannelRef
@@ -36,12 +38,13 @@ export type OrganicChannelJob = {
 }
 
 export type OrganicAutomationGateway = {
-  preflight(): Promise<void>
+  preflight(requester: { id: number; username: string }): Promise<void>
   findChannelByMarker(marker: string): Promise<OrganicChannelRef | null>
   createBroadcastChannel(title: string, about: string): Promise<OrganicChannelRef>
   clearChannelAbout(channel: OrganicChannelRef): Promise<void>
   setChannelPhoto(channel: OrganicChannelRef): Promise<void>
   addSumoBotAsAdmin(channel: OrganicChannelRef): Promise<void>
+  addRequesterAsAdmin(channel: OrganicChannelRef, requester: { id: number; username: string }): Promise<void>
   createInviteLink(channel: OrganicChannelRef, title: string): Promise<string>
 }
 
@@ -56,9 +59,10 @@ const STAGE_NUMBER: Record<OrganicChannelStage, number> = {
   about_cleared: 2,
   photo_set: 3,
   sumo_admin_set: 4,
-  command_ready: 5,
-  invite_created: 6,
-  complete: 7,
+  requester_admin_set: 5,
+  command_ready: 6,
+  invite_created: 7,
+  complete: 8,
 }
 
 function reached(job: OrganicChannelJob, stage: OrganicChannelStage) {
@@ -92,7 +96,8 @@ export async function processOrganicChannelJob(
   const marker = organicChannelMarker(job._id)
 
   // Validate every credential and local asset before the first Telegram side effect.
-  await deps.gateway.preflight()
+  const requester = { id: job.requestedByTelegramId, username: job.requestedByUsername }
+  await deps.gateway.preflight(requester)
 
   if (!reached(job, "channel_created")) {
     const existing = await deps.gateway.findChannelByMarker(marker)
@@ -122,6 +127,11 @@ export async function processOrganicChannelJob(
   if (!reached(job, "sumo_admin_set")) {
     await deps.gateway.addSumoBotAsAdmin(job.channel)
     await save(job, deps, { stage: "sumo_admin_set" })
+  }
+
+  if (!reached(job, "requester_admin_set")) {
+    await deps.gateway.addRequesterAsAdmin(job.channel, requester)
+    await save(job, deps, { stage: "requester_admin_set" })
   }
 
   if (!reached(job, "command_ready")) {
