@@ -4,17 +4,19 @@ import { verifyAdminToken } from "@/lib/auth"
 import {
   acceptReceiptMatch,
   assignFeeProject,
+  classifyReceiptAsRevenue,
+  classifyReceiptsAsRevenue,
   confirmFeeExpectation,
-  createFeeFromReceipt,
-  createFeeFromReceipts,
   ensureDailyTradingFeeExpectations,
   listRevenueDay,
   proposeReceiptMatch,
   revenuePayrollDraft,
   resolveFeeWithoutRevenue,
+  repairReceiptFirstRevenue,
   setFeeQuoteAsset,
   setFeeType,
   updateReceiptClassification,
+  undoManualRevenueClassification,
   valuePendingRevenueReceipts,
 } from "@/lib/revenue-service"
 import { teamDateKey } from "@/lib/team-timezone"
@@ -59,8 +61,10 @@ export async function POST(req: Request) {
       case "ignore_fee": result = await resolveFeeWithoutRevenue(String(body.feeId), "ignored"); break
       case "waive_fee": result = await resolveFeeWithoutRevenue(String(body.feeId), "waived"); break
       case "classify_receipt": result = await updateReceiptClassification(String(body.receiptId), String(body.status) as RevenueReceiptStatus, body.amountUsd === undefined ? undefined : body.amountUsd == null ? null : Number(body.amountUsd)); break
-      case "create_receipt_fee": result = await createFeeFromReceipt({ receiptId: String(body.receiptId), feeType: String(body.feeType) as FeeType, projectId: body.projectId ? String(body.projectId) : null, amount: body.amount == null || body.amount === "" ? null : Number(body.amount) }); break
-      case "create_grouped_receipt_fee": result = await createFeeFromReceipts({ receiptIds: Array.isArray(body.receiptIds) ? body.receiptIds.map(String) : [], feeType: String(body.feeType) as FeeType, projectId: body.projectId ? String(body.projectId) : null, amount: body.amount == null || body.amount === "" ? null : Number(body.amount) }); break
+      case "create_receipt_fee": result = await classifyReceiptAsRevenue({ receiptId: String(body.receiptId), feeType: String(body.feeType) as FeeType, projectId: body.projectId ? String(body.projectId) : null, amount: body.amount == null || body.amount === "" ? null : Number(body.amount) }); break
+      case "create_grouped_receipt_fee": result = await classifyReceiptsAsRevenue({ receiptIds: Array.isArray(body.receiptIds) ? body.receiptIds.map(String) : [], feeType: String(body.feeType) as FeeType, projectId: body.projectId ? String(body.projectId) : null, amount: body.amount == null || body.amount === "" ? null : Number(body.amount) }); break
+      case "undo_manual_classification": result = await undoManualRevenueClassification(String(body.feeId)); break
+      case "repair_revenue_workflow": result = await repairReceiptFirstRevenue(String(body.date || teamDateKey(0))); break
       case "confirm_consolidation_candidate": result = await confirmConsolidationCandidate(String(body.batchId)); break
       case "reject_consolidation_candidate": result = await rejectConsolidationCandidate(String(body.batchId)); break
       case "remove_consolidation_receipt": result = await removeReceiptFromConsolidationCandidate(String(body.batchId), String(body.receiptId)); break

@@ -15,10 +15,11 @@ import { getConsolidation } from "@/lib/revenue-consolidation"
 import { listConsolidationCandidates } from "@/lib/revenue-consolidation-candidates"
 import { valueRevenueReceipt } from "@/lib/revenue-pricing"
 import { aggregateRevenueFeesForPayroll } from "@/lib/revenue-payroll"
-import { receiptAvailableAmount, validateClassifiedAmount } from "@/lib/revenue-allocations"
+import { fixedFeeReceiptMetrics, receiptAvailableAmount, validateClassifiedAmount } from "@/lib/revenue-allocations"
 
 const FEES = "revenueFeeEvents"
 const RECEIPTS = "revenueReceipts"
+const AUDIT = "revenueFeeAudit"
 
 function iso(value = new Date()) {
   return value.toISOString()
@@ -245,14 +246,10 @@ export async function createFeeFromReceipts(params: { receiptIds: string[]; feeT
     if (dailyFee.status === "confirmed") throw new Error(`${project?.name || "This project"}'s $500 daily trading fee is already confirmed for ${date}`)
     if (["ignored", "waived"].includes(dailyFee.status)) throw new Error("This daily trading fee was already ignored or waived")
     if (dailyFee.quoteAsset && dailyFee.quoteAsset !== receipt.asset) throw new Error(`This daily trading fee is waiting for ${dailyFee.quoteAsset}, not ${receipt.asset}`)
-    const selectedUsd = receipts.reduce((sum: number, row: any) => {
-      const available = receiptAvailableAmount(row)
-      return sum + (row.amountUsd == null ? 0 : Number(row.amountUsd) * available / Math.max(Number(row.amount || 0), Number.EPSILON))
-    }, 0)
-    if (receipts.some((row: any) => row.amountUsd == null)) throw new Error("Value the selected receipt(s) in USD before applying the daily fee")
     const expectedUsd = Number(dailyFee.expectedUsd || projectFeeConfig(project).dailyTradingFeeUsd || 500)
-    const allowedUsdVariance = Math.max(2, expectedUsd * 0.05)
-    if (Math.abs(selectedUsd - expectedUsd) > allowedUsdVariance) throw new Error(`Selected receipts must be within ${allowedUsdVariance.toLocaleString("en-US", { style: "currency", currency: "USD" })} of the $${expectedUsd.toFixed(0)} daily fee`)
+    const metrics = fixedFeeReceiptMetrics(receipts, expectedUsd)
+    if (!metrics.fullyValued) throw new Error("Value the selected receipt(s) in USD before applying the daily fee")
+    if (!metrics.withinTolerance) throw new Error(`Selected receipts must be within ${metrics.allowedVarianceUsd.toLocaleString("en-US", { style: "currency", currency: "USD" })} of the $${expectedUsd.toFixed(0)} daily fee`)
     for (const previousId of dailyFee.proposedReceiptIds || []) {
       const previous = await db.collection(RECEIPTS).findOne({ _id: previousId })
       if (previous?.proposedFeeEventId === String(dailyFee._id) && !(previous.allocations || []).length) {
@@ -263,7 +260,7 @@ export async function createFeeFromReceipts(params: { receiptIds: string[]; feeT
     const feeId = String(dailyFee._id)
     await db.collection(FEES).updateOne(
       { _id: feeId },
-      { $set: { quoteAsset: receipt.asset, expectedAssetAmount: receipt.asset === "USDC" ? expectedUsd : null, proposedReceiptIds: receiptIds, matchAlternatives: [], matchConfidence: Math.abs(selectedUsd - expectedUsd) <= Math.max(2, expectedUsd * 0.005) ? "high" : "medium", matchDelta: round(Math.abs(selectedUsd - expectedUsd), 2), manualReceiptSelection: true, status: "match_proposed", updatedAt: now } },
+      { $set: { quoteAsset: receipt.asset, expectedAssetAmount: receipt.asset === "USDC" ? expectedUsd : null, proposedReceiptIds: receiptIds, matchAlternatives: [], matchConfidence: Math.abs(Number(metrics.actualReceivedUsd) - expectedUsd) <= Math.max(2, expectedUsd * 0.005) ? "high" : "medium", matchDelta: round(Math.abs(Number(metrics.actualReceivedUsd) - expectedUsd), 2), manualReceiptSelection: true, status: "match_proposed", updatedAt: now } },
     )
     for (const row of receipts as any[]) {
       await db.collection(RECEIPTS).updateOne({ _id: row._id }, { $set: { status: "match_proposed", proposedFeeEventId: feeId, updatedAt: now } })
@@ -322,6 +319,21 @@ export async function createFeeFromReceipt(params: { receiptId: string; feeType:
   return createFeeFromReceipts({ ...params, receiptIds: [params.receiptId] })
 }
 
+/**
+ * Receipt-first classification is already an explicit human decision. Persist it
+ * as final accounting in one operation instead of asking for a second approval.
+ */
+export async function classifyReceiptsAsRevenue(params: { receiptIds: string[]; feeType: FeeType; projectId?: string | null; amount?: number | null }, telegramId?: number | null) {
+  const fee = await createFeeFromReceipts(params)
+  if (fee.status === "confirmed") return fee
+  if (fee.status !== "match_proposed") throw new Error("Revenue classification could not be finalized")
+  return acceptReceiptMatch(String(fee._id), telegramId)
+}
+
+export async function classifyReceiptAsRevenue(params: { receiptId: string; feeType: FeeType; projectId?: string | null; amount?: number | null }, telegramId?: number | null) {
+  return classifyReceiptsAsRevenue({ ...params, receiptIds: [params.receiptId] }, telegramId)
+}
+
 export async function confirmFeeExpectation(feeId: string, telegramId?: number | null) {
   const db = await getDb()
   const fee = await db.collection(FEES).findOne({ _id: feeId })
@@ -370,6 +382,7 @@ export async function acceptReceiptMatch(feeId: string, telegramId?: number | nu
   const db = await getDb()
   const fee = await db.collection(FEES).findOne({ _id: feeId })
   if (!fee) throw new Error("Fee entry was not found")
+  if (fee.status === "confirmed") return fee as RevenueFeeEvent
   const receiptIds = Array.from(new Set((receiptIdsInput?.length ? receiptIdsInput : fee.proposedReceiptIds || []).map(String)))
   if (!receiptIds.length) throw new Error("Choose at least one receipt")
   const receipts = await Promise.all(receiptIds.map((id) => db.collection(RECEIPTS).findOne({ _id: id })))
@@ -378,8 +391,9 @@ export async function acceptReceiptMatch(feeId: string, telegramId?: number | nu
   if (receipts.some((receipt) => receipt.status === "match_proposed" && receipt.proposedFeeEventId && receipt.proposedFeeEventId !== feeId)) throw new Error("A selected receipt is reserved for another fee")
 
   const now = iso()
-  let remainingAmount = fee.expectedAssetAmount == null ? null : Number(fee.expectedAssetAmount)
-  let remainingUsd = remainingAmount == null && fee.expectedUsd != null ? Number(fee.expectedUsd) : null
+  const fixedDailyFee = fee.feeType === "daily_trading"
+  let remainingAmount = fixedDailyFee ? null : fee.expectedAssetAmount == null ? null : Number(fee.expectedAssetAmount)
+  let remainingUsd = fixedDailyFee ? null : remainingAmount == null && fee.expectedUsd != null ? Number(fee.expectedUsd) : null
   let allocatedUsd = 0
   const usedReceiptIds: string[] = []
   const allocationPlan: Array<{ receipt: any; available: number; amount: number; amountUsd: number | null }> = []
@@ -404,6 +418,13 @@ export async function acceptReceiptMatch(feeId: string, telegramId?: number | nu
     allocatedUsd += Number(allocationUsd || 0)
     usedReceiptIds.push(String(receipt._id))
     allocationPlan.push({ receipt, available, amount: allocationAmount, amountUsd: allocationUsd })
+  }
+
+  if (fixedDailyFee) {
+    const expectedUsd = Number(fee.expectedUsd || 500)
+    const metrics = fixedFeeReceiptMetrics(receipts, expectedUsd, fee.manualReceiptSelection ? 0.05 : 0.005)
+    if (!metrics.fullyValued) throw new Error("Value the selected receipt(s) in USD before applying the daily fee")
+    if (!metrics.withinTolerance) throw new Error("Selected receipts do not add up closely enough to the fixed daily fee")
   }
 
   const unresolved = remainingAmount ?? remainingUsd
@@ -435,6 +456,8 @@ export async function acceptReceiptMatch(feeId: string, telegramId?: number | nu
 
   let recognizedUsd = fee.expectedUsd == null ? null : Number(fee.expectedUsd)
   if (recognizedUsd == null && usedReceiptIds.length && allocatedUsd > 0) recognizedUsd = round(allocatedUsd, 2)
+  const actualReceivedUsd = allocatedUsd > 0 ? round(allocatedUsd, 2) : null
+  const conversionVarianceUsd = fixedDailyFee && actualReceivedUsd != null && recognizedUsd != null ? round(actualReceivedUsd - recognizedUsd, 2) : null
 
   await db.collection(FEES).updateOne(
     { _id: feeId },
@@ -445,6 +468,8 @@ export async function acceptReceiptMatch(feeId: string, telegramId?: number | nu
         matchAlternatives: [],
         status: "confirmed",
         recognizedUsd,
+        actualReceivedUsd,
+        conversionVarianceUsd,
         valuationStatus: recognizedUsd == null ? "pending" : "valued",
         confirmedByTelegramId: telegramId || fee.confirmedByTelegramId || null,
         confirmedAt: now,
@@ -453,6 +478,75 @@ export async function acceptReceiptMatch(feeId: string, telegramId?: number | nu
     },
   )
   return db.collection(FEES).findOne({ _id: feeId }) as Promise<RevenueFeeEvent>
+}
+
+export async function undoManualRevenueClassification(feeId: string, actor = "admin") {
+  const db = await getDb()
+  const fee = await db.collection(FEES).findOne({ _id: feeId })
+  if (!fee) throw new Error("Revenue entry was not found")
+  const manuallyAttachedDaily = fee.source === "daily_schedule" && fee.feeType === "daily_trading" && fee.manualReceiptSelection
+  if (fee.source !== "manual" && !manuallyAttachedDaily) throw new Error("Only receipt-first classifications can be undone here")
+  const consolidation = await getConsolidation(String(fee.date || ""))
+  if (consolidation?.status === "confirmed") throw new Error("This accounting day is finalized. Reopen its reconciliation before reclassifying revenue")
+
+  const receiptIds = Array.from(new Set([...(fee.matchedReceiptIds || []), ...(fee.proposedReceiptIds || [])].map(String)))
+  const now = iso()
+  await db.collection(AUDIT).insertOne({ action: "undo_manual_classification", feeEventId: feeId, feeSnapshot: fee, receiptIds, actor, createdAt: now })
+  for (const receiptId of receiptIds) {
+    const receipt = await db.collection(RECEIPTS).findOne({ _id: receiptId })
+    if (!receipt) continue
+    const allocations = (receipt.allocations || []).filter((row: any) => String(row.feeEventId) !== feeId)
+    const allocated = allocations.reduce((sum: number, row: any) => sum + Number(row.amount || 0), 0)
+    const status = allocated >= Number(receipt.amount || 0) - 0.00000001 ? "allocated" : "unclassified"
+    await db.collection(RECEIPTS).updateOne({ _id: receiptId }, { $set: { allocations, status, proposedFeeEventId: receipt.proposedFeeEventId === feeId ? null : receipt.proposedFeeEventId || null, updatedAt: now } })
+  }
+  if (manuallyAttachedDaily) {
+    await db.collection(FEES).updateOne({ _id: feeId }, { $set: { status: "awaiting_receipt", matchedReceiptIds: [], proposedReceiptIds: [], matchAlternatives: [], manualReceiptSelection: false, actualReceivedUsd: null, conversionVarianceUsd: null, confirmedAt: null, confirmedByTelegramId: null, updatedAt: now } })
+  } else {
+    await db.collection(FEES).deleteOne({ _id: feeId })
+  }
+  return { undone: true, feeId, receiptIds }
+}
+
+export async function repairReceiptFirstRevenue(date = teamDateKey(0)) {
+  const db = await getDb()
+  const now = iso()
+  const proposed = await db.collection(FEES).find({ date, source: "manual", status: "match_proposed" }).toArray()
+  let finalized = 0
+  for (const fee of proposed) {
+    await acceptReceiptMatch(String(fee._id))
+    finalized += 1
+  }
+
+  const dailyFees = await db.collection(FEES).find({ date, feeType: "daily_trading", status: "confirmed" }).toArray()
+  let dailyReceiptsRepaired = 0
+  for (const fee of dailyFees) {
+    const receiptIds = Array.from(new Set((fee.matchedReceiptIds || []).map(String)))
+    if (!receiptIds.length) continue
+    const receipts = await Promise.all(receiptIds.map((id) => db.collection(RECEIPTS).findOne({ _id: id })))
+    if (receipts.some((receipt) => !receipt || receipt.amountUsd == null)) continue
+    const plans = receipts.map((receipt: any) => {
+      const otherAllocations = (receipt.allocations || []).filter((row: any) => String(row.feeEventId) !== String(fee._id))
+      const otherAmount = otherAllocations.reduce((sum: number, row: any) => sum + Number(row.amount || 0), 0)
+      const amount = Math.max(0, Number(receipt.amount || 0) - otherAmount)
+      const amountUsd = Number(receipt.amountUsd || 0) * amount / Math.max(Number(receipt.amount || 0), Number.EPSILON)
+      return { receipt, otherAllocations, amount, amountUsd }
+    })
+    const actualReceivedUsd = round(plans.reduce((sum, plan) => sum + plan.amountUsd, 0), 2)
+    const expectedUsd = Number(fee.expectedUsd || 500)
+    if (Math.abs(actualReceivedUsd - expectedUsd) > Math.max(2, expectedUsd * 0.05)) continue
+    let changed = fee.actualReceivedUsd == null || Math.abs(Number(fee.actualReceivedUsd) - actualReceivedUsd) > 0.009
+    for (const plan of plans) {
+      const previousAmount = (plan.receipt.allocations || []).filter((row: any) => String(row.feeEventId) === String(fee._id)).reduce((sum: number, row: any) => sum + Number(row.amount || 0), 0)
+      if (Math.abs(previousAmount - plan.amount) > 0.00000001) changed = true
+      const allocations = [...plan.otherAllocations, { feeEventId: String(fee._id), amount: round(plan.amount), amountUsd: round(plan.amountUsd, 2), createdAt: fee.confirmedAt || now }]
+      await db.collection(RECEIPTS).updateOne({ _id: plan.receipt._id }, { $set: { allocations, status: "allocated", proposedFeeEventId: null, updatedAt: now } })
+    }
+    await db.collection(FEES).updateOne({ _id: fee._id }, { $set: { actualReceivedUsd, conversionVarianceUsd: round(actualReceivedUsd - expectedUsd, 2), updatedAt: now } })
+    if (changed) dailyReceiptsRepaired += 1
+  }
+  await db.collection(AUDIT).insertOne({ action: "repair_receipt_first_workflow", date, finalized, dailyReceiptsRepaired, actor: "system_repair", createdAt: iso() })
+  return { date, finalized, dailyReceiptsRepaired }
 }
 
 export async function saveRevenueReceipt(input: Omit<RevenueReceipt, "_id" | "createdAt" | "updatedAt">) {
@@ -606,6 +700,7 @@ export async function ensureDailyTradingFeeExpectations(date = teamDateKey(0)) {
 }
 
 export async function listRevenueDay(date = teamDateKey(0)) {
+  if (date === teamDateKey(0)) await ensureDailyTradingFeeExpectations(date)
   const db = await getDb()
   const [fees, receipts, projects, consolidation, consolidationCandidates] = await Promise.all([
     db.collection(FEES).find({ date }).sort({ createdAt: -1 }).toArray(),
@@ -615,6 +710,8 @@ export async function listRevenueDay(date = teamDateKey(0)) {
     listConsolidationCandidates(date),
   ])
   const dayReceipts = receipts
+  const expectationFees = fees.filter((fee: any) => fee.source !== "manual")
+  const recordedRevenue = fees.filter((fee: any) => fee.source === "manual")
   return {
     date,
     fees,
@@ -624,8 +721,10 @@ export async function listRevenueDay(date = teamDateKey(0)) {
     consolidationCandidates,
     summary: {
       fees: fees.length,
+      expectedFees: expectationFees.length,
+      recordedRevenue: recordedRevenue.filter((fee: any) => fee.status === "confirmed").length,
       confirmedFees: fees.filter((fee: any) => fee.status === "confirmed").length,
-      unresolvedFees: fees.filter((fee: any) => !["confirmed", "waived", "ignored"].includes(fee.status)).length,
+      unresolvedFees: expectationFees.filter((fee: any) => !["confirmed", "waived", "ignored"].includes(fee.status)).length,
       receipts: dayReceipts.length,
       unclassifiedReceipts: dayReceipts.filter((receipt: any) => receipt.status === "unclassified" && receipt.direction === "incoming").length,
       recognizedUsd: round(fees.filter((fee: any) => fee.status === "confirmed").reduce((sum: number, fee: any) => sum + Number(fee.recognizedUsd || 0), 0), 2),

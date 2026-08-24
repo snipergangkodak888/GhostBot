@@ -14,7 +14,7 @@ import { chatPurposeLabel, listChatSubscriptions, normalizeChatPurpose, setChatS
 import { formatLaunchDaySchedule } from "@/lib/launch-calendar"
 import { projectFeeConfig } from "@/lib/revenue-projects"
 import { revenueTransactionUrl } from "@/lib/revenue-explorer"
-import { acceptReceiptMatch, assignFeeProject, confirmFeeExpectation, createFeeFromReceipt, createForwardedFeeEvent, ensureDailyTradingFeeExpectations, getRevenueReceipt, listRevenueDay, setFeeQuoteAsset, setFeeType, updateReceiptClassification } from "@/lib/revenue-service"
+import { acceptReceiptMatch, assignFeeProject, classifyReceiptAsRevenue, confirmFeeExpectation, createForwardedFeeEvent, ensureDailyTradingFeeExpectations, getRevenueReceipt, listRevenueDay, setFeeQuoteAsset, setFeeType, updateReceiptClassification } from "@/lib/revenue-service"
 import { feeProjectButtons, formatConsolidationCandidate, formatFeeExpectation, isFeeInboxChat, receiptClassificationButtons } from "@/lib/revenue-telegram"
 import { confirmConsolidationCandidate, getConsolidationCandidate, rejectConsolidationCandidate } from "@/lib/revenue-consolidation-candidates"
 import { isGlobalRevenueFeeType, type FeeType } from "@/lib/revenue-types"
@@ -1112,8 +1112,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   if (area === "receipt" && action === "confirm") {
     const state = await takeState(telegramId)
     if (state?.action !== "receipt_classification" || String(state.receiptId) !== id || !DIRECT_RECEIPT_FEE_TYPES.includes(state.feeType)) return sendMessage(token, chatId, "This classification menu expired. Start again from the receipt message.")
-    const fee = await createFeeFromReceipt({ receiptId: id, feeType: state.feeType as FeeType, projectId: state.projectId || null })
-    const confirmed = await acceptReceiptMatch(String(fee._id), telegramId)
+    const confirmed = await classifyReceiptAsRevenue({ receiptId: id, feeType: state.feeType as FeeType, projectId: state.projectId || null }, telegramId)
     await clearState(telegramId)
     return sendMessage(token, chatId, `✅ Revenue classified by Telegram. The admin app is already updated.\n\n${formatFeeExpectation(confirmed)}`)
   }

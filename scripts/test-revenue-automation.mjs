@@ -64,6 +64,12 @@ function memoryDb(seed = {}) {
         if (doc && update.$set) Object.assign(doc, structuredClone(update.$set))
         return { matchedCount: doc ? 1 : 0 }
       },
+      deleteOne: async (filter) => {
+        const index = docs.findIndex((row) => matches(row, filter))
+        if (index < 0) return { deletedCount: 0 }
+        docs.splice(index, 1)
+        return { deletedCount: 1 }
+      },
     }
   }
   return { collection, collections }
@@ -104,6 +110,42 @@ assert.ok(Math.abs(allocations.receiptAvailableAmount(partiallyAllocated) - 0.00
 assert.ok(Math.abs(allocations.receiptAvailableUsd(partiallyAllocated) - 1.59) < 0.01)
 assert.doesNotThrow(() => allocations.validateClassifiedAmount(0.00227256, allocations.receiptAvailableAmount(partiallyAllocated), "BNB"))
 assert.throws(() => allocations.validateClassifiedAmount(0.716913, allocations.receiptAvailableAmount(partiallyAllocated), "BNB"), /Only 0.00227256 BNB remains available/)
+
+const dailyOver = allocations.fixedFeeReceiptMetrics([{ amount: 0.716913, amountUsd: 501.59, allocations: [] }], 500)
+assert.equal(dailyOver.withinTolerance, true)
+assert.equal(dailyOver.actualReceivedUsd, 501.59)
+assert.equal(dailyOver.conversionVarianceUsd, 1.59)
+const dailyUnder = allocations.fixedFeeReceiptMetrics([{ amount: 5.140664, amountUsd: 489.51, allocations: [] }], 500)
+assert.equal(dailyUnder.withinTolerance, true)
+assert.equal(dailyUnder.actualReceivedUsd, 489.51)
+assert.equal(dailyUnder.conversionVarianceUsd, -10.49)
+assert.equal(allocations.fixedFeeReceiptMetrics([{ amount: 1, amountUsd: 450, allocations: [] }], 500).withinTolerance, false)
+
+const receiptFirstDb = memoryDb({
+  revenueReceipts: [{ _id: "sumo-receipt", date: "2026-08-23", provider: "manual", direction: "incoming", chain: "ethereum", asset: "ETH", amount: 0.2, amountUsd: 500, status: "unclassified", allocations: [], blockTime: "2026-08-23T12:00:00.000Z", createdAt: "2026-08-23T12:00:00.000Z" }],
+})
+const receiptFirstService = loadTypeScriptModule("lib/revenue-service.ts", {
+  "@/lib/db": { getDb: async () => receiptFirstDb },
+  "@/lib/team-timezone": { dateKeyInTimeZone: () => "2026-08-23", teamDateKey: () => "2026-08-23" },
+  "@/lib/revenue-matching": matching,
+  "@/lib/revenue-parser": parser,
+  "@/lib/revenue-projects": { projectFeeConfig: () => ({ chain: "", quoteAssets: [], dailyTradingFeeEnabled: false, dailyTradingFeeUsd: 500 }) },
+  "@/lib/revenue-types": { isGlobalRevenueFeeType: (value) => ["fee_rebate", "sumo_ref_claim"].includes(String(value || "")) },
+  "@/lib/revenue-consolidation": { getConsolidation: async () => null },
+  "@/lib/revenue-consolidation-candidates": { listConsolidationCandidates: async () => [] },
+  "@/lib/revenue-pricing": { valueRevenueReceipt: async (receipt) => receipt },
+  "@/lib/revenue-payroll": revenuePayroll,
+  "@/lib/revenue-allocations": allocations,
+})
+const classifiedSumo = await receiptFirstService.classifyReceiptAsRevenue({ receiptId: "sumo-receipt", feeType: "sumo_ref_claim" })
+assert.equal(classifiedSumo.status, "confirmed")
+assert.equal(classifiedSumo.projectId, null)
+assert.equal(receiptFirstDb.collections.get("revenueReceipts")[0].status, "allocated")
+assert.equal(receiptFirstDb.collections.get("revenueFeeEvents").length, 1)
+await receiptFirstService.undoManualRevenueClassification(classifiedSumo._id)
+assert.equal(receiptFirstDb.collections.get("revenueFeeEvents").length, 0)
+assert.equal(receiptFirstDb.collections.get("revenueReceipts")[0].status, "unclassified")
+assert.equal(receiptFirstDb.collections.get("revenueFeeAudit")[0].action, "undo_manual_classification")
 
 const payrollAggregation = revenuePayroll.aggregateRevenueFeesForPayroll([
   { _id: "rebate-sol", feeType: "fee_rebate", chain: "solana", recognizedUsd: 100 },

@@ -144,6 +144,8 @@ export type RevenueFeeEvent = {
   expectedAssetAmount?: number | null
   expectedUsd?: number | null
   recognizedUsd?: number | null
+  actualReceivedUsd?: number | null
+  conversionVarianceUsd?: number | null
   valuationStatus?: "valued" | "pending"
   liquidationPercentage?: number | null
   status: FeeEventStatus

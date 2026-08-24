@@ -18,3 +18,17 @@ export function validateClassifiedAmount(amount: number, available: number, asse
     throw new Error(`Only ${roundedAvailable} ${asset} remains available after prior allocations`)
   }
 }
+
+export function fixedFeeReceiptMetrics(receipts: any[], expectedUsd: number, tolerancePercent = 0.05) {
+  const fullyValued = receipts.every((receipt) => receipt?.amountUsd != null)
+  const actualReceivedUsd = fullyValued ? receipts.reduce((sum, receipt) => sum + Number(receipt.amountUsd || 0) * receiptAvailableAmount(receipt) / Math.max(Number(receipt.amount || 0), Number.EPSILON), 0) : null
+  const roundedActual = actualReceivedUsd == null ? null : Math.round((actualReceivedUsd + Number.EPSILON) * 100) / 100
+  const allowedVarianceUsd = Math.max(2, Number(expectedUsd || 0) * tolerancePercent)
+  return {
+    fullyValued,
+    actualReceivedUsd: roundedActual,
+    conversionVarianceUsd: roundedActual == null ? null : Math.round((roundedActual - expectedUsd + Number.EPSILON) * 100) / 100,
+    allowedVarianceUsd,
+    withinTolerance: roundedActual != null && Math.abs(roundedActual - expectedUsd) <= allowedVarianceUsd,
+  }
+}
