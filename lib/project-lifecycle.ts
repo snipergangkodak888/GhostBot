@@ -1,5 +1,5 @@
 import { getDb } from "@/lib/db"
-import { LAUNCH_PADS } from "@/lib/launch-math"
+import { OPERATIONAL_LAUNCH_VENUES } from "@/lib/launch-venues"
 import { cleanRevenueChain } from "@/lib/revenue-projects"
 import { dateKeyInTimeZone, TEAM_TIME_ZONE } from "@/lib/team-timezone"
 
@@ -79,7 +79,7 @@ export function cleanLaunchProjectNameFromRequest(value: unknown, request: unkno
   let cleaned = cleanLaunchProjectName(value)
   const config = inferLaunchConfiguration(request)
   if (!config.launchVenue || !cleaned) return cleaned
-  const venue = LAUNCH_PADS.find((pad) => pad.id === config.launchVenue)
+  const venue = OPERATIONAL_LAUNCH_VENUES.find((pad) => pad.id === config.launchVenue)
   const terms = new Set<string>([
     venue?.id || "",
     venue?.name || "",
@@ -110,7 +110,7 @@ export function inferLaunchConfiguration(text: unknown) {
         : /\brobinhood(?: chain)?\b/i.test(raw) ? "robinhood"
           : /\b(?:ethereum|mainnet)\b/i.test(raw) ? "ethereum"
             : ""
-  const venue = LAUNCH_PADS.find((pad) => {
+  const venue = OPERATIONAL_LAUNCH_VENUES.find((pad) => {
     const aliases = [pad.id, pad.name]
     if (pad.id === "pumpfun") aliases.push("pump fun")
     if (pad.id === "aero") aliases.push("aerodrome")

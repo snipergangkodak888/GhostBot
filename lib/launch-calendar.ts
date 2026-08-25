@@ -1,7 +1,7 @@
 import { getDb } from "@/lib/db"
 import { projectLaunchAt, projectLaunchDateKey } from "@/lib/project-lifecycle"
 import { launchMethodLabel, normalizeLaunchMethod } from "@/lib/launch-method"
-import { launchPad } from "@/lib/launch-math"
+import { operationalLaunchVenue } from "@/lib/launch-venues"
 
 export const LAUNCH_TIME_ZONE = "America/New_York"
 
@@ -51,7 +51,7 @@ function launchLocation(project: any) {
         : chain === "ethereum" ? "Ethereum"
           : chain === "base" ? "Base"
             : "Chain TBD"
-  const venue = launchPad(String(project.launchVenue || ""))?.name
+  const venue = (operationalLaunchVenue(project.launchVenue)?.name || String(project.launchVenueLabel || ""))
     ?.replace(/^Uniswap\s+/i, "Uni ")
     .replace(/\s*\(full range\)$/i, "")
   return venue ? `${chainLabel}/${venue}` : chainLabel

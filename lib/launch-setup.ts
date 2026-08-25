@@ -1,4 +1,5 @@
-import { LAUNCH_CHAINS, LAUNCH_PADS, launchPad, padsForChain, type LaunchChainId } from "@/lib/launch-math"
+import { LAUNCH_CHAINS, type LaunchChainId } from "@/lib/launch-math"
+import { operationalLaunchVenue, operationalVenuesForChain } from "@/lib/launch-venues"
 import { LAUNCH_METHODS, launchMethodLabel, normalizeLaunchMethod } from "@/lib/launch-method"
 import { projectActivationReadiness } from "@/lib/project-lifecycle"
 import { formatTeamDateTime, TEAM_TIME_ZONE } from "@/lib/team-timezone"
@@ -29,7 +30,7 @@ export function launchChainIdForProject(value: unknown): LaunchChainId | null {
 
 export function launchChainConfig(chainId: LaunchChainId) {
   const chain = LAUNCH_CHAINS.find((item) => item.id === chainId)
-  const venues = padsForChain(chainId)
+  const venues = operationalVenuesForChain(chainId)
   return {
     chainId,
     chain: REVENUE_CHAIN_BY_LAUNCH_CHAIN[chainId],
@@ -60,7 +61,7 @@ export function launchSetupReady(payload: any) {
 
 export function formatLaunchSetupReview(action: any, notice = "") {
   const payload = action?.payload || {}
-  const venue = launchPad(String(payload.launchVenue || ""))
+  const venue = operationalLaunchVenue(payload.launchVenue)
   const chainId = launchChainIdForProject(payload.chain)
   const chainLabel = LAUNCH_CHAINS.find((chain) => chain.id === chainId)?.name || String(payload.chain || "Not selected")
   const launchAt = payload.launchAt || payload.launchDate
@@ -139,7 +140,7 @@ export function launchChainButtons(actionId: string): LaunchSetupButton[][] {
 }
 
 export function launchVenueButtons(actionId: string, chainId: LaunchChainId): LaunchSetupButton[][] {
-  return padsForChain(chainId).map((venue) => [{ text: venue.name, callback_data: `launchsetup:setvenue:${actionId}:${venue.id}` }])
+  return operationalVenuesForChain(chainId).map((venue) => [{ text: venue.name, callback_data: `launchsetup:setvenue:${actionId}:${venue.id}` }])
 }
 
 export function launchQuoteTokensForChain(chain: unknown) {
@@ -155,11 +156,12 @@ export function launchQuoteButtons(actionId: string, chain?: unknown): LaunchSet
 }
 
 export function launchVenueSelection(venueId: string) {
-  const venue = LAUNCH_PADS.find((item) => item.id === venueId)
+  const venue = operationalLaunchVenue(venueId)
   if (!venue) return null
   const chain = launchChainConfig(venue.chainId)
   return {
     launchVenue: venue.id,
+    launchVenueLabel: venue.name,
     launchFundingAsset: venue.symbol,
     chain: chain.chain,
     quoteToken: venue.symbol,

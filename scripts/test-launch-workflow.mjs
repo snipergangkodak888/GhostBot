@@ -119,7 +119,7 @@ try {
   if (missing.length) throw new Error(`Confirmed response is missing ${missing.join(", ")}. Response: ${text}`)
   const project = await lookupTestProject()
   if (!project) throw new Error("The scheduled project was not stored.")
-  const expectedFields = { status: "scheduled", launchVenue: "pumpfun", chain: "solana", quoteToken: "SOL", launchMethod: "sumo", feeConfigurationConfirmed: true, dailyTradingFeeEnabled: true }
+  const expectedFields = { status: "scheduled", launchVenue: "pumpfun", launchVenueLabel: "Pump.fun", chain: "solana", quoteToken: "SOL", launchMethod: "sumo", feeConfigurationConfirmed: true, dailyTradingFeeEnabled: true }
   for (const [field, expected] of Object.entries(expectedFields)) {
     if (project[field] !== expected) throw new Error(`Expected stored ${field}=${expected}, received ${project[field]}`)
   }
@@ -174,8 +174,8 @@ try {
   const setTimeCallback = callbackStartingWith(venueUpdated, `lifecycle:settime:${tentativeProject._id}:`)
   if (!setTimeCallback) throw new Error(`Updated launch editor did not retain Set exact time. Response: ${responseText(venueUpdated)}`)
   const setTimePrompt = await sendBotLabUpdate(config, { callbackData: setTimeCallback, messageId: venueUpdated.messages?.[0]?.messageId || calendar.messages?.[0]?.messageId })
-  if (!responseText(setTimePrompt).includes("Send the exact launch date and time")) throw new Error(`Set-time action did not prompt for an exact time. Response: ${responseText(setTimePrompt)}`)
-  const exactTime = await sendBotLabUpdate(config, { text: "/time today at 6:20 PM ET" })
+  if (!responseText(setTimePrompt).includes("Send the launch timing") || !responseText(setTimePrompt).includes("A time by itself applies to")) throw new Error(`Set-time action did not explain the contextual timing flow. Response: ${responseText(setTimePrompt)}`)
+  const exactTime = await sendBotLabUpdate(config, { text: "/time 6:20 PM ET" })
   if (!responseText(exactTime).includes("now has a confirmed launch time")) throw new Error(`Tentative launch did not accept an exact time. Response: ${responseText(exactTime)}`)
   const confirmedTentativeProject = await lookupTestProject(tentativeProjectName)
   if (confirmedTentativeProject.launchTimingStatus !== "confirmed" || !confirmedTentativeProject.launchAt || confirmedTentativeProject.tentativeLaunchDate) throw new Error(`Tentative launch was not converted cleanly to confirmed timing: ${JSON.stringify(confirmedTentativeProject)}`)
@@ -191,9 +191,17 @@ try {
   const cancelMethodDraft = callbackStartingWith(selectedMethod, "launchsetup:cancel:")
   if (cancelMethodDraft) await sendBotLabUpdate(config, { callbackData: cancelMethodDraft, messageId: selectedMethod.messages?.[0]?.messageId })
 
+  const v4Draft = await sendBotLabUpdate(config, { text: `/schedulelaunch V4Choice${suffix} on Robinhood Uniswap V4 with ETH quote, launch tomorrow at noon - senzu plugin - no referrer` })
+  const v4DraftText = responseText(v4Draft)
+  for (const expected of ["Launchpad / DEX: <b>Uniswap V4</b>", "Chain: <b>Robinhood Chain</b>", "Quote token: <b>ETH</b>"]) {
+    if (!v4DraftText.includes(expected)) throw new Error(`Uniswap V4 launch setup is missing ${expected}. Response: ${v4DraftText}`)
+  }
+  const cancelV4Draft = callbackStartingWith(v4Draft, "launchsetup:cancel:")
+  if (cancelV4Draft) await sendBotLabUpdate(config, { callbackData: cancelV4Draft, messageId: v4Draft.messages?.[0]?.messageId })
+
   console.log(text)
   console.log(tentativeCreatedText)
-  console.log("\nPASS: guided launch setup handles exact and Time TBD launches, edits launch venues without changing the quote token, keeps /calendar compact behind one edit flow, and confirms the exact time later.")
+  console.log("\nPASS: guided launch setup handles time-only edits, Time TBD launches, operational Uniswap V4, venue edits without quote changes, and the compact /calendar edit flow.")
 } finally {
   const deleted = await cleanup().catch((error) => {
     console.error(`Cleanup warning: ${error instanceof Error ? error.message : String(error)}`)

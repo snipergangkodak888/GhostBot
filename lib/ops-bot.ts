@@ -258,7 +258,7 @@ function scopedActionPayload(actionType: string, payload: Record<string, any>, s
   const allowed = actionType === "create_reminder"
     ? ["title", "message", "dueAt", "timeZone", "deliveryScope", "telegramChatId", "targetChatTitle"]
     : scope === "launch"
-      ? ["projectName", "name", "owner", "referrer", "referrerWallet", "referrerAccountId", "referralPercentage", "referrerStatus", "status", "service", "startDate", "launchAt", "launchDate", "tentativeLaunchDate", "launchTimingStatus", "launchTimeZone", "launchVenue", "launchFundingAsset", "launchMethod", "chain", "revenueChain", "quoteToken", "quoteAssets", "dailyTradingFeeEnabled", "dailyTradingFeeUsd", "launchFeeUsd", "feeConfigurationConfirmed", "endDate", "notes", "tags", "_candidates"]
+      ? ["projectName", "name", "owner", "referrer", "referrerWallet", "referrerAccountId", "referralPercentage", "referrerStatus", "status", "service", "startDate", "launchAt", "launchDate", "tentativeLaunchDate", "launchTimingStatus", "launchTimeZone", "launchVenue", "launchVenueLabel", "launchFundingAsset", "launchMethod", "chain", "revenueChain", "quoteToken", "quoteAssets", "dailyTradingFeeEnabled", "dailyTradingFeeUsd", "launchFeeUsd", "feeConfigurationConfirmed", "endDate", "notes", "tags", "_candidates"]
       : ["projectName", "name", "status", "service", "notes", "tags", "_candidates"]
   return Object.fromEntries(Object.entries(payload).filter(([key]) => allowed.includes(key)))
 }
@@ -685,13 +685,11 @@ function resolveProject(projects: any[], value: unknown, request: string) {
 }
 
 function launchProjectName(text: string, projects: any[]) {
-  const existing = projectMatchesRequest(projects, text)
-  if (existing.length === 1) return { name: String(existing[0].name), project: existing[0] }
-
   const patterns = [
     /\blaunch\s*\(\s*([^)]{1,80})\s*\)/i,
     /\b(?:add|put)\s+(.{1,80}?)\s+(?:to|on)\s+(?:the\s+)?launch\s+calendar\b/i,
     /\b(?:schedule|set|move|reschedule)\s+(.{1,80}?)\s+(?:for\s+)?(?:a\s+)?launch\b/i,
+    /^(?:please\s+)?(?:(?:add|put|schedule|set)\s+)?(.{1,80}?)\s+(?:on\s+)?(?:pump\.?fun|pump\s+fun|flap|four\.?meme|four\s+meme|aerodrome|uniswap|meteora|raydium|robinhood(?:\s+chain)?|solana|ethereum|base|bnb|bsc|binance\s+smart\s+chain)\b/i,
     /^(.{1,80}?)\s+(?:launch|launches|launching)\b/i,
     /\blaunch(?:\s+(?:for|of))?\s+(.{1,80}?)(?=\s+(?:today|tomorrow|tonight|next|on|at)\b|$)/i,
   ]
@@ -701,6 +699,12 @@ function launchProjectName(text: string, projects: any[]) {
     const project = projects.find((item: any) => sameName(item.name, name)) || null
     return { name: project?.name || name, project }
   }
+
+  // Only use request-wide project matching as a fallback. Chain and venue names
+  // (for example Robinhood) can overlap with project names and must not override
+  // an explicitly parsed launch name.
+  const existing = projectMatchesRequest(projects, text)
+  if (existing.length === 1) return { name: String(existing[0].name), project: existing[0] }
   return null
 }
 
@@ -730,6 +734,7 @@ function inferCapabilityAction(text: string, projects: any[], timeZone: string, 
     ...(launchAt ? { launchAt: launchAt.toISOString(), launchDate: launchAt.toISOString(), launchTimingStatus: "confirmed", tentativeLaunchDate: null } : { launchAt: null, launchDate: null, launchTimingStatus: "tentative", tentativeLaunchDate, status: "scheduled" }),
     launchTimeZone,
     ...(config.launchVenue ? { launchVenue: config.launchVenue } : {}),
+    ...(config.launchVenueLabel ? { launchVenueLabel: config.launchVenueLabel } : {}),
     ...(config.launchFundingAsset ? { launchFundingAsset: config.launchFundingAsset } : {}),
     ...(config.chain ? { chain: config.chain } : {}),
     ...(config.quoteToken ? { quoteToken: config.quoteToken, quoteAssets: [config.quoteToken] } : {}),
@@ -786,6 +791,7 @@ function normalizeActionDates(actionType: string, payload: any, text: string, ti
     const inferred = inferLaunchConfiguration(text)
     const inferredLaunchMethod = inferLaunchMethod(text)
     if (!next.launchVenue && inferred.launchVenue) next.launchVenue = inferred.launchVenue
+    if (!next.launchVenueLabel && inferred.launchVenueLabel) next.launchVenueLabel = inferred.launchVenueLabel
     if (!next.launchFundingAsset && inferred.launchFundingAsset) next.launchFundingAsset = inferred.launchFundingAsset
     if (!next.chain && inferred.chain) next.chain = inferred.chain
     if (!next.quoteToken && inferred.quoteToken) next.quoteToken = inferred.quoteToken
@@ -1049,7 +1055,7 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
     db.collection("opsSheets").find({}).toArray(),
   ])
   const projects = options.dataScope === "launch"
-    ? projectRows.map((project: any) => ({ _id: project._id, name: project.name, owner: project.owner, referrer: project.referrer, referrerAccountId: project.referrerAccountId, referrerStatus: project.referrerStatus, status: project.status, service: project.service, startDate: project.startDate, launchAt: project.launchAt, launchDate: project.launchDate, tentativeLaunchDate: project.tentativeLaunchDate, launchTimingStatus: project.launchTimingStatus, launchTimeZone: project.launchTimeZone, launchVenue: project.launchVenue, launchFundingAsset: project.launchFundingAsset, launchMethod: project.launchMethod, chain: project.chain, quoteToken: project.quoteToken, dailyTradingFeeEnabled: project.dailyTradingFeeEnabled, dailyTradingFeeUsd: project.dailyTradingFeeUsd, launchFeeUsd: project.launchFeeUsd, feeConfigurationConfirmed: project.feeConfigurationConfirmed, endDate: project.endDate, notes: project.notes, tags: project.tags, createdAt: project.createdAt, updatedAt: project.updatedAt }))
+    ? projectRows.map((project: any) => ({ _id: project._id, name: project.name, owner: project.owner, referrer: project.referrer, referrerAccountId: project.referrerAccountId, referrerStatus: project.referrerStatus, status: project.status, service: project.service, startDate: project.startDate, launchAt: project.launchAt, launchDate: project.launchDate, tentativeLaunchDate: project.tentativeLaunchDate, launchTimingStatus: project.launchTimingStatus, launchTimeZone: project.launchTimeZone, launchVenue: project.launchVenue, launchVenueLabel: project.launchVenueLabel, launchFundingAsset: project.launchFundingAsset, launchMethod: project.launchMethod, chain: project.chain, quoteToken: project.quoteToken, dailyTradingFeeEnabled: project.dailyTradingFeeEnabled, dailyTradingFeeUsd: project.dailyTradingFeeUsd, launchFeeUsd: project.launchFeeUsd, feeConfigurationConfirmed: project.feeConfigurationConfirmed, endDate: project.endDate, notes: project.notes, tags: project.tags, createdAt: project.createdAt, updatedAt: project.updatedAt }))
     : options.dataScope === "trade"
       ? projectRows.map((project: any) => ({ _id: project._id, name: project.name, status: project.status, service: project.service, notes: project.notes, tags: project.tags, createdAt: project.createdAt, updatedAt: project.updatedAt }))
       : projectRows
@@ -1321,6 +1327,7 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
       launchTimingStatus: tentativeLaunchDate && !launchAt ? "tentative" : "confirmed",
       launchTimeZone: String(payload.launchTimeZone || TEAM_TIME_ZONE),
       launchVenue: String(payload.launchVenue || "").trim(),
+      launchVenueLabel: String(payload.launchVenueLabel || "").trim(),
       launchFundingAsset: String(payload.launchFundingAsset || "").trim().toUpperCase(),
       launchMethod: normalizeLaunchMethod(payload.launchMethod) || "",
       referrerStatus: String(payload.referrerStatus || (payload.referrer ? "assigned" : "pending")),
@@ -1372,7 +1379,7 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
       update.currentProfitLoss = Number(payload.currentProfitLoss || 0)
       update.profitThisWeek = update.currentProfitLoss
     }
-    for (const key of ["launchTimeZone", "launchVenue", "launchFundingAsset"]) if (payload[key] !== undefined) update[key] = String(payload[key] || "").trim()
+    for (const key of ["launchTimeZone", "launchVenue", "launchVenueLabel", "launchFundingAsset"]) if (payload[key] !== undefined) update[key] = String(payload[key] || "").trim()
     if (payload.launchMethod !== undefined) update.launchMethod = normalizeLaunchMethod(payload.launchMethod) || ""
     if (["chain", "quoteToken", "quoteAssets", "dailyTradingFeeEnabled", "dailyTradingFeeUsd", "launchFeeUsd"].some((key) => payload[key] !== undefined)) Object.assign(update, cleanProjectFeeFields({ ...project, ...payload }))
     if (payload.feeConfigurationConfirmed !== undefined) update.feeConfigurationConfirmed = payload.feeConfigurationConfirmed === true

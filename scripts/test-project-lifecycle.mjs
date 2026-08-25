@@ -39,9 +39,10 @@ const module = { exports: {} }
 
 function localRequire(id) {
   if (id === "@/lib/db") return { getDb: async () => db }
-  if (id === "@/lib/launch-math") return { LAUNCH_PADS: [
+  if (id === "@/lib/launch-venues") return { OPERATIONAL_LAUNCH_VENUES: [
     { id: "pumpfun", name: "Pump.fun", chainId: "sol", symbol: "SOL" },
     { id: "aero", name: "Aerodrome", chainId: "base", symbol: "ETH" },
+    { id: "uni-rh-v4", name: "Uniswap V4", chainId: "rh", symbol: "ETH" },
   ] }
   if (id === "@/lib/revenue-projects") return { cleanRevenueChain: (value) => ["solana", "base", "ethereum", "bnb", "robinhood"].includes(String(value)) ? String(value) : "" }
   if (id === "@/lib/team-timezone") return {
@@ -62,6 +63,7 @@ const inferred = lifecycle.inferLaunchConfiguration("Schedule KOLcoin on Pump.fu
 assert.deepEqual(JSON.parse(JSON.stringify(inferred)), { launchVenue: "pumpfun", launchVenueLabel: "Pump.fun", launchFundingAsset: "SOL", chain: "solana", quoteToken: "SOL" })
 const exactRequestConfig = lifecycle.inferLaunchConfiguration("add KOLCOIN launch today at 2pm et to the calendar, its solana/pumpfun")
 assert.deepEqual(JSON.parse(JSON.stringify(exactRequestConfig)), { launchVenue: "pumpfun", launchVenueLabel: "Pump.fun", launchFundingAsset: "SOL", chain: "solana", quoteToken: "SOL" })
+assert.deepEqual(JSON.parse(JSON.stringify(lifecycle.inferLaunchConfiguration("Weave on Robinhood Uniswap V4 with ETH quote"))), { launchVenue: "uni-rh-v4", launchVenueLabel: "Uniswap V4", launchFundingAsset: "ETH", chain: "robinhood", quoteToken: "ETH" })
 assert.equal(lifecycle.cleanLaunchProjectName("add KOLCOIN"), "KOLCOIN")
 assert.equal(lifecycle.cleanLaunchProjectName("please schedule the project alpha coin"), "Alpha Coin")
 assert.equal(lifecycle.cleanLaunchProjectNameFromRequest("SnapGame pumpfun sol", "SnapGame pumpfun sol launch at 5:10 pm ET today"), "SnapGame")

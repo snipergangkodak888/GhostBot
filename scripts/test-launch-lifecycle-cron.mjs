@@ -55,8 +55,8 @@ function localRequire(id) {
     normalizeLaunchMethod: (value) => ["sumo", "senzu_plugin", "other_mm_plugin"].includes(String(value)) ? String(value) : "",
     launchMethodLabel: (value) => value === "sumo" ? "Sumo" : value === "senzu_plugin" ? "Senzu plugin" : value === "other_mm_plugin" ? "Other MM plugin" : "Not selected",
   }
-  if (id === "@/lib/launch-math") return {
-    launchPad: (id) => id === "pumpfun" ? { name: "Pump.fun" } : id === "uni-rh-v2" ? { name: "Uniswap V2" } : null,
+  if (id === "@/lib/launch-venues") return {
+    operationalLaunchVenue: (id) => id === "pumpfun" ? { name: "Pump.fun" } : id === "uni-rh-v2" ? { name: "Uniswap V2" } : null,
   }
   if (id === "@/lib/project-lifecycle") return {
     projectLaunchAt: (project) => project.launchAt ? new Date(project.launchAt) : null,

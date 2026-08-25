@@ -4,7 +4,7 @@ import { getMemberTimeZone, getTeamAccess, guardCodeFromText, redeemGuardInviteC
 import { getDb } from "@/lib/db"
 import { deleteProjectCascade } from "@/lib/platform-data"
 import { getSheetSchema, SHEET_KIND_ORDER, valuesForKind, type SheetKind } from "@/lib/sheet-schemas"
-import { dateKeyInTimeZone, detectExplicitTimeZone, formatTeamDateTime, parseNaturalTeamDate, parseNaturalTeamDateTime, parseTeamDateTime, teamZoneLabel, TIME_ZONE_OPTIONS, timeZoneFromOption, TEAM_TIME_ZONE } from "@/lib/team-timezone"
+import { dateKeyInTimeZone, detectExplicitTimeZone, formatTeamDateTime, parseContextualTeamDateTime, parseNaturalTeamDate, parseNaturalTeamDateTime, parseTeamDateTime, teamZoneLabel, TIME_ZONE_OPTIONS, timeZoneFromOption, TEAM_TIME_ZONE } from "@/lib/team-timezone"
 import { editTelegramMessage, getTelegramBotToken, getTelegramBotUsername, isTelegramCaptureActive, sendChatAction, sendTelegramDocument, sendTelegramMessage, sendTelegramPhoto, telegramApi, telegramApiJson, withTelegramLoading } from "@/lib/telegram-bot"
 import { savePayrollDay } from "@/lib/payroll-day"
 import { loadDailyPayrollReport, parseReportDateFromText } from "@/lib/payroll-daily-report"
@@ -20,6 +20,7 @@ import { confirmConsolidationCandidate, getConsolidationCandidate, rejectConsoli
 import { isGlobalRevenueFeeType, type FeeType } from "@/lib/revenue-types"
 import { receiptAvailableAmount, receiptAvailableUsd } from "@/lib/revenue-allocations"
 import { LAUNCH_CHAINS, launchPad, padsForChain, type LaunchChainId } from "@/lib/launch-math"
+import { operationalLaunchVenue, operationalVenuesForChain } from "@/lib/launch-venues"
 import { calculateLaunchQuote, defaultMmLiquidity, formatLaunchQuote, getLaunchAssetPrice, parseLaunchNumber, type LaunchTargetMetric } from "@/lib/launch-calculator"
 import { botPermissionDeniedMessage, canUseBotCapability, getBotPermissionContext, type BotCapability, type BotPermissionContext } from "@/lib/bot-permissions"
 import { createGuardEnrollmentLink, guardEnrollmentTokenFromText, guardEnrollmentUrl, handleGuardBotMembershipUpdate, handleGuardChatMemberUpdate, recordGuardChatMember, revokeGuardEnrollmentLinks, syncTelegramChatAdministrators, verifyAndRedeemGuardEnrollment } from "@/lib/guard-enrollment"
@@ -869,7 +870,7 @@ function calendarLaunchLocation(project: any) {
         : chain === "ethereum" ? "Ethereum"
           : chain === "base" ? "Base"
             : "Chain TBD"
-  const venue = launchPad(String(project.launchVenue || ""))?.name
+  const venue = (operationalLaunchVenue(project.launchVenue)?.name || String(project.launchVenueLabel || ""))
     ?.replace(/^Uniswap\s+/i, "Uni ")
     .replace(/\s*\(full range\)$/i, "")
   return venue ? `${chainLabel}/${venue}` : chainLabel
@@ -1241,17 +1242,26 @@ async function processState(token: string, chatId: number | string, telegramId: 
     }
     let action = draft.action
     if (state.action === "launch_setup_exact_time") {
-      const timeZone = detectExplicitTimeZone(text) || String(state.timeZone || action.payload?.launchTimeZone || TEAM_TIME_ZONE)
-      const hasDate = /\b(?:today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{4}-\d{2}-\d{2}|january|february|march|april|may|june|july|august|september|october|november|december)\b/i.test(text)
-      const hasTime = /\b(?:noon|midnight|\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?))\b/i.test(text) || /\bat\s+\d{1,2}:\d{2}\b/i.test(text)
-      const source = !hasDate && state.tentativeLaunchDate ? `${state.tentativeLaunchDate} at ${text}` : text
-      const launchAt = hasTime ? parseNaturalTeamDateTime(source, timeZone, now) : null
-      if (!launchAt) {
-        await setState(telegramId, state, chatId)
-        await sendMessage(token, chatId, "I could not read an exact launch time. Send a date and time such as “August 25 at 3:30 PM ET”. Send /cancel to stop.")
+      const parsed = parseContextualTeamDateTime(text, {
+        timeZone: String(state.timeZone || action.payload?.launchTimeZone || TEAM_TIME_ZONE),
+        now,
+        defaultDate: state.defaultLaunchDate || state.tentativeLaunchDate || action.payload?.tentativeLaunchDate || action.payload?.launchAt,
+        defaultTime: state.defaultLaunchAt || action.payload?.launchAt,
+      })
+      if (!parsed.date) {
+        const nextState = parsed.issue === "missing_time" && parsed.resolvedDateKey ? { ...state, defaultLaunchDate: parsed.resolvedDateKey } : state
+        await setState(telegramId, nextState, chatId)
+        const error = parsed.issue === "ambiguous_meridiem"
+          ? "Is that AM or PM? Send “3 PM” or use 24-hour time such as “15:00”."
+          : parsed.issue === "missing_time"
+            ? `I understood the day as ${calendarDayLabel(parsed.resolvedDateKey || dateKeyInTimeZone(now, parsed.timeZone))}. What time should it launch?`
+            : parsed.issue === "invalid_local_time"
+              ? `That local time does not exist in ${teamZoneLabel(parsed.timeZone)}, likely because of a daylight-saving change. Send another time.`
+              : "I could not read that timing. Try “12:30 PM ET”, “tomorrow at 2 PM”, or “Thursday at noon”."
+        await sendMessage(token, chatId, `${error}\n\nSend /cancel to stop.`)
         return true
       }
-      action = await updateLaunchSetupAction(db, action, { launchAt: launchAt.toISOString(), launchDate: launchAt.toISOString(), tentativeLaunchDate: null, launchTimingStatus: "confirmed", launchTimeZone: timeZone, status: "scheduled" })
+      action = await updateLaunchSetupAction(db, action, { launchAt: parsed.date.toISOString(), launchDate: parsed.date.toISOString(), tentativeLaunchDate: null, launchTimingStatus: "confirmed", launchTimeZone: parsed.timeZone, status: "scheduled" })
       await clearState(telegramId)
       await showLaunchSetupReview(token, chatId, action, Number(state.reviewMessageId || 0) || null, "Exact launch time updated.")
       return true
@@ -1307,20 +1317,32 @@ async function processState(token: string, chatId: number | string, telegramId: 
   }
 
   if (state.action === "reschedule_launch") {
-    const timeZone = String(state.timeZone || await getMemberTimeZone(telegramId) || TEAM_TIME_ZONE)
-    const launchAt = parseNaturalTeamDateTime(text, timeZone, now)
-    if (!launchAt) {
-      await setState(telegramId, state, chatId)
-      await sendMessage(token, chatId, `I could not read that launch time. Send an exact date and time, for example “August 25 at 3:30 PM ET”.\n\nCurrent schedule timezone: ${teamZoneLabel(timeZone)}. Send /cancel to stop.`)
+    const parsed = parseContextualTeamDateTime(text, {
+      timeZone: String(state.timeZone || await getMemberTimeZone(telegramId) || TEAM_TIME_ZONE),
+      now,
+      defaultDate: state.defaultLaunchDate,
+      defaultTime: state.defaultLaunchAt,
+    })
+    if (!parsed.date) {
+      const nextState = parsed.issue === "missing_time" && parsed.resolvedDateKey ? { ...state, defaultLaunchDate: parsed.resolvedDateKey } : state
+      await setState(telegramId, nextState, chatId)
+      const error = parsed.issue === "ambiguous_meridiem"
+        ? "Is that AM or PM? Send “3 PM” or use 24-hour time such as “15:00”."
+        : parsed.issue === "missing_time"
+          ? `I understood the day as ${calendarDayLabel(parsed.resolvedDateKey || dateKeyInTimeZone(now, parsed.timeZone))}. What time should it launch?`
+          : parsed.issue === "invalid_local_time"
+            ? `That local time does not exist in ${teamZoneLabel(parsed.timeZone)}, likely because of a daylight-saving change. Send another time.`
+            : "I could not read that timing. Try “12:30 PM ET”, “tomorrow at 2 PM”, “Thursday this time”, or “next Thursday at noon”."
+      await sendMessage(token, chatId, `${error}\n\nSend /cancel to stop.`)
       return true
     }
-    const result = await rescheduleProject({ projectId: String(state.projectId), launchAt, telegramId, chatId, timeZone, expectedScheduleVersion: Number(state.scheduleVersion) })
+    const result = await rescheduleProject({ projectId: String(state.projectId), launchAt: parsed.date, telegramId, chatId, timeZone: parsed.timeZone, expectedScheduleVersion: Number(state.scheduleVersion) })
     if (!result.ok) {
       await sendMessage(token, chatId, `⚠️ ${result.error}`)
       return true
     }
     await clearState(telegramId)
-    await sendMessage(token, chatId, `✅ ${(result.project as any).name} now has a confirmed launch time: ${formatTeamDateTime(launchAt, timeZone)}.\n\nIt is Scheduled, and the old timing buttons are now invalid.`)
+    await sendMessage(token, chatId, `✅ ${(result.project as any).name} now has a confirmed launch time: ${formatTeamDateTime(parsed.date, parsed.timeZone)}.\n\nIt is Scheduled, and the old timing buttons are now invalid.`)
     return true
   }
 
@@ -1694,7 +1716,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       }
       const chainId = launchChainIdForProject(project.chain || project.revenueChain)
       if (!chainId) return sendMessage(token, chatId, "⚠️ Set the project chain before choosing its launch venue / DEX.")
-      const venueButtons: InlineButton[][] = padsForChain(chainId).map((venue) => [{
+      const venueButtons: InlineButton[][] = operationalVenuesForChain(chainId).map((venue) => [{
         text: venue.name,
         callback_data: `calendar:setvenue:${id}:${venue.id}~${scheduleVersion}`,
       }])
@@ -1706,7 +1728,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       const [venueId, rawVersion] = String(extra || "").split("~")
       const scheduleVersion = Number(rawVersion || 0)
       const project = await db.collection("opsProjects").findOne({ _id: id })
-      const venue = launchPad(venueId)
+      const venue = operationalLaunchVenue(venueId)
       const chainId = launchChainIdForProject(project?.chain || project?.revenueChain)
       if (!project || !venue || !chainId || venue.chainId !== chainId || !["scheduled", "in_progress"].includes(String(project.status || "")) || Number(project.scheduleVersion || 0) !== scheduleVersion) {
         return sendMessage(token, chatId, "⚠️ That venue is no longer available for this launch. Open /calendar and try again.")
@@ -1756,8 +1778,17 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       return showLaunchSetupReview(token, chatId, launchAction, messageId, `${launchMethodLabel(launchMethod)} selected.`)
     }
     if (action === "exacttime") {
-      await setState(telegramId, { action: "launch_setup_exact_time", actionId: id, reviewMessageId: messageId, tentativeLaunchDate: launchAction.payload?.tentativeLaunchDate, timeZone: launchAction.payload?.launchTimeZone || TEAM_TIME_ZONE }, chatId)
-      return sendMessage(token, chatId, `Send the exact launch date and time.\n\nExample: August 25 at 3:30 PM ET${launchAction.payload?.tentativeLaunchDate ? `\nOr just send the time for ${launchAction.payload.tentativeLaunchDate}: 3:30 PM ET` : ""}\nSend /cancel to stop.`)
+      const defaultLaunchDate = projectLaunchDateKey(launchAction.payload, launchAction.payload?.launchTimeZone || TEAM_TIME_ZONE) || dateKeyInTimeZone(new Date(), launchAction.payload?.launchTimeZone || TEAM_TIME_ZONE)
+      const defaultLaunchAt = projectLaunchAt(launchAction.payload)?.toISOString() || null
+      await setState(telegramId, { action: "launch_setup_exact_time", actionId: id, reviewMessageId: messageId, tentativeLaunchDate: launchAction.payload?.tentativeLaunchDate, defaultLaunchDate, defaultLaunchAt, timeZone: launchAction.payload?.launchTimeZone || TEAM_TIME_ZONE }, chatId)
+      return sendMessage(token, chatId, [
+        `Send the launch timing for ${launchAction.payload?.name || "this launch"}.`,
+        "",
+        `A time by itself keeps ${calendarDayLabel(defaultLaunchDate)}.`,
+        defaultLaunchAt ? `A day by itself keeps ${calendarTimeLabel(new Date(defaultLaunchAt))}.` : "If you send only a day, I’ll ask for the time next.",
+        "Examples: 12:30 PM ET · tomorrow at 2 PM · Thursday this time · next Thursday at noon",
+        "Send /cancel to stop.",
+      ].join("\n"))
     }
     if (action === "tentativeday") {
       await setState(telegramId, { action: "launch_setup_tentative_day", actionId: id, reviewMessageId: messageId, timeZone: launchAction.payload?.launchTimeZone || TEAM_TIME_ZONE }, chatId)
@@ -1776,7 +1807,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     if (action === "setchain") {
       const chain = launchChainConfig(extra as LaunchChainId)
       if (!chain?.chain) return sendMessage(token, chatId, "⚠️ That chain is not available.")
-      const currentVenue = launchPad(String(launchAction.payload?.launchVenue || ""))
+      const currentVenue = operationalLaunchVenue(launchAction.payload?.launchVenue)
       const venueStillMatches = currentVenue?.chainId === chain.chainId
       launchAction = await updateLaunchSetupAction(db, launchAction, {
         chain: chain.chain,
@@ -1910,8 +1941,17 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     if (action === "settime") {
       const project = await db.collection("opsProjects").findOne({ _id: id })
       if (!project || !["scheduled", "in_progress"].includes(String(project.status || "")) || Number(project.scheduleVersion || 0) !== scheduleVersion) return sendMessage(token, chatId, "⚠️ This launch schedule was already updated. Open /calendar for the newest timing controls.")
-      await setState(telegramId, { action: "reschedule_launch", projectId: id, scheduleVersion, timeZone: project.launchTimeZone || TEAM_TIME_ZONE }, chatId)
-      return sendMessage(token, chatId, `🕒 Send the exact launch date and time for ${project.name}.\n\nExample: today at 5:10 PM ET\nI’ll use ${teamZoneLabel(project.launchTimeZone || TEAM_TIME_ZONE)} unless you include another timezone. Send /cancel to stop.`)
+      const timeZone = project.launchTimeZone || TEAM_TIME_ZONE
+      const defaultLaunchDate = projectLaunchDateKey(project, timeZone) || dateKeyInTimeZone(new Date(), timeZone)
+      const defaultLaunchAt = projectLaunchAt(project)?.toISOString() || null
+      await setState(telegramId, { action: "reschedule_launch", projectId: id, scheduleVersion, defaultLaunchDate, defaultLaunchAt, timeZone }, chatId)
+      return sendMessage(token, chatId, [
+        `Send the launch timing for ${project.name}.`,
+        "",
+        `A time by itself applies to ${calendarDayLabel(defaultLaunchDate)}.`,
+        "Examples: 12:30 PM ET · tomorrow at 2 PM · Thursday at noon · next Thursday at 3 PM",
+        "Send /cancel to stop.",
+      ].join("\n"))
     }
     if (action === "tentativeday") {
       const project = await db.collection("opsProjects").findOne({ _id: id })
@@ -1934,8 +1974,18 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     if (action === "delay") {
       const project = await db.collection("opsProjects").findOne({ _id: id })
       if (!project || !["scheduled", "in_progress"].includes(String(project.status || "")) || Number(project.scheduleVersion || 0) !== scheduleVersion) return sendMessage(token, chatId, "⚠️ This launch schedule was already updated. Use the newest confirmation message.")
-      await setState(telegramId, { action: "reschedule_launch", projectId: id, scheduleVersion, timeZone: project.launchTimeZone || TEAM_TIME_ZONE }, chatId)
-      return sendMessage(token, chatId, `🕒 Send the new exact launch date and time for ${project.name}.\n\nI’ll use ${teamZoneLabel(project.launchTimeZone || TEAM_TIME_ZONE)} unless you include another timezone. Send /cancel to stop.`)
+      const timeZone = project.launchTimeZone || TEAM_TIME_ZONE
+      const defaultLaunchDate = projectLaunchDateKey(project, timeZone) || dateKeyInTimeZone(new Date(), timeZone)
+      const defaultLaunchAt = projectLaunchAt(project)?.toISOString() || null
+      await setState(telegramId, { action: "reschedule_launch", projectId: id, scheduleVersion, defaultLaunchDate, defaultLaunchAt, timeZone }, chatId)
+      return sendMessage(token, chatId, [
+        `Send the new timing for ${project.name}.`,
+        "",
+        `A time by itself keeps ${calendarDayLabel(defaultLaunchDate)}.`,
+        defaultLaunchAt ? `A day by itself keeps ${calendarTimeLabel(new Date(defaultLaunchAt))}.` : "If you send only a day, I’ll ask for the time next.",
+        "Examples: 12:30 PM ET · tomorrow at 2 PM · Thursday this time · same time tomorrow",
+        "Send /cancel to stop.",
+      ].join("\n"))
     }
     if (action === "cancel") {
       const result = await cancelScheduledProject(id, telegramId, new Date(), scheduleVersion)

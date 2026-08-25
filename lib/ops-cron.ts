@@ -6,7 +6,7 @@ import { formatLaunchDaySchedule, getLaunchesForDay, launchDateKey, LAUNCH_TIME_
 import { ensureDailyTradingFeeExpectations, valuePendingRevenueReceipts } from "@/lib/revenue-service"
 import { activateScheduledProject, projectActivationReadiness, projectLaunchAt, projectLaunchDateKey, projectLaunchTimingStatus } from "@/lib/project-lifecycle"
 import { launchMethodLabel, normalizeLaunchMethod } from "@/lib/launch-method"
-import { launchPad } from "@/lib/launch-math"
+import { operationalLaunchVenue } from "@/lib/launch-venues"
 
 const EST_TIME_ZONE = LAUNCH_TIME_ZONE
 
@@ -213,7 +213,7 @@ export async function processTentativeLaunchTimingFollowups(token: string, now: 
             : chain === "ethereum" ? "Ethereum"
               : chain === "base" ? "Base"
                 : "Chain TBD"
-      const venue = launchPad(String(project.launchVenue || ""))?.name
+      const venue = (operationalLaunchVenue(project.launchVenue)?.name || String(project.launchVenueLabel || ""))
         ?.replace(/^Uniswap\s+/i, "Uni ")
         .replace(/\s*\(full range\)$/i, "")
       const location = venue ? `${chainLabel}/${venue}` : chainLabel

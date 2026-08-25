@@ -1,3 +1,5 @@
+import * as chrono from "chrono-node"
+
 export const TEAM_TIME_ZONE = "America/New_York"
 
 export const TIME_ZONE_OPTIONS = [
@@ -289,7 +291,115 @@ export function parseNaturalTeamDateTime(value: unknown, timeZone = TEAM_TIME_ZO
     return null
   }
 
-  return parseTeamDateTime(raw, timeZone)
+  const direct = parseTeamDateTime(raw, timeZone)
+  if (direct) return direct
+  return parseContextualTeamDateTime(raw, { timeZone, now }).date
+}
+
+export type ContextualTeamDateTimeIssue = "unrecognized" | "missing_time" | "ambiguous_meridiem" | "invalid_local_time"
+
+export type ContextualTeamDateTimeResult = {
+  date: Date | null
+  timeZone: string
+  issue?: ContextualTeamDateTimeIssue
+  resolvedDateKey?: string
+  usedDefaultDate?: boolean
+  usedDefaultTime?: boolean
+}
+
+type ContextualTeamDateTimeOptions = {
+  timeZone?: string
+  now?: Date
+  defaultDate?: string | Date | null
+  defaultTime?: string | Date | null
+}
+
+function withoutTimeZoneWords(value: string) {
+  return value
+    .replace(/\b(?:Africa|America|Antarctica|Asia|Atlantic|Australia|Europe|Indian|Pacific)\/[A-Za-z_+-]+\b/g, " ")
+    .replace(/\b(?:PST|PDT|PT|Pacific(?:\s+Time)?|MST|MDT|MT|Mountain(?:\s+Time)?|CST|CDT|CT|Central(?:\s+Time)?|EST|EDT|ET|Eastern(?:\s+Time)?|London(?:\s+Time)?|BST|Cyprus(?:\s+Time)?|EEST|UTC|GMT)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+function hasAmbiguousMeridiem(value: string) {
+  if (/\b(?:a\.?m\.?|p\.?m\.?|noon|midnight)\b/i.test(value)) return false
+  const match = value.match(/(?:^|\bat\s+)(\d{1,2})(?::(\d{2}))?(?:\s|$)/i)
+  if (!match) return false
+  const hour = Number(match[1])
+  return hour >= 1 && hour <= 12
+}
+
+function datePartsFromDefault(value: string | Date | null | undefined, timeZone: string) {
+  if (!value) return null
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const [year, month, day] = value.split("-").map(Number)
+    return { year, month, day, hour: 0, minute: 0, second: 0 }
+  }
+  const date = value instanceof Date ? value : new Date(value)
+  return Number.isNaN(date.getTime()) ? null : partsInTimeZone(date, timeZone)
+}
+
+/**
+ * Parses an edit-time expression while preserving missing date/time components
+ * from the launch being edited. Chrono performs language extraction; final UTC
+ * construction stays in our IANA timezone code so DST remains deterministic.
+ */
+export function parseContextualTeamDateTime(value: unknown, options: ContextualTeamDateTimeOptions = {}): ContextualTeamDateTimeResult {
+  const raw = String(value || "").trim()
+  const requestedZone = detectExplicitTimeZone(raw) || normalizeTimeZone(options.timeZone) || TEAM_TIME_ZONE
+  if (!raw) return { date: null, timeZone: requestedZone, issue: "unrecognized" }
+  if (hasAmbiguousMeridiem(raw)) return { date: null, timeZone: requestedZone, issue: "ambiguous_meridiem" }
+
+  const now = options.now || new Date()
+  const nowParts = partsInTimeZone(now, requestedZone)
+  const referenceWallClock = new Date(Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day, nowParts.hour, nowParts.minute, nowParts.second))
+  const source = withoutTimeZoneWords(raw)
+  const result = chrono.casual.parse(source, { instant: referenceWallClock, timezone: "UTC" }, { forwardDate: true })[0]
+  const sameTime = /\b(?:same|this)\s+time\b/i.test(raw)
+  const defaultDate = datePartsFromDefault(options.defaultDate, requestedZone)
+  const defaultTime = datePartsFromDefault(options.defaultTime, requestedZone)
+
+  if (!result && sameTime && defaultDate && defaultTime) {
+    return {
+      date: zonedDateTimeToUtc(defaultDate.year, defaultDate.month, defaultDate.day, defaultTime.hour, defaultTime.minute, 0, requestedZone),
+      timeZone: requestedZone,
+      resolvedDateKey: `${defaultDate.year}-${String(defaultDate.month).padStart(2, "0")}-${String(defaultDate.day).padStart(2, "0")}`,
+      usedDefaultDate: true,
+      usedDefaultTime: true,
+    }
+  }
+  if (!result) return { date: null, timeZone: requestedZone, issue: "unrecognized" }
+
+  const explicitDate = result.start.isCertain("day") || result.start.isCertain("month") || result.start.isCertain("year") || result.start.isCertain("weekday")
+  const explicitTime = result.start.isCertain("hour")
+  const year = explicitDate ? Number(result.start.get("year")) : Number(defaultDate?.year || nowParts.year)
+  const month = explicitDate ? Number(result.start.get("month")) : Number(defaultDate?.month || nowParts.month)
+  const day = explicitDate ? Number(result.start.get("day")) : Number(defaultDate?.day || nowParts.day)
+  const resolvedDateKey = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`
+
+  let hour: number | null = explicitTime ? Number(result.start.get("hour")) : null
+  let minute = explicitTime ? Number(result.start.get("minute") || 0) : 0
+  let usedDefaultTime = false
+  if ((!explicitTime || sameTime) && defaultTime) {
+    hour = defaultTime.hour
+    minute = defaultTime.minute
+    usedDefaultTime = true
+  }
+  if (hour == null) return { date: null, timeZone: requestedZone, issue: "missing_time", resolvedDateKey }
+
+  const date = zonedDateTimeToUtc(year, month, day, hour, minute, 0, requestedZone)
+  const verified = partsInTimeZone(date, requestedZone)
+  if (verified.year !== year || verified.month !== month || verified.day !== day || verified.hour !== hour || verified.minute !== minute) {
+    return { date: null, timeZone: requestedZone, issue: "invalid_local_time", resolvedDateKey }
+  }
+  return {
+    date,
+    timeZone: requestedZone,
+    resolvedDateKey,
+    usedDefaultDate: !explicitDate,
+    usedDefaultTime,
+  }
 }
 
 export function parseNaturalTeamDate(value: unknown, timeZone = TEAM_TIME_ZONE, now = new Date()) {
