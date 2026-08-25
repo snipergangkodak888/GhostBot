@@ -114,7 +114,7 @@ try {
 
   const confirmed = await sendBotLabUpdate(config, { callbackData: createCallback, messageId: noReferrer.messages?.[0]?.messageId || proposed.messages?.[0]?.messageId })
   const text = responseText(confirmed)
-  const required = [`✅ Launch scheduled successfully: ${projectName}`, "📅 Launch Schedule", projectName, "5:10 PM", "Scheduled"]
+  const required = [`✅ Launch scheduled successfully: ${projectName}`, "Today’s Launches —", projectName, "5:10 PM ET", "Solana/Pump.fun", "Sumo"]
   const missing = required.filter((value) => !text.includes(value))
   if (missing.length) throw new Error(`Confirmed response is missing ${missing.join(", ")}. Response: ${text}`)
   const project = await lookupTestProject()
@@ -151,9 +151,16 @@ try {
     if (!calendarText.includes(expected)) throw new Error(`Calendar is missing ${expected}. Response: ${calendarText}`)
   }
   if (calendarText.includes("🚀") || calendarText.includes("· Scheduled") || calendarText.match(/Aug \d{1,2}/g)?.length !== 1) throw new Error(`Calendar was not reduced to the compact one-day format. Response: ${calendarText}`)
-  const setTimeCallback = callbackStartingWith(calendar, `lifecycle:settime:${tentativeProject._id}:`)
-  if (!setTimeCallback) throw new Error(`Calendar did not include Set time for the tentative launch. Response: ${calendarText}`)
-  const setTimePrompt = await sendBotLabUpdate(config, { callbackData: setTimeCallback, messageId: calendar.messages?.[0]?.messageId })
+  const calendarButtons = (calendar.messages || []).flatMap((message) => message.replyMarkup?.inline_keyboard || []).flat()
+  if (calendarButtons.length !== 1 || !String(calendarButtons[0]?.callback_data || "").startsWith("calendar:edit:")) throw new Error(`Calendar should contain only one Edit launches button. Buttons: ${JSON.stringify(calendarButtons)}`)
+  const editPicker = await sendBotLabUpdate(config, { callbackData: calendarButtons[0].callback_data, messageId: calendar.messages?.[0]?.messageId })
+  if (!responseText(editPicker).includes("Choose a launch:")) throw new Error(`Edit launches did not open the launch picker. Response: ${responseText(editPicker)}`)
+  const tentativeLaunchCallback = callbackStartingWith(editPicker, `calendar:launch:${tentativeProject._id}:`)
+  if (!tentativeLaunchCallback) throw new Error(`Launch picker did not include the tentative launch. Response: ${responseText(editPicker)}`)
+  const launchEditor = await sendBotLabUpdate(config, { callbackData: tentativeLaunchCallback, messageId: editPicker.messages?.[0]?.messageId || calendar.messages?.[0]?.messageId })
+  const setTimeCallback = callbackStartingWith(launchEditor, `lifecycle:settime:${tentativeProject._id}:`)
+  if (!setTimeCallback || !responseText(launchEditor).includes("What would you like to edit?")) throw new Error(`Tentative launch editor did not include Set exact time. Response: ${responseText(launchEditor)}`)
+  const setTimePrompt = await sendBotLabUpdate(config, { callbackData: setTimeCallback, messageId: launchEditor.messages?.[0]?.messageId || calendar.messages?.[0]?.messageId })
   if (!responseText(setTimePrompt).includes("Send the exact launch date and time")) throw new Error(`Set-time action did not prompt for an exact time. Response: ${responseText(setTimePrompt)}`)
   const exactTime = await sendBotLabUpdate(config, { text: "/time today at 6:20 PM ET" })
   if (!responseText(exactTime).includes("now has a confirmed launch time")) throw new Error(`Tentative launch did not accept an exact time. Response: ${responseText(exactTime)}`)
@@ -173,7 +180,7 @@ try {
 
   console.log(text)
   console.log(tentativeCreatedText)
-  console.log("\nPASS: guided launch setup handles exact and Time TBD launches, requires all three launch-method choices, exposes calendar timing controls, and confirms the exact time later.")
+  console.log("\nPASS: guided launch setup handles exact and Time TBD launches, requires all three launch-method choices, keeps /calendar compact behind one edit flow, and confirms the exact time later.")
 } finally {
   const deleted = await cleanup().catch((error) => {
     console.error(`Cleanup warning: ${error instanceof Error ? error.message : String(error)}`)

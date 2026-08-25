@@ -875,7 +875,7 @@ function calendarLaunchLocation(project: any) {
   return venue ? `${chainLabel}/${venue}` : chainLabel
 }
 
-async function sendCalendar(token: string, chatId: number | string, requestedDateKey?: string) {
+async function calendarRows(requestedDateKey?: string) {
   const db = await getDb()
   const projects = await db.collection("opsProjects").find({ status: { $ne: "inactive" } }).toArray()
   const today = dateKeyInTimeZone(new Date(), TEAM_TIME_ZONE)
@@ -884,21 +884,28 @@ async function sendCalendar(token: string, chatId: number | string, requestedDat
     .map((project: any) => ({ project, dateKey: projectLaunchDateKey(project, TEAM_TIME_ZONE), launchAt: projectLaunchAt(project) }))
     .filter((row: any) => row.dateKey === targetDate)
     .sort((a: any, b: any) => a.launchAt && b.launchAt ? a.launchAt.getTime() - b.launchAt.getTime() : a.launchAt ? -1 : b.launchAt ? 1 : String(a.project.name || "").localeCompare(String(b.project.name || "")))
+  return { launches, targetDate, today }
+}
+
+async function sendCalendar(token: string, chatId: number | string, requestedDateKey?: string, messageId?: number | null) {
+  const { launches, targetDate, today } = await calendarRows(requestedDateKey)
   const launchLines = launches.map(({ project, launchAt }: any) => {
     const timing = launchAt ? calendarTimeLabel(launchAt) : "TBD"
     const location = calendarLaunchLocation(project)
     const method = normalizeLaunchMethod(project.launchMethod) ? ` · ${launchMethodLabel(project.launchMethod)}` : ""
     return `${timing} — ${project.name} · ${location}${method}`
   })
-  const timingButtons = launches
-    .filter(({ project }: any) => projectLaunchTimingStatus(project) === "tentative")
-    .slice(0, 5)
-    .map(({ project }: any) => [
-      { text: `Set ${String(project.name || "launch").slice(0, 24)} time`, callback_data: `lifecycle:settime:${project._id}:${Number(project.scheduleVersion || 0)}` },
-      { text: `Move ${String(project.name || "launch").slice(0, 24)}`, callback_data: `lifecycle:tentativeday:${project._id}:${Number(project.scheduleVersion || 0)}` },
-    ])
+  const editableLaunches = launches.filter(({ project }: any) => ["scheduled", "in_progress"].includes(String(project.status || "")))
+  const buttons: InlineButton[][] = editableLaunches.length
+    ? [[{ text: "Edit launches", callback_data: `calendar:edit:${targetDate}` }]]
+    : []
   const header = targetDate === today ? `Today’s Launches — ${calendarDayLabel(targetDate)}` : `Launches — ${calendarDayLabel(targetDate)}`
-  await sendMessage(token, chatId, `${header}\n\n${launchLines.length ? launchLines.join("\n") : "No launches scheduled."}`, timingButtons.length ? timingButtons : undefined)
+  const text = `${header}\n\n${launchLines.length ? launchLines.join("\n") : "No launches scheduled."}`
+  if (messageId) {
+    const edited = await editTelegramMessage(token, chatId, messageId, text, { replyMarkup: { inline_keyboard: buttons } })
+    if (edited) return
+  }
+  await sendMessage(token, chatId, text, buttons.length ? buttons : undefined)
 }
 
 async function sendPayroll(token: string, chatId: number | string) {
@@ -1583,7 +1590,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   const db = await getDb()
   const [area, action, id, extra] = data.split(":")
   const context = await botPermissions(telegramId, chatId)
-  const callbackCapability: BotCapability | null = area === "launch" || area === "lifecycle" || area === "launchsetup" || area === "organic"
+  const callbackCapability: BotCapability | null = area === "launch" || area === "lifecycle" || area === "launchsetup" || area === "organic" || area === "calendar"
     ? "launch"
     : ["reminder", "reminders"].includes(area)
       ? (context.profile === "launch" ? "launch" : "trade")
@@ -1600,6 +1607,51 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     const launchAction = await db.collection("opsAiActions").findOne({ _id: id })
     const suggestedTicker = normalizeOrganicTicker(launchAction?.payload?.ticker || launchAction?.payload?.symbol || launchAction?.payload?.name || "")
     return startOrganicChannelSetup(token, chatId, telegramId, validOrganicTicker(suggestedTicker) ? suggestedTicker : "")
+  }
+
+  if (area === "calendar") {
+    const messageId = Number(callbackMessage?.message_id || 0) || null
+    if (context.profile !== "launch") return sendMessage(token, chatId, "⛔ Launch schedule editing must be handled in the configured Launch Chat.")
+
+    if (action === "day") return sendCalendar(token, chatId, id, messageId)
+
+    if (action === "edit") {
+      const { launches, targetDate } = await calendarRows(id)
+      const editableLaunches = launches.filter(({ project }: any) => ["scheduled", "in_progress"].includes(String(project.status || "")))
+      if (!editableLaunches.length) return sendCalendar(token, chatId, targetDate, messageId)
+      const launchButtons: InlineButton[][] = editableLaunches.slice(0, 20).map(({ project, launchAt }: any) => [{
+        text: `${launchAt ? new Intl.DateTimeFormat("en-US", { timeZone: TEAM_TIME_ZONE, hour: "numeric", minute: "2-digit" }).format(launchAt) : "TBD"} — ${String(project.name || "Unnamed project")}`.slice(0, 60),
+        callback_data: `calendar:launch:${project._id}:${Number(project.scheduleVersion || 0)}`,
+      }])
+      launchButtons.push([{ text: "Back to calendar", callback_data: `calendar:day:${targetDate}` }])
+      return showLaunchSetupPicker(token, chatId, messageId, `Edit launches — ${calendarDayLabel(targetDate)}\n\nChoose a launch:`, launchButtons)
+    }
+
+    if (action === "launch") {
+      const project = await db.collection("opsProjects").findOne({ _id: id })
+      const scheduleVersion = Number(extra || 0)
+      if (!project || !["scheduled", "in_progress"].includes(String(project.status || "")) || Number(project.scheduleVersion || 0) !== scheduleVersion) {
+        return sendMessage(token, chatId, "⚠️ This launch schedule was already updated. Open /calendar for the latest version.")
+      }
+      const dateKey = projectLaunchDateKey(project, TEAM_TIME_ZONE) || dateKeyInTimeZone(new Date(), TEAM_TIME_ZONE)
+      const launchAt = projectLaunchAt(project)
+      const location = calendarLaunchLocation(project)
+      const method = normalizeLaunchMethod(project.launchMethod) ? ` · ${launchMethodLabel(project.launchMethod)}` : ""
+      const timing = launchAt ? calendarTimeLabel(launchAt) : "TBD"
+      const timingStatus = projectLaunchTimingStatus(project)
+      const buttons: InlineButton[][] = timingStatus === "tentative"
+        ? [
+            [{ text: "Set exact time", callback_data: `lifecycle:settime:${id}:${scheduleVersion}` }],
+            [{ text: "Move day", callback_data: `lifecycle:tentativeday:${id}:${scheduleVersion}` }],
+          ]
+        : [
+            [{ text: "Change date or time", callback_data: `lifecycle:delay:${id}:${scheduleVersion}` }],
+            [{ text: "Make time TBD / move day", callback_data: `lifecycle:tentativeday:${id}:${scheduleVersion}` }],
+          ]
+      buttons.push([{ text: "Cancel launch", callback_data: `lifecycle:cancel:${id}:${scheduleVersion}` }])
+      buttons.push([{ text: "Back to launches", callback_data: `calendar:edit:${dateKey}` }])
+      return showLaunchSetupPicker(token, chatId, messageId, `${project.name}\n${timing} · ${location}${method}\n\nWhat would you like to edit?`, buttons)
+    }
   }
 
   if (area === "launchsetup") {

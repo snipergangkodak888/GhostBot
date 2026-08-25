@@ -1,6 +1,7 @@
 import { getDb } from "@/lib/db"
-import { projectLaunchAt, projectLaunchDateKey, projectLaunchTimingStatus } from "@/lib/project-lifecycle"
+import { projectLaunchAt, projectLaunchDateKey } from "@/lib/project-lifecycle"
 import { launchMethodLabel, normalizeLaunchMethod } from "@/lib/launch-method"
+import { launchPad } from "@/lib/launch-math"
 
 export const LAUNCH_TIME_ZONE = "America/New_York"
 
@@ -28,9 +29,8 @@ function launchDayLabel(value: string | Date) {
   return new Intl.DateTimeFormat("en-US", {
     timeZone: LAUNCH_TIME_ZONE,
     weekday: "long",
-    month: "long",
+    month: "short",
     day: "numeric",
-    year: "numeric",
   }).format(date)
 }
 
@@ -40,8 +40,21 @@ function launchTimeLabel(value: string | Date) {
     timeZone: LAUNCH_TIME_ZONE,
     hour: "numeric",
     minute: "2-digit",
-    timeZoneName: "short",
-  }).format(date)
+  }).format(date) + " ET"
+}
+
+function launchLocation(project: any) {
+  const chain = String(project.chain || project.revenueChain || "").toLowerCase()
+  const chainLabel = chain === "solana" ? "Solana"
+    : chain === "robinhood" ? "Robinhood"
+      : chain === "bnb" ? "BNB Chain"
+        : chain === "ethereum" ? "Ethereum"
+          : chain === "base" ? "Base"
+            : "Chain TBD"
+  const venue = launchPad(String(project.launchVenue || ""))?.name
+    ?.replace(/^Uniswap\s+/i, "Uni ")
+    .replace(/\s*\(full range\)$/i, "")
+  return venue ? `${chainLabel}/${venue}` : chainLabel
 }
 
 export async function getLaunchesForDay(value: string | Date) {
@@ -63,22 +76,18 @@ export async function getLaunchesForDay(value: string | Date) {
     })
 }
 
-export async function formatLaunchDaySchedule(value: string | Date, options: { morning?: boolean } = {}) {
+export async function formatLaunchDaySchedule(value: string | Date, _options: { morning?: boolean } = {}) {
   const parsed = dateParts(value)
   if (!parsed) return "⚠️ I could not determine the launch date."
   const launches = await getLaunchesForDay(parsed.date)
-  const header = options.morning ? "☀️ Today’s Launch Schedule" : "📅 Launch Schedule"
+  const header = parsed.key === launchDateKey(new Date()) ? `Today’s Launches — ${launchDayLabel(parsed.date)}` : `Launches — ${launchDayLabel(parsed.date)}`
   const lines = launches.map((project: any) => {
-    const owner = String(project.referrer || project.owner || "").trim()
     const launchAt = projectLaunchAt(project)
-    const tentative = projectLaunchTimingStatus(project) === "tentative"
-    const status = project.status === "active" ? "Active" : tentative ? "Tentative" : project.activationOverdue ? "Awaiting confirmation" : "Scheduled"
     const method = normalizeLaunchMethod(project.launchMethod) ? ` · ${launchMethodLabel(project.launchMethod)}` : ""
-    return `• ${launchAt ? launchTimeLabel(launchAt) : "Time TBD"} — ${project.name || "Unnamed project"}${owner ? ` (${owner})` : ""} · ${status}${method}`
+    return `${launchAt ? launchTimeLabel(launchAt) : "TBD"} — ${project.name || "Unnamed project"} · ${launchLocation(project)}${method}`
   })
   return [
     header,
-    launchDayLabel(parsed.date),
     "",
     ...(lines.length ? lines : ["No launches scheduled."]),
   ].join("\n")

@@ -6,6 +6,7 @@ import ts from "typescript"
 const deliveries = new Map()
 const sentMessages = []
 const subscriptions = [{ chatId: "-100200300", kind: "group", label: "Finance Chat" }]
+const launchSubscriptions = [{ chatId: "-100400500", kind: "group", label: "Launch Chat" }]
 
 function cursor(rows) {
   return {
@@ -61,16 +62,19 @@ function localRequire(id) {
     return { TEAM_TIME_ZONE: "America/New_York", formatTeamDateTime: () => "test time", nextRecurringDueAt: () => null }
   }
   if (id === "@/lib/chat-subscriptions") {
-    return { getSubscribedChats: async (purpose) => purpose === "finance" ? subscriptions : [] }
+    return { getSubscribedChats: async (purpose) => purpose === "finance" ? subscriptions : purpose === "launches" ? launchSubscriptions : [] }
   }
   if (id === "@/lib/launch-calendar") {
-    return { LAUNCH_TIME_ZONE: "America/New_York", formatLaunchDaySchedule: async () => "launches", getLaunchesForDay: async () => [], launchDateKey: () => "2026-08-22" }
+    return { LAUNCH_TIME_ZONE: "America/New_York", formatLaunchDaySchedule: async () => "Today’s Launches — Saturday, Aug 22\n\nTBD — Test · Solana · Other MM plugin", getLaunchesForDay: async () => [{ name: "Test" }], launchDateKey: () => "2026-08-22" }
   }
   if (id === "@/lib/revenue-service") {
     return { ensureDailyTradingFeeExpectations: async () => ({}), valuePendingRevenueReceipts: async () => ({}) }
   }
   if (id === "@/lib/project-lifecycle") {
     return { projectActivationReadiness: () => ({ ready: true, missing: [], chain: "", quoteToken: "" }), projectLaunchAt: () => null }
+  }
+  if (id === "@/lib/launch-method") {
+    return { launchMethodLabel: () => "Other MM plugin", normalizeLaunchMethod: () => "other_mm_plugin" }
   }
   throw new Error(`Unexpected import: ${id}`)
 }
@@ -92,9 +96,17 @@ const second = await module.exports.runOpsSuperCron(now)
 assert.equal(Object.hasOwn(second, "financeSummary"), false)
 assert.equal(sentMessages.length, 0)
 
+const eightAmEt = await module.exports.runOpsSuperCron(new Date("2026-08-22T12:00:00.000Z"))
+assert.equal(eightAmEt.calendar.hourEt, 8)
+assert.equal(eightAmEt.calendar.sent, 1)
+assert.deepEqual(sentMessages, [{ chatId: "-100400500", text: "Today’s Launches — Saturday, Aug 22\n\nTBD — Test · Solana · Other MM plugin" }])
+const eightAmEtRepeat = await module.exports.runOpsSuperCron(new Date("2026-08-22T12:05:00.000Z"))
+assert.equal(eightAmEtRepeat.calendar.skipped, 1)
+assert.equal(sentMessages.length, 1)
+
 subscriptions.length = 0
 const nextDay = await module.exports.runOpsSuperCron(new Date("2026-08-23T15:00:00.000Z"))
 assert.equal(Object.hasOwn(nextDay, "financeSummary"), false)
-assert.equal(sentMessages.length, 0)
+assert.equal(sentMessages.length, 1)
 
-console.log("PASS: no automatic Trade Floor or Finance Chat report is sent.")
+console.log("PASS: no automatic Trade Floor or Finance Chat report is sent, while Launch Chat receives one compact 8 AM ET calendar.")
