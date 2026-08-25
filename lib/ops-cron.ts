@@ -6,6 +6,7 @@ import { formatLaunchDaySchedule, getLaunchesForDay, launchDateKey, LAUNCH_TIME_
 import { ensureDailyTradingFeeExpectations, valuePendingRevenueReceipts } from "@/lib/revenue-service"
 import { activateScheduledProject, projectActivationReadiness, projectLaunchAt, projectLaunchDateKey, projectLaunchTimingStatus } from "@/lib/project-lifecycle"
 import { launchMethodLabel, normalizeLaunchMethod } from "@/lib/launch-method"
+import { launchPad } from "@/lib/launch-math"
 
 const EST_TIME_ZONE = LAUNCH_TIME_ZONE
 
@@ -187,41 +188,61 @@ export async function processTentativeLaunchTimingFollowups(token: string, now: 
   const projects = await db.collection("opsProjects").find({ status: { $in: ["scheduled", "in_progress"] } }).toArray()
   const tentative = projects.filter((project: any) => projectLaunchTimingStatus(project) === "tentative" && projectLaunchDateKey(project, EST_TIME_ZONE) === today)
   const fallbackRecipients = await getSubscribedChats("launches")
+  const grouped = new Map<string, { recipient: CronRecipient; projects: any[] }>()
+  for (const project of tentative) {
+    const recipients: CronRecipient[] = project.launchChatId
+      ? [{ chatId: String(project.launchChatId), kind: "group", label: "Launch Chat" }]
+      : fallbackRecipients
+    for (const recipient of recipients) {
+      const key = String(recipient.chatId)
+      const group = grouped.get(key) || { recipient, projects: [] }
+      if (!group.projects.some((item: any) => String(item._id) === String(project._id))) group.projects.push(project)
+      grouped.set(key, group)
+    }
+  }
   let sent = 0
   let failed = 0
   let skipped = 0
 
-  for (const project of tentative) {
-    const version = Number(project.scheduleVersion || 0)
-    const recipients = project.launchChatId
-      ? [{ chatId: String(project.launchChatId), kind: "group" as const, label: "Launch Chat" }]
-      : fallbackRecipients
+  for (const { recipient, projects: recipientProjects } of grouped.values()) {
+    const lines = recipientProjects.map((project: any) => {
+      const chain = String(project.chain || project.revenueChain || "").toLowerCase()
+      const chainLabel = chain === "solana" ? "Solana"
+        : chain === "robinhood" ? "Robinhood"
+          : chain === "bnb" ? "BNB Chain"
+            : chain === "ethereum" ? "Ethereum"
+              : chain === "base" ? "Base"
+                : "Chain TBD"
+      const venue = launchPad(String(project.launchVenue || ""))?.name
+        ?.replace(/^Uniswap\s+/i, "Uni ")
+        .replace(/\s*\(full range\)$/i, "")
+      const location = venue ? `${chainLabel}/${venue}` : chainLabel
+      const method = normalizeLaunchMethod(project.launchMethod) ? ` · ${launchMethodLabel(project.launchMethod)}` : ""
+      return `${escapeHtml(project.name || "Unnamed project")} · ${escapeHtml(location)}${escapeHtml(method)}`
+    })
     const text = [
-      `🕒 <b>${escapeHtml(project.name || "Tentative launch")}</b> is planned for today, but the exact time is still TBD.`,
+      "<b>Today’s launches with time TBD</b>",
       "",
-      `${escapeHtml(project.launchVenue || "Launch venue not set")} · ${escapeHtml(project.chain || project.revenueChain || "chain not set")} · ${escapeHtml(project.quoteToken || "quote token not set")}`,
-      normalizeLaunchMethod(project.launchMethod) ? `Method: ${escapeHtml(launchMethodLabel(project.launchMethod))}` : "Method: not selected",
-      "Set the time when the client confirms it, or move the tentative day if plans changed.",
+      ...lines,
+      "",
+      "Are all of these still planned for today?",
     ].join("\n")
     const replyMarkup = {
       inline_keyboard: [
-        [{ text: "🕒 Set exact time", callback_data: `lifecycle:settime:${project._id}:${version}` }],
-        [{ text: "📆 Move tentative day", callback_data: `lifecycle:tentativeday:${project._id}:${version}` }],
-        [{ text: "❌ Launch cancelled", callback_data: `lifecycle:cancel:${project._id}:${version}` }],
+        [{ text: "Still TBD — all planned today", callback_data: `tentative:ack:${today}` }],
+        [{ text: "Edit launches", callback_data: `calendar:edit:${today}` }],
       ],
     }
-    for (const recipient of recipients) {
-      const key = `tentative-launch-followup:${project._id}:${version}:${today}:${recipient.chatId}`
-      if (!(await claimDelivery(key, "tentative-launch-followup"))) {
-        skipped += 1
-        continue
-      }
-      const messageId = await sendTelegramMessage(token, recipient.chatId, text, { parseMode: "HTML", replyMarkup })
-      if (messageId) sent += 1
-      else {
-        failed += 1
-        await releaseDelivery(key)
-      }
+    const key = `tentative-launch-followup:${today}:${recipient.chatId}`
+    if (!(await claimDelivery(key, "tentative-launch-followup"))) {
+      skipped += 1
+      continue
+    }
+    const messageId = await sendTelegramMessage(token, recipient.chatId, text, { parseMode: "HTML", replyMarkup })
+    if (messageId) sent += 1
+    else {
+      failed += 1
+      await releaseDelivery(key)
     }
   }
 

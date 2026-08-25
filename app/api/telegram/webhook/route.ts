@@ -908,6 +908,56 @@ async function sendCalendar(token: string, chatId: number | string, requestedDat
   await sendMessage(token, chatId, text, buttons.length ? buttons : undefined)
 }
 
+async function showCalendarLaunchEditor(token: string, chatId: number | string, project: any, messageId?: number | null, notice = "") {
+  const id = String(project._id)
+  const scheduleVersion = Number(project.scheduleVersion || 0)
+  const dateKey = projectLaunchDateKey(project, TEAM_TIME_ZONE) || dateKeyInTimeZone(new Date(), TEAM_TIME_ZONE)
+  const launchAt = projectLaunchAt(project)
+  const location = calendarLaunchLocation(project)
+  const method = normalizeLaunchMethod(project.launchMethod) ? ` · ${launchMethodLabel(project.launchMethod)}` : ""
+  const timing = launchAt ? calendarTimeLabel(launchAt) : "TBD"
+  const timingStatus = projectLaunchTimingStatus(project)
+  const buttons: InlineButton[][] = timingStatus === "tentative"
+    ? [
+        [{ text: "Set exact time", callback_data: `lifecycle:settime:${id}:${scheduleVersion}` }],
+        [{ text: "Move day", callback_data: `lifecycle:tentativeday:${id}:${scheduleVersion}` }],
+      ]
+    : [
+        [{ text: "Change date or time", callback_data: `lifecycle:delay:${id}:${scheduleVersion}` }],
+        [{ text: "Make time TBD / move day", callback_data: `lifecycle:tentativeday:${id}:${scheduleVersion}` }],
+      ]
+  buttons.push([{ text: "Change launch venue / DEX", callback_data: `calendar:venue:${id}:${scheduleVersion}` }])
+  buttons.push([{ text: "Cancel launch", callback_data: `lifecycle:cancel:${id}:${scheduleVersion}` }])
+  buttons.push([{ text: "Back to launches", callback_data: `calendar:edit:${dateKey}` }])
+  const text = [notice, `${project.name}\n${timing} · ${location}${method}`, "What would you like to edit?"].filter(Boolean).join("\n\n")
+  return showLaunchSetupPicker(token, chatId, messageId, text, buttons)
+}
+
+async function acknowledgeTentativeLaunches(token: string, chatId: number | string, telegramId: number, dateKey: string, messageId?: number | null) {
+  const db = await getDb()
+  const projects = await db.collection("opsProjects").find({ status: { $in: ["scheduled", "in_progress"] } }).toArray()
+  const tentative = projects.filter((project: any) => projectLaunchTimingStatus(project) === "tentative"
+    && projectLaunchDateKey(project, TEAM_TIME_ZONE) === dateKey
+    && (!project.launchChatId || String(project.launchChatId) === String(chatId)))
+  const now = new Date()
+  for (const project of tentative) {
+    await db.collection("opsProjects").updateOne(
+      { _id: project._id, status: project.status, scheduleVersion: project.scheduleVersion },
+      { $set: { tentativeTimingAcknowledgedDate: dateKey, tentativeTimingAcknowledgedAt: now, tentativeTimingAcknowledgedByTelegramId: telegramId, updatedAt: now } },
+    )
+  }
+  const names = tentative.map((project: any) => project.name || "Unnamed project")
+  const text = names.length
+    ? `Still TBD confirmed for today: ${names.join(", ")}.\n\nUse Edit launches if a time, day, or venue changes.`
+    : "There are no longer any TBD launches scheduled for this day."
+  const buttons: InlineButton[][] = names.length ? [[{ text: "Edit launches", callback_data: `calendar:edit:${dateKey}` }]] : []
+  if (messageId) {
+    const edited = await editTelegramMessage(token, chatId, messageId, text, { replyMarkup: { inline_keyboard: buttons } })
+    if (edited) return
+  }
+  return sendMessage(token, chatId, text, buttons.length ? buttons : undefined)
+}
+
 async function sendPayroll(token: string, chatId: number | string) {
   const db = await getDb()
   const rows = await db.collection("opsPayroll").find({ status: { $ne: "paid" } }).sort({ date: -1 }).limit(8).toArray()
@@ -1590,7 +1640,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   const db = await getDb()
   const [area, action, id, extra] = data.split(":")
   const context = await botPermissions(telegramId, chatId)
-  const callbackCapability: BotCapability | null = area === "launch" || area === "lifecycle" || area === "launchsetup" || area === "organic" || area === "calendar"
+  const callbackCapability: BotCapability | null = area === "launch" || area === "lifecycle" || area === "launchsetup" || area === "organic" || area === "calendar" || area === "tentative"
     ? "launch"
     : ["reminder", "reminders"].includes(area)
       ? (context.profile === "launch" ? "launch" : "trade")
@@ -1633,25 +1683,50 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       if (!project || !["scheduled", "in_progress"].includes(String(project.status || "")) || Number(project.scheduleVersion || 0) !== scheduleVersion) {
         return sendMessage(token, chatId, "⚠️ This launch schedule was already updated. Open /calendar for the latest version.")
       }
-      const dateKey = projectLaunchDateKey(project, TEAM_TIME_ZONE) || dateKeyInTimeZone(new Date(), TEAM_TIME_ZONE)
-      const launchAt = projectLaunchAt(project)
-      const location = calendarLaunchLocation(project)
-      const method = normalizeLaunchMethod(project.launchMethod) ? ` · ${launchMethodLabel(project.launchMethod)}` : ""
-      const timing = launchAt ? calendarTimeLabel(launchAt) : "TBD"
-      const timingStatus = projectLaunchTimingStatus(project)
-      const buttons: InlineButton[][] = timingStatus === "tentative"
-        ? [
-            [{ text: "Set exact time", callback_data: `lifecycle:settime:${id}:${scheduleVersion}` }],
-            [{ text: "Move day", callback_data: `lifecycle:tentativeday:${id}:${scheduleVersion}` }],
-          ]
-        : [
-            [{ text: "Change date or time", callback_data: `lifecycle:delay:${id}:${scheduleVersion}` }],
-            [{ text: "Make time TBD / move day", callback_data: `lifecycle:tentativeday:${id}:${scheduleVersion}` }],
-          ]
-      buttons.push([{ text: "Cancel launch", callback_data: `lifecycle:cancel:${id}:${scheduleVersion}` }])
-      buttons.push([{ text: "Back to launches", callback_data: `calendar:edit:${dateKey}` }])
-      return showLaunchSetupPicker(token, chatId, messageId, `${project.name}\n${timing} · ${location}${method}\n\nWhat would you like to edit?`, buttons)
+      return showCalendarLaunchEditor(token, chatId, project, messageId)
     }
+
+    if (action === "venue") {
+      const project = await db.collection("opsProjects").findOne({ _id: id })
+      const scheduleVersion = Number(extra || 0)
+      if (!project || !["scheduled", "in_progress"].includes(String(project.status || "")) || Number(project.scheduleVersion || 0) !== scheduleVersion) {
+        return sendMessage(token, chatId, "⚠️ This launch schedule was already updated. Open /calendar for the latest version.")
+      }
+      const chainId = launchChainIdForProject(project.chain || project.revenueChain)
+      if (!chainId) return sendMessage(token, chatId, "⚠️ Set the project chain before choosing its launch venue / DEX.")
+      const venueButtons: InlineButton[][] = padsForChain(chainId).map((venue) => [{
+        text: venue.name,
+        callback_data: `calendar:setvenue:${id}:${venue.id}~${scheduleVersion}`,
+      }])
+      venueButtons.push([{ text: "Back", callback_data: `calendar:launch:${id}:${scheduleVersion}` }])
+      return showLaunchSetupPicker(token, chatId, messageId, `Choose the launch venue / DEX for ${project.name}:`, venueButtons)
+    }
+
+    if (action === "setvenue") {
+      const [venueId, rawVersion] = String(extra || "").split("~")
+      const scheduleVersion = Number(rawVersion || 0)
+      const project = await db.collection("opsProjects").findOne({ _id: id })
+      const venue = launchPad(venueId)
+      const chainId = launchChainIdForProject(project?.chain || project?.revenueChain)
+      if (!project || !venue || !chainId || venue.chainId !== chainId || !["scheduled", "in_progress"].includes(String(project.status || "")) || Number(project.scheduleVersion || 0) !== scheduleVersion) {
+        return sendMessage(token, chatId, "⚠️ That venue is no longer available for this launch. Open /calendar and try again.")
+      }
+      const now = new Date()
+      await db.collection("opsProjects").updateOne(
+        { _id: id, status: project.status, scheduleVersion },
+        { $set: { launchVenue: venue.id, launchVenueLabel: venue.name, launchFundingAsset: venue.symbol, launchVenueUpdatedAt: now, launchVenueUpdatedByTelegramId: telegramId, updatedAt: now } },
+      )
+      const updated = await db.collection("opsProjects").findOne({ _id: id })
+      if (!updated || updated.launchVenue !== venue.id) return sendMessage(token, chatId, "⚠️ I could not update that launch venue. Open /calendar and try again.")
+      return showCalendarLaunchEditor(token, chatId, updated, messageId, `Launch venue updated to ${venue.name}.`)
+    }
+  }
+
+  if (area === "tentative" && action === "ack") {
+    const messageId = Number(callbackMessage?.message_id || 0) || null
+    if (context.profile !== "launch") return sendMessage(token, chatId, "⛔ Tentative launch confirmations must be handled in the configured Launch Chat.")
+    const dateKey = /^\d{4}-\d{2}-\d{2}$/.test(id) ? id : dateKeyInTimeZone(new Date(), TEAM_TIME_ZONE)
+    return acknowledgeTentativeLaunches(token, chatId, telegramId, dateKey, messageId)
   }
 
   if (area === "launchsetup") {
@@ -2364,6 +2439,12 @@ async function routeText(token: string, chatId: number | string, telegramId: num
   }
 
   if (await processState(token, chatId, telegramId, text, messageDateMs, message, context)) return
+
+  if (/^(?:all\s+)?(?:launches?\s+)?(?:are\s+)?still\s+tbd(?:\s+today)?[.!]?$/i.test(commandText)) {
+    if (!(await requireCapability(token, context, "launch"))) return
+    if (context.profile !== "launch") return sendMessage(token, chatId, "⛔ Tentative launch confirmations must be handled in the configured Launch Chat.")
+    return acknowledgeTentativeLaunches(token, chatId, telegramId, dateKeyInTimeZone(new Date(), TEAM_TIME_ZONE))
+  }
 
   if (text === "🏠 Home" || isBotCommand(text, "menu", "help", "commands")) return sendMessage(token, chatId, helpMessage())
   if (/^\/log(?:@\w+)?(?:\s|$)/i.test(text)) {

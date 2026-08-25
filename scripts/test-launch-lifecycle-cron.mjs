@@ -55,6 +55,9 @@ function localRequire(id) {
     normalizeLaunchMethod: (value) => ["sumo", "senzu_plugin", "other_mm_plugin"].includes(String(value)) ? String(value) : "",
     launchMethodLabel: (value) => value === "sumo" ? "Sumo" : value === "senzu_plugin" ? "Senzu plugin" : value === "other_mm_plugin" ? "Other MM plugin" : "Not selected",
   }
+  if (id === "@/lib/launch-math") return {
+    launchPad: (id) => id === "pumpfun" ? { name: "Pump.fun" } : id === "uni-rh-v2" ? { name: "Uniswap V2" } : null,
+  }
   if (id === "@/lib/project-lifecycle") return {
     projectLaunchAt: (project) => project.launchAt ? new Date(project.launchAt) : null,
     projectLaunchTimingStatus: (project) => project.tentativeLaunchDate && !project.launchAt ? "tentative" : "confirmed",
@@ -107,19 +110,23 @@ assert.equal(messages.length, 4)
 assert.match(messages.at(-1).text, /referrer decision/)
 assert.equal(messages.at(-1).options.replyMarkup.inline_keyboard[0][0].callback_data, "lifecycle:refnone:needs-setup:1")
 
-projects.push({ _id: "tentative", name: "Tentative today", status: "scheduled", launchAt: null, tentativeLaunchDate: "2026-08-24", launchTimingStatus: "tentative", launchTimeZone: "America/New_York", launchChatId: "-1001", scheduleVersion: 1, launchVenue: "pumpfun", chain: "solana", quoteToken: "SOL" })
+projects.push(
+  { _id: "tentative", name: "Tentative today", status: "scheduled", launchAt: null, tentativeLaunchDate: "2026-08-24", launchTimingStatus: "tentative", launchTimeZone: "America/New_York", launchChatId: "-1001", scheduleVersion: 1, launchVenue: "pumpfun", chain: "solana", quoteToken: "SOL", launchMethod: "sumo" },
+  { _id: "tentative-two", name: "Second TBD", status: "scheduled", launchAt: null, tentativeLaunchDate: "2026-08-24", launchTimingStatus: "tentative", launchTimeZone: "America/New_York", launchChatId: "-1001", scheduleVersion: 2, launchVenue: "uni-rh-v2", chain: "robinhood", quoteToken: "ETH", launchMethod: "senzu_plugin" },
+)
 await module.exports.processDueLaunchConfirmations("test", new Date("2026-08-24T21:00:00.000Z"))
 assert.equal(messages.length, 4, "tentative launches must not receive launch-time activation prompts")
 const followup = await module.exports.processTentativeLaunchTimingFollowups("test", new Date("2026-08-24T16:00:00.000Z"))
-assert.equal(followup.due, 1)
+assert.equal(followup.due, 2)
 assert.equal(messages.length, 5)
-assert.match(messages.at(-1).text, /exact time is still TBD/)
+assert.match(messages.at(-1).text, /Today’s launches with time TBD/)
+assert.match(messages.at(-1).text, /Tentative today · Solana\/Pump.fun · Sumo/)
+assert.match(messages.at(-1).text, /Second TBD · Robinhood\/Uni V2 · Senzu plugin/)
 assert.deepEqual(JSON.parse(JSON.stringify(messages.at(-1).options.replyMarkup.inline_keyboard.flat().map((button) => button.callback_data))), [
-  "lifecycle:settime:tentative:1",
-  "lifecycle:tentativeday:tentative:1",
-  "lifecycle:cancel:tentative:1",
+  "tentative:ack:2026-08-24",
+  "calendar:edit:2026-08-24",
 ])
 await module.exports.processTentativeLaunchTimingFollowups("test", new Date("2026-08-24T16:05:00.000Z"))
 assert.equal(messages.length, 5, "the same tentative follow-up must only send once")
 
-console.log("PASS: exact launch prompts and one-time tentative timing follow-ups target Launch Chat without activating Time TBD launches.")
+console.log("PASS: exact launch prompts and one consolidated tentative timing follow-up target Launch Chat without activating Time TBD launches.")

@@ -144,6 +144,10 @@ try {
   if (tentativeProject.launchAt || tentativeProject.launchDate) throw new Error("Tentative launch incorrectly stored a fake exact timestamp.")
   if (tentativeProject.launchMethod !== "senzu_plugin") throw new Error(`Expected Senzu launch method, received ${tentativeProject.launchMethod}`)
   if (tentativeProject.launchTimingStatus !== "tentative" || !/^\d{4}-\d{2}-\d{2}$/.test(String(tentativeProject.tentativeLaunchDate || ""))) throw new Error(`Tentative timing fields are invalid: ${JSON.stringify(tentativeProject)}`)
+  const acknowledged = await sendBotLabUpdate(config, { callbackData: `tentative:ack:${tentativeProject.tentativeLaunchDate}`, messageId: tentativeCreated.messages?.[0]?.messageId })
+  if (!responseText(acknowledged).includes(`Still TBD confirmed for today: ${tentativeProjectName}`)) throw new Error(`Still-TBD acknowledgement failed. Response: ${responseText(acknowledged)}`)
+  const acknowledgedProject = await lookupTestProject(tentativeProjectName)
+  if (acknowledgedProject.tentativeTimingAcknowledgedDate !== tentativeProject.tentativeLaunchDate || Number(acknowledgedProject.tentativeTimingAcknowledgedByTelegramId) !== telegramId) throw new Error(`Still-TBD acknowledgement was not recorded: ${JSON.stringify(acknowledgedProject)}`)
 
   const calendar = await sendBotLabUpdate(config, { text: "/calendar" })
   const calendarText = responseText(calendar)
@@ -158,9 +162,18 @@ try {
   const tentativeLaunchCallback = callbackStartingWith(editPicker, `calendar:launch:${tentativeProject._id}:`)
   if (!tentativeLaunchCallback) throw new Error(`Launch picker did not include the tentative launch. Response: ${responseText(editPicker)}`)
   const launchEditor = await sendBotLabUpdate(config, { callbackData: tentativeLaunchCallback, messageId: editPicker.messages?.[0]?.messageId || calendar.messages?.[0]?.messageId })
-  const setTimeCallback = callbackStartingWith(launchEditor, `lifecycle:settime:${tentativeProject._id}:`)
-  if (!setTimeCallback || !responseText(launchEditor).includes("What would you like to edit?")) throw new Error(`Tentative launch editor did not include Set exact time. Response: ${responseText(launchEditor)}`)
-  const setTimePrompt = await sendBotLabUpdate(config, { callbackData: setTimeCallback, messageId: launchEditor.messages?.[0]?.messageId || calendar.messages?.[0]?.messageId })
+  const venueCallback = callbackStartingWith(launchEditor, `calendar:venue:${tentativeProject._id}:`)
+  if (!venueCallback || !responseText(launchEditor).includes("What would you like to edit?")) throw new Error(`Tentative launch editor did not include venue editing. Response: ${responseText(launchEditor)}`)
+  const venuePicker = await sendBotLabUpdate(config, { callbackData: venueCallback, messageId: launchEditor.messages?.[0]?.messageId || calendar.messages?.[0]?.messageId })
+  const meteoraCallback = (venuePicker.messages || []).flatMap((message) => message.replyMarkup?.inline_keyboard || []).flat().find((button) => String(button.callback_data || "").includes(":meteora~"))?.callback_data
+  if (!meteoraCallback || !responseText(venuePicker).includes("Choose the launch venue / DEX")) throw new Error(`Venue picker did not include Meteora. Response: ${responseText(venuePicker)}`)
+  const venueUpdated = await sendBotLabUpdate(config, { callbackData: meteoraCallback, messageId: venuePicker.messages?.[0]?.messageId || calendar.messages?.[0]?.messageId })
+  if (!responseText(venueUpdated).includes("Launch venue updated to Meteora DAMM v2")) throw new Error(`Venue update was not confirmed. Response: ${responseText(venueUpdated)}`)
+  const venueUpdatedProject = await lookupTestProject(tentativeProjectName)
+  if (venueUpdatedProject.launchVenue !== "meteora" || venueUpdatedProject.quoteToken !== "SOL") throw new Error(`Venue editing did not preserve the configured quote token: ${JSON.stringify(venueUpdatedProject)}`)
+  const setTimeCallback = callbackStartingWith(venueUpdated, `lifecycle:settime:${tentativeProject._id}:`)
+  if (!setTimeCallback) throw new Error(`Updated launch editor did not retain Set exact time. Response: ${responseText(venueUpdated)}`)
+  const setTimePrompt = await sendBotLabUpdate(config, { callbackData: setTimeCallback, messageId: venueUpdated.messages?.[0]?.messageId || calendar.messages?.[0]?.messageId })
   if (!responseText(setTimePrompt).includes("Send the exact launch date and time")) throw new Error(`Set-time action did not prompt for an exact time. Response: ${responseText(setTimePrompt)}`)
   const exactTime = await sendBotLabUpdate(config, { text: "/time today at 6:20 PM ET" })
   if (!responseText(exactTime).includes("now has a confirmed launch time")) throw new Error(`Tentative launch did not accept an exact time. Response: ${responseText(exactTime)}`)
@@ -180,7 +193,7 @@ try {
 
   console.log(text)
   console.log(tentativeCreatedText)
-  console.log("\nPASS: guided launch setup handles exact and Time TBD launches, requires all three launch-method choices, keeps /calendar compact behind one edit flow, and confirms the exact time later.")
+  console.log("\nPASS: guided launch setup handles exact and Time TBD launches, edits launch venues without changing the quote token, keeps /calendar compact behind one edit flow, and confirms the exact time later.")
 } finally {
   const deleted = await cleanup().catch((error) => {
     console.error(`Cleanup warning: ${error instanceof Error ? error.message : String(error)}`)

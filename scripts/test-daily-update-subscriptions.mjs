@@ -76,6 +76,9 @@ function localRequire(id) {
   if (id === "@/lib/launch-method") {
     return { launchMethodLabel: () => "Other MM plugin", normalizeLaunchMethod: () => "other_mm_plugin" }
   }
+  if (id === "@/lib/launch-math") {
+    return { launchPad: () => null }
+  }
   throw new Error(`Unexpected import: ${id}`)
 }
 
