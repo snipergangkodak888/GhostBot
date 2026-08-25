@@ -13,7 +13,7 @@
     "bot:test:enrollment": "node ./scripts/test-guard-enrollment.mjs",
     "bot:test:launch": "node ./scripts/test-launch-workflow.mjs",
     "bot:test:organic": "node ./scripts/test-organic-channel-setup.mjs",
-    "bot:test:organic-automation": "node ./scripts/test-organic-channel-automation.mjs",
+    "bot:test:organic-automation": "node ./scripts/test-organic-channel-automation.mjs && node ./scripts/test-organic-channel-policy.mjs",
     "telegram:user:authorize": "node ./scripts/authorize-telegram-user.mjs",
     "telegram:user:check": "node ./scripts/check-telegram-user.mjs",
     "telegram:user:railway": "node ./scripts/sync-telegram-user-to-railway.mjs",

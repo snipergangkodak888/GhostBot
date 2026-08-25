@@ -66,49 +66,27 @@ export async function createTelegramUserGateway(): Promise<{
   const config = state.config
   const client = new TelegramClient(new StringSession(config.session), config.apiId, config.apiHash, {
     connectionRetries: 5,
-    floodSleepThreshold: 60,
+    // Surface every FLOOD_WAIT to the database scheduler instead of sleeping and replaying inside the client.
+    floodSleepThreshold: 0,
   })
   client.setLogLevel("warn" as any)
-  await client.connect()
-  if (!(await client.checkAuthorization())) {
-    await client.disconnect()
-    throw new Error("TELEGRAM_USER_SESSION is no longer authorized; run the authorization script again")
+  try {
+    await client.connect()
+    if (!(await client.checkAuthorization())) {
+      throw new Error("TELEGRAM_USER_SESSION is no longer authorized; run the authorization script again")
+    }
+  } catch (error) {
+    await client.disconnect().catch(() => undefined)
+    throw error
   }
 
-  let requesterInput: any = null
-  async function resolveRequester(requester: { id: number; username: string }) {
-    const username = String(requester.username || "").trim().replace(/^@/, "")
-    if (!username) throw new Error("The requester needs a Telegram username before starting channel setup")
-    const user: any = await client.getEntity(`@${username}`)
-    if (!(user instanceof Api.User) || user.id?.toString?.() !== String(requester.id)) {
-      throw new Error(`@${username} does not match the Telegram account that requested this channel`)
-    }
-    requesterInput = await client.getInputEntity(user)
-    return requesterInput
-  }
+  let sumoBotInput: any = null
 
   const gateway: OrganicAutomationGateway = {
-    async preflight(requester) {
+    async preflight() {
       if (!fs.existsSync(config.logoPath)) throw new Error(`Sumo logo not found at ${config.logoPath}`)
       if (!(await client.checkAuthorization())) throw new Error("Telegram user session is not authorized")
-      await client.getInputEntity(`@${config.sumoBotUsername}`)
-      await resolveRequester(requester)
-    },
-
-    async findChannelByMarker(marker) {
-      const dialogs = await client.getDialogs({ limit: 100 })
-      for (const dialog of dialogs) {
-        const entity: any = dialog.entity
-        const ref = channelRef(entity)
-        if (!ref || !(entity instanceof Api.Channel)) continue
-        try {
-          const full: any = await client.invoke(new Api.channels.GetFullChannel({ channel: inputChannel(ref) }))
-          if (String(full?.fullChat?.about || "").includes(marker)) return ref
-        } catch {
-          // A stale/inaccessible dialog must not block recovery from other channels.
-        }
-      }
-      return null
+      sumoBotInput = await client.getInputEntity(`@${config.sumoBotUsername}`)
     },
 
     async createBroadcastChannel(title, about) {
@@ -126,13 +104,6 @@ export async function createTelegramUserGateway(): Promise<{
       return ref
     },
 
-    async clearChannelAbout(channel) {
-      await client.invoke(new Api.messages.EditChatAbout({
-        peer: inputChannel(channel),
-        about: "",
-      }))
-    },
-
     async setChannelPhoto(channel) {
       const stat = fs.statSync(config.logoPath)
       const file = new CustomFile(path.basename(config.logoPath), stat.size, config.logoPath)
@@ -144,34 +115,12 @@ export async function createTelegramUserGateway(): Promise<{
     },
 
     async addSumoBotAsAdmin(channel) {
-      const bot = await client.getInputEntity(`@${config.sumoBotUsername}`)
+      const bot = sumoBotInput || await client.getInputEntity(`@${config.sumoBotUsername}`)
       await client.invoke(new Api.channels.EditAdmin({
         channel: inputChannel(channel),
         userId: bot,
         adminRights: new Api.ChatAdminRights({ postMessages: true, editMessages: true }),
         rank: "Sumo Trade Bot",
-      }))
-    },
-
-    async addRequesterAsAdmin(channel, requester) {
-      const user = requesterInput || await resolveRequester(requester)
-      await client.invoke(new Api.channels.EditAdmin({
-        channel: inputChannel(channel),
-        userId: user,
-        adminRights: new Api.ChatAdminRights({
-          changeInfo: true,
-          postMessages: true,
-          editMessages: true,
-          deleteMessages: true,
-          inviteUsers: true,
-          addAdmins: true,
-          manageCall: true,
-          postStories: true,
-          editStories: true,
-          deleteStories: true,
-          manageDirectMessages: true,
-        }),
-        rank: "Launch Operator",
       }))
     },
 

@@ -8,6 +8,7 @@
   "include": [
     "next-env.d.ts",
     "lib/organic-channel-setup.ts",
+    "lib/organic-channel-policy.ts",
     "lib/organic-channel-automation.ts",
     "lib/telegram-user-client.ts",
     "lib/organic-channel-jobs.ts",

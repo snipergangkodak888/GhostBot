@@ -1,4 +1,5 @@
 import { organicChannelTitle, sumoSubscribeCommand } from "./organic-channel-setup"
+import type { OrganicTelegramOperation } from "./organic-channel-policy"
 
 export const ORGANIC_CHANNEL_JOB_COLLECTION = "organicChannelJobs"
 
@@ -9,7 +10,9 @@ export type OrganicChannelRef = {
 
 export type OrganicChannelStage =
   | "queued"
+  | "channel_create_started"
   | "channel_created"
+  // Legacy checkpoints retained so existing jobs remain readable.
   | "about_cleared"
   | "photo_set"
   | "sumo_admin_set"
@@ -24,7 +27,6 @@ export type OrganicChannelJob = {
   profileId: string
   sourceChatId: string
   requestedByTelegramId: number
-  requestedByUsername: string
   stage: OrganicChannelStage
   status: "queued" | "running" | "retry" | "complete" | "failed"
   channel?: OrganicChannelRef
@@ -33,18 +35,18 @@ export type OrganicChannelJob = {
   subscribeCommand?: string
   attempts?: number
   lastError?: string
+  nextEligibleAt?: string | Date
+  channelCreatedAt?: string | Date
+  failureKind?: string
   createdAt?: string | Date
   updatedAt?: string | Date
 }
 
 export type OrganicAutomationGateway = {
-  preflight(requester: { id: number; username: string }): Promise<void>
-  findChannelByMarker(marker: string): Promise<OrganicChannelRef | null>
+  preflight(): Promise<void>
   createBroadcastChannel(title: string, about: string): Promise<OrganicChannelRef>
-  clearChannelAbout(channel: OrganicChannelRef): Promise<void>
   setChannelPhoto(channel: OrganicChannelRef): Promise<void>
   addSumoBotAsAdmin(channel: OrganicChannelRef): Promise<void>
-  addRequesterAsAdmin(channel: OrganicChannelRef, requester: { id: number; username: string }): Promise<void>
   createInviteLink(channel: OrganicChannelRef, title: string): Promise<string>
 }
 
@@ -55,14 +57,15 @@ export type OrganicAutomationDependencies = {
 
 const STAGE_NUMBER: Record<OrganicChannelStage, number> = {
   queued: 0,
-  channel_created: 1,
+  channel_create_started: 1,
+  channel_created: 2,
   about_cleared: 2,
   photo_set: 3,
   sumo_admin_set: 4,
-  requester_admin_set: 5,
-  command_ready: 6,
-  invite_created: 7,
-  complete: 8,
+  requester_admin_set: 4,
+  command_ready: 5,
+  invite_created: 6,
+  complete: 7,
 }
 
 function reached(job: OrganicChannelJob, stage: OrganicChannelStage) {
@@ -78,8 +81,24 @@ async function save(job: OrganicChannelJob, deps: OrganicAutomationDependencies,
   await deps.checkpoint(changes)
 }
 
-export function organicChannelMarker(jobId: string) {
-  return `ghostbot-organic:${String(jobId).trim()}`
+export class OrganicChannelOperationError extends Error {
+  operation: OrganicTelegramOperation
+  cause?: unknown
+
+  constructor(operation: OrganicTelegramOperation, error: unknown) {
+    super(error instanceof Error ? error.message : String(error))
+    this.name = "OrganicChannelOperationError"
+    this.operation = operation
+    this.cause = error
+  }
+}
+
+async function telegramOperation<T>(operation: OrganicTelegramOperation, action: () => Promise<T>) {
+  try {
+    return await action()
+  } catch (error) {
+    throw new OrganicChannelOperationError(operation, error)
+  }
 }
 
 export function telegramChannelBotApiId(rawChannelId: string | number) {
@@ -93,45 +112,40 @@ export async function processOrganicChannelJob(
   deps: OrganicAutomationDependencies,
 ) {
   const job: OrganicChannelJob = { ...original, channel: original.channel ? { ...original.channel } : undefined }
-  const marker = organicChannelMarker(job._id)
 
   // Validate every credential and local asset before the first Telegram side effect.
-  const requester = { id: job.requestedByTelegramId, username: job.requestedByUsername }
-  await deps.gateway.preflight(requester)
+  await telegramOperation("preflight", () => deps.gateway.preflight())
 
   if (!reached(job, "channel_created")) {
-    const existing = await deps.gateway.findChannelByMarker(marker)
-    const channel = existing || await deps.gateway.createBroadcastChannel(
+    if (job.stage === "channel_create_started") {
+      throw new OrganicChannelOperationError(
+        "create_channel",
+        new Error("Channel creation outcome is unknown; manual reconciliation is required before another create request"),
+      )
+    }
+    await save(job, deps, { stage: "channel_create_started" })
+    const channel = await telegramOperation("create_channel", () => deps.gateway.createBroadcastChannel(
       organicChannelTitle(job.ticker),
-      `GhostBot organic notifications · ${marker}`,
-    )
+      "",
+    ))
     await save(job, deps, {
       channel,
       channelBotApiId: telegramChannelBotApiId(channel.id),
+      channelCreatedAt: new Date(),
       stage: "channel_created",
     })
   }
 
   if (!job.channel) throw new Error("Organic channel reference is missing after creation")
 
-  if (!reached(job, "about_cleared")) {
-    await deps.gateway.clearChannelAbout(job.channel)
-    await save(job, deps, { stage: "about_cleared" })
-  }
-
   if (!reached(job, "photo_set")) {
-    await deps.gateway.setChannelPhoto(job.channel)
+    await telegramOperation("set_photo", () => deps.gateway.setChannelPhoto(job.channel!))
     await save(job, deps, { stage: "photo_set" })
   }
 
   if (!reached(job, "sumo_admin_set")) {
-    await deps.gateway.addSumoBotAsAdmin(job.channel)
+    await telegramOperation("add_sumo_admin", () => deps.gateway.addSumoBotAsAdmin(job.channel!))
     await save(job, deps, { stage: "sumo_admin_set" })
-  }
-
-  if (!reached(job, "requester_admin_set")) {
-    await deps.gateway.addRequesterAsAdmin(job.channel, requester)
-    await save(job, deps, { stage: "requester_admin_set" })
   }
 
   if (!reached(job, "command_ready")) {
@@ -140,7 +154,10 @@ export async function processOrganicChannelJob(
   }
 
   if (!reached(job, "invite_created")) {
-    const inviteLink = await deps.gateway.createInviteLink(job.channel, `${job.ticker} client invite`.slice(0, 32))
+    const inviteLink = await telegramOperation("create_invite", () => deps.gateway.createInviteLink(
+      job.channel!,
+      `${job.ticker} client invite`.slice(0, 32),
+    ))
     await save(job, deps, { inviteLink, stage: "invite_created" })
   }
 

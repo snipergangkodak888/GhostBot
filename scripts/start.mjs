@@ -39,7 +39,8 @@ async function runOrganicChannelTick() {
 const initial = setTimeout(runLaunchTick, 15_000)
 const interval = setInterval(runLaunchTick, 5 * 60_000)
 const organicInitial = setTimeout(runOrganicChannelTick, 20_000)
-const organicInterval = setInterval(runOrganicChannelTick, 30_000)
+// This only polls GhostBot's database-backed scheduler. Telegram is contacted only for an eligible leased job.
+const organicInterval = setInterval(runOrganicChannelTick, 10_000)
 
 function stop(signal) {
   clearTimeout(initial)

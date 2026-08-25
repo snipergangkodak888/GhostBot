@@ -215,12 +215,11 @@ Launch Chat members can run `/organicsetup TICKER` or use the setup button shown
 - creates `$TICKER - Organic Trade Notifications` as a broadcast channel
 - applies the black Sumo logo
 - adds `@sumo_trade_bot` as an administrator with posting rights
-- adds the Guard member who ran the command as a full channel administrator
 - converts Telegram's raw channel ID to the required `-100…` Bot API ID
 - creates a client invite link
 - returns the invite link and ready-to-copy `/subscribe_channel <channel_id> <profile_id>` command to the requesting chat
 
-The command also accepts everything on one line: `/organicsetup TICKER PROFILE_ID`. Authorized Guard members can run it in a direct message with GhostBot. In groups, it is available only in configured Launch or Management chats. The requester must have a Telegram username so the dedicated automation account can resolve the correct user and promote them safely.
+The command also accepts everything on one line: `/organicsetup TICKER PROFILE_ID`. Authorized Guard members can run it in a direct message with GhostBot. In groups, it is available only in configured Launch or Management chats. The dedicated automation account remains the channel owner; requesters are deliberately not force-added or promoted.
 
 Successful output is intentionally short:
 
@@ -234,7 +233,11 @@ DM this to @sumo_trade_bot once token is live:
 /subscribe_channel -1001234567890 PROFILE_ID
 ```
 
-The automation does not send the subscription command to Sumo Bot and does not post anything in a client chat. The channel's public Info/description is left blank. The operator reviews and sends the returned command manually. The worker checkpoints every step in `organicChannelJobs`, retries temporary failures up to five times, and recovers a channel created just before a process restart using a temporary unique marker that is cleared immediately after creation. Only one job runs at a time in each app process. If user-session automation is not fully configured, `/organicsetup` falls back to the guided Bot API workflow instead of becoming unavailable.
+The automation does not send the subscription command to Sumo Bot and does not post anything in a client chat. The channel is created with a blank public Info/description. The operator reviews and sends the returned command manually.
+
+The worker polls its database queue every 10 seconds, but contacts Telegram only for an eligible leased job. Default rolling limits allow two creations per two hours, four per eight hours, and ten per 24 hours, with at least 30 minutes between creations. Set `ORGANIC_CHANNEL_AUTOMATION_ENABLED=false` for the production kill switch. `FLOOD_WAIT` schedules the same checkpoint for Telegram's requested cooldown; restriction, privacy, participant-add, and ambiguous write errors stop the job and open a global circuit breaker instead of retrying. A pre-call `channel_create_started` checkpoint prevents a process restart or uncertain response from blindly creating a duplicate channel. Only safe read-only network failures retry, up to three attempts. Existing completed or partially created ticker/profile jobs are reused or held for review rather than duplicated.
+
+The rate policy is configurable with `ORGANIC_CHANNEL_MIN_INTERVAL_MINUTES`, `ORGANIC_CHANNEL_MAX_PER_2_HOURS`, `ORGANIC_CHANNEL_MAX_PER_8_HOURS`, and `ORGANIC_CHANNEL_MAX_PER_24_HOURS`. These are conservative GhostBot controls, not Telegram-guaranteed limits. If user-session automation is not fully configured, `/organicsetup` falls back to the guided Bot API workflow instead of becoming unavailable.
 
 Full automation requires a dedicated Telegram user account because Telegram's Bot API cannot create channels or initiate messages to another bot. Configure the account locally:
 
