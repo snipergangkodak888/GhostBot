@@ -32,6 +32,7 @@ import {
 import { getSheetSchema, normalizeSheetKind, valuesForKind, type SheetKind } from "@/lib/sheet-schemas"
 import { cleanLaunchProjectName, cleanLaunchProjectNameFromRequest, inferLaunchConfiguration, normalizeProjectStatus, projectActivationReadiness, projectLaunchAt, scheduledLifecycleFields, tentativeLifecycleFields } from "@/lib/project-lifecycle"
 import { formatLaunchSetupReview, launchSetupButtons, launchSetupReady } from "@/lib/launch-setup"
+import { inferLaunchMethod, normalizeLaunchMethod } from "@/lib/launch-method"
 import { cleanProjectFeeFields } from "@/lib/revenue-projects"
 
 function includes(text: string, words: string[]) {
@@ -257,7 +258,7 @@ function scopedActionPayload(actionType: string, payload: Record<string, any>, s
   const allowed = actionType === "create_reminder"
     ? ["title", "message", "dueAt", "timeZone", "deliveryScope", "telegramChatId", "targetChatTitle"]
     : scope === "launch"
-      ? ["projectName", "name", "owner", "referrer", "referrerWallet", "referrerAccountId", "referralPercentage", "referrerStatus", "status", "service", "startDate", "launchAt", "launchDate", "tentativeLaunchDate", "launchTimingStatus", "launchTimeZone", "launchVenue", "launchFundingAsset", "chain", "revenueChain", "quoteToken", "quoteAssets", "dailyTradingFeeEnabled", "dailyTradingFeeUsd", "launchFeeUsd", "feeConfigurationConfirmed", "endDate", "notes", "tags", "_candidates"]
+      ? ["projectName", "name", "owner", "referrer", "referrerWallet", "referrerAccountId", "referralPercentage", "referrerStatus", "status", "service", "startDate", "launchAt", "launchDate", "tentativeLaunchDate", "launchTimingStatus", "launchTimeZone", "launchVenue", "launchFundingAsset", "launchMethod", "chain", "revenueChain", "quoteToken", "quoteAssets", "dailyTradingFeeEnabled", "dailyTradingFeeUsd", "launchFeeUsd", "feeConfigurationConfirmed", "endDate", "notes", "tags", "_candidates"]
       : ["projectName", "name", "status", "service", "notes", "tags", "_candidates"]
   return Object.fromEntries(Object.entries(payload).filter(([key]) => allowed.includes(key)))
 }
@@ -723,6 +724,7 @@ function inferCapabilityAction(text: string, projects: any[], timeZone: string, 
   const target = launchProjectName(text, projects)
   if ((!launchAt && !tentativeLaunchDate) || !target?.name) return null
   const config = inferLaunchConfiguration(text)
+  const launchMethod = inferLaunchMethod(text)
   const launchTimeZone = detectExplicitTimeZone(text) || timeZone
   const configuration = {
     ...(launchAt ? { launchAt: launchAt.toISOString(), launchDate: launchAt.toISOString(), launchTimingStatus: "confirmed", tentativeLaunchDate: null } : { launchAt: null, launchDate: null, launchTimingStatus: "tentative", tentativeLaunchDate, status: "scheduled" }),
@@ -731,6 +733,7 @@ function inferCapabilityAction(text: string, projects: any[], timeZone: string, 
     ...(config.launchFundingAsset ? { launchFundingAsset: config.launchFundingAsset } : {}),
     ...(config.chain ? { chain: config.chain } : {}),
     ...(config.quoteToken ? { quoteToken: config.quoteToken, quoteAssets: [config.quoteToken] } : {}),
+    ...(launchMethod ? { launchMethod } : {}),
     ...(config.chain && config.quoteToken ? { dailyTradingFeeEnabled: true, dailyTradingFeeUsd: 500, launchFeeUsd: 1000, feeConfigurationConfirmed: true } : {}),
     ...(/\bno\s+referrer\b/i.test(text) ? { referrerStatus: "none" } : {}),
   }
@@ -781,10 +784,12 @@ function normalizeActionDates(actionType: string, payload: any, text: string, ti
       next.launchTimeZone = next.launchTimeZone || detectExplicitTimeZone(text) || timeZone
     }
     const inferred = inferLaunchConfiguration(text)
+    const inferredLaunchMethod = inferLaunchMethod(text)
     if (!next.launchVenue && inferred.launchVenue) next.launchVenue = inferred.launchVenue
     if (!next.launchFundingAsset && inferred.launchFundingAsset) next.launchFundingAsset = inferred.launchFundingAsset
     if (!next.chain && inferred.chain) next.chain = inferred.chain
     if (!next.quoteToken && inferred.quoteToken) next.quoteToken = inferred.quoteToken
+    if (!normalizeLaunchMethod(next.launchMethod) && inferredLaunchMethod) next.launchMethod = inferredLaunchMethod
     if (next.quoteToken) next.quoteAssets = [String(next.quoteToken).toUpperCase()]
     if (next.chain && next.quoteToken && next.feeConfigurationConfirmed === undefined) {
       next.dailyTradingFeeEnabled = next.dailyTradingFeeEnabled !== false
@@ -1044,7 +1049,7 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
     db.collection("opsSheets").find({}).toArray(),
   ])
   const projects = options.dataScope === "launch"
-    ? projectRows.map((project: any) => ({ _id: project._id, name: project.name, owner: project.owner, referrer: project.referrer, referrerAccountId: project.referrerAccountId, referrerStatus: project.referrerStatus, status: project.status, service: project.service, startDate: project.startDate, launchAt: project.launchAt, launchDate: project.launchDate, tentativeLaunchDate: project.tentativeLaunchDate, launchTimingStatus: project.launchTimingStatus, launchTimeZone: project.launchTimeZone, launchVenue: project.launchVenue, launchFundingAsset: project.launchFundingAsset, chain: project.chain, quoteToken: project.quoteToken, dailyTradingFeeEnabled: project.dailyTradingFeeEnabled, dailyTradingFeeUsd: project.dailyTradingFeeUsd, launchFeeUsd: project.launchFeeUsd, feeConfigurationConfirmed: project.feeConfigurationConfirmed, endDate: project.endDate, notes: project.notes, tags: project.tags, createdAt: project.createdAt, updatedAt: project.updatedAt }))
+    ? projectRows.map((project: any) => ({ _id: project._id, name: project.name, owner: project.owner, referrer: project.referrer, referrerAccountId: project.referrerAccountId, referrerStatus: project.referrerStatus, status: project.status, service: project.service, startDate: project.startDate, launchAt: project.launchAt, launchDate: project.launchDate, tentativeLaunchDate: project.tentativeLaunchDate, launchTimingStatus: project.launchTimingStatus, launchTimeZone: project.launchTimeZone, launchVenue: project.launchVenue, launchFundingAsset: project.launchFundingAsset, launchMethod: project.launchMethod, chain: project.chain, quoteToken: project.quoteToken, dailyTradingFeeEnabled: project.dailyTradingFeeEnabled, dailyTradingFeeUsd: project.dailyTradingFeeUsd, launchFeeUsd: project.launchFeeUsd, feeConfigurationConfirmed: project.feeConfigurationConfirmed, endDate: project.endDate, notes: project.notes, tags: project.tags, createdAt: project.createdAt, updatedAt: project.updatedAt }))
     : options.dataScope === "trade"
       ? projectRows.map((project: any) => ({ _id: project._id, name: project.name, status: project.status, service: project.service, notes: project.notes, tags: project.tags, createdAt: project.createdAt, updatedAt: project.updatedAt }))
       : projectRows
@@ -1077,13 +1082,14 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
           "Capability semantics:",
           "• The launch calendar is backed by a project's launchAt timestamp. Requests to add, schedule, move, or reschedule a launch update an existing project, or create a scheduled project when the named project does not exist.",
           "• If the team knows the launch day but not the exact time, use launchTimingStatus=tentative and tentativeLaunchDate=YYYY-MM-DD, with launchAt and launchDate null. Never invent a time for a tentative launch.",
+          "• launchMethod must be one of sumo, senzu_plugin, or other_mm_plugin. Infer Senzu from 'senzu plugin' or 'launch dev plugin', and infer other_mm_plugin from 'other MM plugin'.",
           "• Launch scheduling should capture launchAt, launchTimeZone, launchVenue, chain, and one quoteToken whenever the user supplied them. The project's quote token is used for both launch-fee and daily-fee receipts.",
           "• A scheduled project is not active until a trusted Launch Chat member confirms the launch. Never mark a newly scheduled launch active.",
           "• Reminders create scheduled Telegram deliveries. They are different from project launches.",
           "• Payroll actions add or remove payroll rows. Data-row actions modify a project's existing data file.",
           "Payload shapes:",
-          "create_project: {name, referrer, referrerWallet, referrerStatus, status, service, startDate, launchAt, tentativeLaunchDate, launchTimingStatus, launchTimeZone, launchVenue, launchFundingAsset, chain, quoteToken, dailyTradingFeeEnabled, dailyTradingFeeUsd, launchFeeUsd, feeConfigurationConfirmed, endDate, currentProfitLoss, notes, tags}",
-          "update_project: {projectName, name, referrer, referrerWallet, referrerStatus, status, service, startDate, launchAt, tentativeLaunchDate, launchTimingStatus, launchTimeZone, launchVenue, launchFundingAsset, chain, quoteToken, dailyTradingFeeEnabled, dailyTradingFeeUsd, launchFeeUsd, feeConfigurationConfirmed, endDate, currentProfitLoss, notes, tags}",
+          "create_project: {name, referrer, referrerWallet, referrerStatus, status, service, startDate, launchAt, tentativeLaunchDate, launchTimingStatus, launchTimeZone, launchVenue, launchFundingAsset, launchMethod, chain, quoteToken, dailyTradingFeeEnabled, dailyTradingFeeUsd, launchFeeUsd, feeConfigurationConfirmed, endDate, currentProfitLoss, notes, tags}",
+          "update_project: {projectName, name, referrer, referrerWallet, referrerStatus, status, service, startDate, launchAt, tentativeLaunchDate, launchTimingStatus, launchTimeZone, launchVenue, launchFundingAsset, launchMethod, chain, quoteToken, dailyTradingFeeEnabled, dailyTradingFeeUsd, launchFeeUsd, feeConfigurationConfirmed, endDate, currentProfitLoss, notes, tags}",
           "create_reminder: {title, message, dueAt, timeZone?}",
           "create_payroll: {member, amount, projectName, date, status, currency, notes}",
           "add_sheet_row: {projectName, sheetType, row}",
@@ -1316,6 +1322,7 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
       launchTimeZone: String(payload.launchTimeZone || TEAM_TIME_ZONE),
       launchVenue: String(payload.launchVenue || "").trim(),
       launchFundingAsset: String(payload.launchFundingAsset || "").trim().toUpperCase(),
+      launchMethod: normalizeLaunchMethod(payload.launchMethod) || "",
       referrerStatus: String(payload.referrerStatus || (payload.referrer ? "assigned" : "pending")),
       feeConfigurationConfirmed: payload.feeConfigurationConfirmed === true,
       ...cleanProjectFeeFields(payload),
@@ -1366,6 +1373,7 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
       update.profitThisWeek = update.currentProfitLoss
     }
     for (const key of ["launchTimeZone", "launchVenue", "launchFundingAsset"]) if (payload[key] !== undefined) update[key] = String(payload[key] || "").trim()
+    if (payload.launchMethod !== undefined) update.launchMethod = normalizeLaunchMethod(payload.launchMethod) || ""
     if (["chain", "quoteToken", "quoteAssets", "dailyTradingFeeEnabled", "dailyTradingFeeUsd", "launchFeeUsd"].some((key) => payload[key] !== undefined)) Object.assign(update, cleanProjectFeeFields({ ...project, ...payload }))
     if (payload.feeConfigurationConfirmed !== undefined) update.feeConfigurationConfirmed = payload.feeConfigurationConfirmed === true
     if (payload.referrerStatus !== undefined || payload.referrer !== undefined) update.referrerStatus = String(payload.referrerStatus || (payload.referrer ? "assigned" : "none"))

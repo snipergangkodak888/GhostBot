@@ -51,6 +51,10 @@ function localRequire(id) {
   if (id === "@/lib/chat-subscriptions") return { getSubscribedChats: async () => [] }
   if (id === "@/lib/launch-calendar") return { LAUNCH_TIME_ZONE: "America/New_York", formatLaunchDaySchedule: async () => "schedule", getLaunchesForDay: async () => [], launchDateKey: () => "2026-08-24" }
   if (id === "@/lib/revenue-service") return { ensureDailyTradingFeeExpectations: async () => ({}), valuePendingRevenueReceipts: async () => ({}) }
+  if (id === "@/lib/launch-method") return {
+    normalizeLaunchMethod: (value) => ["sumo", "senzu_plugin", "other_mm_plugin"].includes(String(value)) ? String(value) : "",
+    launchMethodLabel: (value) => value === "sumo" ? "Sumo" : value === "senzu_plugin" ? "Senzu plugin" : value === "other_mm_plugin" ? "Other MM plugin" : "Not selected",
+  }
   if (id === "@/lib/project-lifecycle") return {
     projectLaunchAt: (project) => project.launchAt ? new Date(project.launchAt) : null,
     projectLaunchTimingStatus: (project) => project.tentativeLaunchDate && !project.launchAt ? "tentative" : "confirmed",

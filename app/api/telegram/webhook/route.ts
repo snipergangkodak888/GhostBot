@@ -24,7 +24,8 @@ import { calculateLaunchQuote, defaultMmLiquidity, formatLaunchQuote, getLaunchA
 import { botPermissionDeniedMessage, canUseBotCapability, getBotPermissionContext, type BotCapability, type BotPermissionContext } from "@/lib/bot-permissions"
 import { createGuardEnrollmentLink, guardEnrollmentTokenFromText, guardEnrollmentUrl, handleGuardBotMembershipUpdate, handleGuardChatMemberUpdate, recordGuardChatMember, revokeGuardEnrollmentLinks, syncTelegramChatAdministrators, verifyAndRedeemGuardEnrollment } from "@/lib/guard-enrollment"
 import { activateScheduledProject, activationLifecycleFields, cancelScheduledProject, cleanLaunchProjectName, confirmNoProjectReferrer, confirmStandardProjectFees, projectActivationReadiness, projectLaunchAt, projectLaunchDateKey, projectLaunchTimingStatus, rescheduleProject, setTentativeProjectLaunchDate } from "@/lib/project-lifecycle"
-import { formatLaunchSetupReview, launchChainButtons, launchChainConfig, launchChainIdForProject, launchQuoteButtons, launchSetupButtons, launchSetupReady, launchVenueButtons, launchVenueSelection } from "@/lib/launch-setup"
+import { formatLaunchSetupReview, launchChainButtons, launchChainConfig, launchChainIdForProject, launchMethodButtons, launchQuoteButtons, launchSetupButtons, launchSetupReady, launchVenueButtons, launchVenueSelection } from "@/lib/launch-setup"
+import { launchMethodLabel, normalizeLaunchMethod } from "@/lib/launch-method"
 import { ghostBotOrganicChannelUrl, normalizeOrganicTicker, organicChannelCompletionMessage, organicChannelTitle, SUMO_TRADE_BOT_USERNAME, sumoBotChannelUrl, sumoSubscribeCommand, validOrganicTicker, validSumoProfileId } from "@/lib/organic-channel-setup"
 import { telegramUserAutomationConfigured } from "@/lib/telegram-user-client"
 import { queueOrganicChannelJob } from "@/lib/organic-channel-jobs"
@@ -869,7 +870,8 @@ async function sendCalendar(token: string, chatId: number | string) {
     const day = new Intl.DateTimeFormat("en-US", { timeZone: TEAM_TIME_ZONE, month: "short", day: "numeric" }).format(new Date(`${dateKey}T12:00:00Z`))
     const timing = launchAt ? formatTeamDateTime(launchAt, project.launchTimeZone || TEAM_TIME_ZONE) : `${day} · Time TBD`
     const status = project.status === "active" ? "Active" : tentative ? "Tentative" : "Scheduled"
-    return `🚀 ${timing} — ${project.name} · ${status}`
+    const method = normalizeLaunchMethod(project.launchMethod) ? ` · ${launchMethodLabel(project.launchMethod)}` : ""
+    return `🚀 ${timing} — ${project.name} · ${status}${method}`
   })
   const lines = [
     ...launchLines,
@@ -1603,6 +1605,18 @@ async function handleCallback(token: string, chatId: number | string, telegramId
         [{ text: "Set tentative day · Time TBD", callback_data: `launchsetup:tentativeday:${id}` }],
         [{ text: "⬅️ Back to review", callback_data: `launchsetup:review:${id}` }],
       ])
+    }
+    if (action === "method") {
+      return showLaunchSetupPicker(token, chatId, messageId, `🧩 <b>Choose the launch method for ${String(launchAction.payload?.name || "this launch")}</b>`, [
+        ...launchMethodButtons(id),
+        [{ text: "⬅️ Back to review", callback_data: `launchsetup:review:${id}` }],
+      ])
+    }
+    if (action === "setmethod") {
+      const launchMethod = normalizeLaunchMethod(extra)
+      if (!launchMethod) return sendMessage(token, chatId, "⚠️ That launch method is not available.")
+      launchAction = await updateLaunchSetupAction(db, launchAction, { launchMethod })
+      return showLaunchSetupReview(token, chatId, launchAction, messageId, `${launchMethodLabel(launchMethod)} selected.`)
     }
     if (action === "exacttime") {
       await setState(telegramId, { action: "launch_setup_exact_time", actionId: id, reviewMessageId: messageId, tentativeLaunchDate: launchAction.payload?.tentativeLaunchDate, timeZone: launchAction.payload?.launchTimeZone || TEAM_TIME_ZONE }, chatId)

@@ -5,6 +5,7 @@ import { getSubscribedChats } from "@/lib/chat-subscriptions"
 import { formatLaunchDaySchedule, getLaunchesForDay, launchDateKey, LAUNCH_TIME_ZONE } from "@/lib/launch-calendar"
 import { ensureDailyTradingFeeExpectations, valuePendingRevenueReceipts } from "@/lib/revenue-service"
 import { activateScheduledProject, projectActivationReadiness, projectLaunchAt, projectLaunchDateKey, projectLaunchTimingStatus } from "@/lib/project-lifecycle"
+import { launchMethodLabel, normalizeLaunchMethod } from "@/lib/launch-method"
 
 const EST_TIME_ZONE = LAUNCH_TIME_ZONE
 
@@ -199,6 +200,7 @@ export async function processTentativeLaunchTimingFollowups(token: string, now: 
       `🕒 <b>${escapeHtml(project.name || "Tentative launch")}</b> is planned for today, but the exact time is still TBD.`,
       "",
       `${escapeHtml(project.launchVenue || "Launch venue not set")} · ${escapeHtml(project.chain || project.revenueChain || "chain not set")} · ${escapeHtml(project.quoteToken || "quote token not set")}`,
+      normalizeLaunchMethod(project.launchMethod) ? `Method: ${escapeHtml(launchMethodLabel(project.launchMethod))}` : "Method: not selected",
       "Set the time when the client confirms it, or move the tentative day if plans changed.",
     ].join("\n")
     const replyMarkup = {
@@ -281,6 +283,7 @@ export async function processDueLaunchConfirmations(token: string, now: Date) {
       `🚀 <b>${escapeHtml(project.name || "Scheduled launch")}</b> was scheduled to launch now.`,
       "",
       `${escapeHtml(project.launchVenue || "Launch venue not set")} · ${escapeHtml(readiness.chain || "chain not set")} · ${escapeHtml(readiness.quoteToken || "quote token not set")}`,
+      normalizeLaunchMethod(project.launchMethod) ? `Method: ${escapeHtml(launchMethodLabel(project.launchMethod))}` : "Method: not selected",
       `Scheduled: ${telegramLocalDateTime(launchAt, project.launchTimeZone || EST_TIME_ZONE)}`,
       readiness.ready ? "✅ Activation setup is complete." : `⚠️ Before activation: ${escapeHtml(readiness.missing.join(", "))}.`,
       "",

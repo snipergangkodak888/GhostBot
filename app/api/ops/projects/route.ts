@@ -4,6 +4,7 @@ import { createDefaultSheetsForProject, ensureDefaultSheetsForProjects } from '@
 import { cleanProjectFeeFields } from '@/lib/revenue-projects'
 import { normalizeProjectStatus, scheduledLifecycleFields } from '@/lib/project-lifecycle'
 import { parseTeamDateTime } from '@/lib/team-timezone'
+import { normalizeLaunchMethod } from '@/lib/launch-method'
 
 export const dynamic = 'force-dynamic'
 
@@ -30,6 +31,7 @@ function cleanProject(body: any) {
     launchTimeZone: String(body.launchTimeZone || 'America/New_York'),
     launchVenue: String(body.launchVenue || '').trim(),
     launchFundingAsset: String(body.launchFundingAsset || '').trim().toUpperCase(),
+    launchMethod: normalizeLaunchMethod(body.launchMethod) || '',
     referrerStatus: String(body.referrerStatus || (body.referrerAccountId || body.referrer ? 'assigned' : 'pending')),
     feeConfigurationConfirmed: body.feeConfigurationConfirmed === true,
     revenueToday: Number(body.revenueToday || 0),

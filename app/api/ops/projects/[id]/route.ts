@@ -5,6 +5,7 @@ import { deleteProjectCascade } from '@/lib/platform-data'
 import { cleanProjectFeeFields } from '@/lib/revenue-projects'
 import { activationLifecycleFields, normalizeProjectStatus, projectActivationReadiness, projectLaunchAt, scheduledLifecycleFields } from '@/lib/project-lifecycle'
 import { parseTeamDateTime } from '@/lib/team-timezone'
+import { normalizeLaunchMethod } from '@/lib/launch-method'
 
 export const dynamic = 'force-dynamic'
 
@@ -54,6 +55,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   for (const key of ['launchTimeZone', 'launchVenue', 'launchFundingAsset']) {
     if (typeof body[key] === 'string') update[key] = body[key].trim()
   }
+  if (body.launchMethod !== undefined) update.launchMethod = normalizeLaunchMethod(body.launchMethod) || ''
   if (body.referrerStatus !== undefined || body.referrer !== undefined || body.referrerAccountId !== undefined) {
     update.referrerStatus = String(body.referrerStatus || (body.referrerAccountId || body.referrer ? 'assigned' : 'pending'))
   }

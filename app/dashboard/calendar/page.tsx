@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react"
 import { CalendarDays, Plus, Save, X } from "lucide-react"
 import { toast } from "sonner"
 
-type Project = { _id: string; name: string; status: string; owner?: string; launchDate?: string; launchAt?: string; tentativeLaunchDate?: string; launchTimingStatus?: "tentative" | "confirmed" }
+type Project = { _id: string; name: string; status: string; owner?: string; launchDate?: string; launchAt?: string; tentativeLaunchDate?: string; launchTimingStatus?: "tentative" | "confirmed"; launchMethod?: "sumo" | "senzu_plugin" | "other_mm_plugin" }
 type Reminder = { _id: string; title: string; dueAt?: string; status?: string }
 type HostedGroup = { chatId: string; title: string }
 
@@ -80,7 +80,7 @@ export default function CalendarPage() {
         id: `project-${project._id}`,
         date: project.launchAt || project.launchDate || `${project.tentativeLaunchDate}T12:00:00`,
         title: project.name,
-        meta: project.tentativeLaunchDate && !project.launchAt ? "Time TBD · Tentative" : project.owner || project.status,
+        meta: [project.tentativeLaunchDate && !project.launchAt ? "Time TBD · Tentative" : project.owner || project.status, project.launchMethod === "sumo" ? "Sumo" : project.launchMethod === "senzu_plugin" ? "Senzu plugin" : project.launchMethod === "other_mm_plugin" ? "Other MM plugin" : ""].filter(Boolean).join(" · "),
         type: project.tentativeLaunchDate && !project.launchAt ? "Tentative launch" : "Launch",
       })),
       ...reminders.filter((reminder) => reminder.dueAt).map((reminder) => ({

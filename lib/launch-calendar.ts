@@ -1,5 +1,6 @@
 import { getDb } from "@/lib/db"
 import { projectLaunchAt, projectLaunchDateKey, projectLaunchTimingStatus } from "@/lib/project-lifecycle"
+import { launchMethodLabel, normalizeLaunchMethod } from "@/lib/launch-method"
 
 export const LAUNCH_TIME_ZONE = "America/New_York"
 
@@ -72,7 +73,8 @@ export async function formatLaunchDaySchedule(value: string | Date, options: { m
     const launchAt = projectLaunchAt(project)
     const tentative = projectLaunchTimingStatus(project) === "tentative"
     const status = project.status === "active" ? "Active" : tentative ? "Tentative" : project.activationOverdue ? "Awaiting confirmation" : "Scheduled"
-    return `• ${launchAt ? launchTimeLabel(launchAt) : "Time TBD"} — ${project.name || "Unnamed project"}${owner ? ` (${owner})` : ""} · ${status}`
+    const method = normalizeLaunchMethod(project.launchMethod) ? ` · ${launchMethodLabel(project.launchMethod)}` : ""
+    return `• ${launchAt ? launchTimeLabel(launchAt) : "Time TBD"} — ${project.name || "Unnamed project"}${owner ? ` (${owner})` : ""} · ${status}${method}`
   })
   return [
     header,

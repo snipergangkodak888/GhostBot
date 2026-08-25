@@ -97,9 +97,9 @@ try {
   await seedLaunchChatProfile()
   server = await ensureBotLabServer(config, { quiet: true })
   await resetBotLab(config)
-  const proposed = await sendBotLabUpdate(config, { text: `/schedulelaunch ${projectName} pumpfun sol launch at 5:10 pm ET today` })
+  const proposed = await sendBotLabUpdate(config, { text: `/schedulelaunch ${projectName} pumpfun sol launch at 5:10 pm ET today - sumo` })
   const proposedText = responseText(proposed)
-  const reviewFields = ["Review launch", `Project name: <b>${projectName}</b>`, "Pump.fun", "Solana", "Quote token: <b>SOL</b>", "Choose before creating", "Nothing is saved until you tap Create launch"]
+  const reviewFields = ["Review launch", `Project name: <b>${projectName}</b>`, "Pump.fun", "Solana", "Quote token: <b>SOL</b>", "Launch method: <b>Sumo</b>", "Choose before creating", "Nothing is saved until you tap Create launch"]
   const missingReviewFields = reviewFields.filter((value) => !proposedText.includes(value))
   if (missingReviewFields.length) throw new Error(`Launch review is missing ${missingReviewFields.join(", ")}. Response: ${proposedText}`)
   if (await lookupTestProject()) throw new Error("The project was created before the final Create launch confirmation.")
@@ -119,15 +119,15 @@ try {
   if (missing.length) throw new Error(`Confirmed response is missing ${missing.join(", ")}. Response: ${text}`)
   const project = await lookupTestProject()
   if (!project) throw new Error("The scheduled project was not stored.")
-  const expectedFields = { status: "scheduled", launchVenue: "pumpfun", chain: "solana", quoteToken: "SOL", feeConfigurationConfirmed: true, dailyTradingFeeEnabled: true }
+  const expectedFields = { status: "scheduled", launchVenue: "pumpfun", chain: "solana", quoteToken: "SOL", launchMethod: "sumo", feeConfigurationConfirmed: true, dailyTradingFeeEnabled: true }
   for (const [field, expected] of Object.entries(expectedFields)) {
     if (project[field] !== expected) throw new Error(`Expected stored ${field}=${expected}, received ${project[field]}`)
   }
   if (project.referrerStatus !== "none") throw new Error(`Expected no-referrer decision to be stored, received ${project.referrerStatus}`)
 
-  const tentativeProposed = await sendBotLabUpdate(config, { text: `/schedulelaunch ${tentativeProjectName} pumpfun sol launch today time TBD` })
+  const tentativeProposed = await sendBotLabUpdate(config, { text: `/schedulelaunch ${tentativeProjectName} pumpfun sol launch today time TBD - senzu plugin` })
   const tentativeReview = responseText(tentativeProposed)
-  for (const requiredField of ["Review launch", `Project name: <b>${tentativeProjectName}</b>`, "Time TBD (tentative)", "Pump.fun", "Solana", "Quote token: <b>SOL</b>"]) {
+  for (const requiredField of ["Review launch", `Project name: <b>${tentativeProjectName}</b>`, "Time TBD (tentative)", "Pump.fun", "Solana", "Quote token: <b>SOL</b>", "Launch method: <b>Senzu plugin</b>"]) {
     if (!tentativeReview.includes(requiredField)) throw new Error(`Tentative review is missing ${requiredField}. Response: ${tentativeReview}`)
   }
   const tentativeNoRefCallback = callbackStartingWith(tentativeProposed, "launchsetup:noref:")
@@ -142,6 +142,7 @@ try {
   const tentativeProject = await lookupTestProject(tentativeProjectName)
   if (!tentativeProject) throw new Error("The tentative project was not stored.")
   if (tentativeProject.launchAt || tentativeProject.launchDate) throw new Error("Tentative launch incorrectly stored a fake exact timestamp.")
+  if (tentativeProject.launchMethod !== "senzu_plugin") throw new Error(`Expected Senzu launch method, received ${tentativeProject.launchMethod}`)
   if (tentativeProject.launchTimingStatus !== "tentative" || !/^\d{4}-\d{2}-\d{2}$/.test(String(tentativeProject.tentativeLaunchDate || ""))) throw new Error(`Tentative timing fields are invalid: ${JSON.stringify(tentativeProject)}`)
 
   const calendar = await sendBotLabUpdate(config, { text: "/calendar" })
@@ -156,9 +157,20 @@ try {
   const confirmedTentativeProject = await lookupTestProject(tentativeProjectName)
   if (confirmedTentativeProject.launchTimingStatus !== "confirmed" || !confirmedTentativeProject.launchAt || confirmedTentativeProject.tentativeLaunchDate) throw new Error(`Tentative launch was not converted cleanly to confirmed timing: ${JSON.stringify(confirmedTentativeProject)}`)
 
+  const methodDraft = await sendBotLabUpdate(config, { text: `/schedulelaunch MethodChoice${suffix} pumpfun sol launch tomorrow at 2 PM ET no referrer` })
+  const methodDraftText = responseText(methodDraft)
+  if (!methodDraftText.includes("launch method") || !callbackStartingWith(methodDraft, "launchsetup:method:")) throw new Error(`A missing launch method did not expose the required picker. Response: ${methodDraftText}`)
+  const methodPicker = await sendBotLabUpdate(config, { callbackData: callbackStartingWith(methodDraft, "launchsetup:method:"), messageId: methodDraft.messages?.[0]?.messageId })
+  const otherMethodCallback = callbackStartingWith(methodPicker, "launchsetup:setmethod:") && (methodPicker.messages || []).flatMap((message) => message.replyMarkup?.inline_keyboard || []).flat().find((button) => String(button.callback_data || "").endsWith(":other_mm_plugin"))?.callback_data
+  if (!otherMethodCallback) throw new Error(`The launch method picker did not include Other MM plugin. Response: ${responseText(methodPicker)}`)
+  const selectedMethod = await sendBotLabUpdate(config, { callbackData: otherMethodCallback, messageId: methodPicker.messages?.[0]?.messageId })
+  if (!responseText(selectedMethod).includes("Launch method: <b>Other MM plugin</b>")) throw new Error(`The selected launch method was not returned to review. Response: ${responseText(selectedMethod)}`)
+  const cancelMethodDraft = callbackStartingWith(selectedMethod, "launchsetup:cancel:")
+  if (cancelMethodDraft) await sendBotLabUpdate(config, { callbackData: cancelMethodDraft, messageId: selectedMethod.messages?.[0]?.messageId })
+
   console.log(text)
   console.log(tentativeCreatedText)
-  console.log("\nPASS: guided launch setup handles exact and Time TBD launches, keeps tentative dates timestamp-free, exposes calendar timing controls, and confirms the exact time later.")
+  console.log("\nPASS: guided launch setup handles exact and Time TBD launches, requires all three launch-method choices, exposes calendar timing controls, and confirms the exact time later.")
 } finally {
   const deleted = await cleanup().catch((error) => {
     console.error(`Cleanup warning: ${error instanceof Error ? error.message : String(error)}`)

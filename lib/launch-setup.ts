@@ -1,4 +1,5 @@
 import { LAUNCH_CHAINS, LAUNCH_PADS, launchPad, padsForChain, type LaunchChainId } from "@/lib/launch-math"
+import { LAUNCH_METHODS, launchMethodLabel, normalizeLaunchMethod } from "@/lib/launch-method"
 import { projectActivationReadiness } from "@/lib/project-lifecycle"
 import { formatTeamDateTime, TEAM_TIME_ZONE } from "@/lib/team-timezone"
 
@@ -46,6 +47,7 @@ export function launchSetupIssues(payload: any) {
   if (!name) issues.push("project name")
   if ((!launchAt || Number.isNaN(new Date(launchAt).getTime())) && !/^\d{4}-\d{2}-\d{2}$/.test(tentativeLaunchDate)) issues.push("launch day or exact time")
   if (!String(payload?.launchVenue || "").trim()) issues.push("launchpad / DEX")
+  if (!normalizeLaunchMethod(payload?.launchMethod)) issues.push("launch method")
   const readiness = projectActivationReadiness(payload)
   issues.push(...readiness.missing)
   if (readiness.referrerStatus === "assigned" && !(Number(payload?.referralPercentage || payload?.referrerPercentage || 0) > 0)) issues.push("referral percentage")
@@ -88,6 +90,7 @@ export function formatLaunchSetupReview(action: any, notice = "") {
     `Launchpad / DEX: <b>${escapeHtml(venue?.name || "Not selected")}</b>`,
     `Chain: <b>${escapeHtml(chainLabel)}</b>`,
     `Quote token: <b>${escapeHtml(String(payload.quoteToken || "Not selected").toUpperCase())}</b>`,
+    `Launch method: <b>${escapeHtml(launchMethodLabel(payload.launchMethod))}</b>`,
     `Fees: <b>${payload.feeConfigurationConfirmed ? `$${Number(payload.launchFeeUsd || 1000).toLocaleString("en-US")} launch + $${Number(payload.dailyTradingFeeUsd || 500).toLocaleString("en-US")}/day` : "Not confirmed"}</b>`,
     `Referrer: <b>${escapeHtml(referrer)}</b>`,
     "",
@@ -113,6 +116,9 @@ export function launchSetupButtons(action: any): LaunchSetupButton[][] {
     ],
     [
       { text: payload.tentativeLaunchDate && !payload.launchAt ? "🕒 Set exact time" : "🕒 Edit timing", callback_data: `launchsetup:timing:${id}` },
+    ],
+    [
+      { text: `🧩 ${normalizeLaunchMethod(payload.launchMethod) ? launchMethodLabel(payload.launchMethod) : "Choose launch method"}`, callback_data: `launchsetup:method:${id}` },
     ],
     referrerStatus === "pending"
       ? [
@@ -163,4 +169,8 @@ export function launchVenueSelection(venueId: string) {
     launchFeeUsd: 1000,
     feeConfigurationConfirmed: true,
   }
+}
+
+export function launchMethodButtons(actionId: string): LaunchSetupButton[][] {
+  return LAUNCH_METHODS.map((method) => [{ text: method.label, callback_data: `launchsetup:setmethod:${actionId}:${method.id}` }])
 }
