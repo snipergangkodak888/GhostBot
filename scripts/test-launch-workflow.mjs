@@ -147,7 +147,7 @@ try {
 
   const calendar = await sendBotLabUpdate(config, { text: "/calendar" })
   const calendarText = responseText(calendar)
-  for (const expected of ["Today’s Launches —", `TBD — ${tentativeProjectName} · Solana/Pump.fun · SOL · Senzu plugin`]) {
+  for (const expected of ["Today’s Launches —", `TBD — ${tentativeProjectName} · Solana/Pump.fun · Senzu plugin`]) {
     if (!calendarText.includes(expected)) throw new Error(`Calendar is missing ${expected}. Response: ${calendarText}`)
   }
   if (calendarText.includes("🚀") || calendarText.includes("· Scheduled") || calendarText.match(/Aug \d{1,2}/g)?.length !== 1) throw new Error(`Calendar was not reduced to the compact one-day format. Response: ${calendarText}`)

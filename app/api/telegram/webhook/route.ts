@@ -887,9 +887,8 @@ async function sendCalendar(token: string, chatId: number | string, requestedDat
   const launchLines = launches.map(({ project, launchAt }: any) => {
     const timing = launchAt ? calendarTimeLabel(launchAt) : "TBD"
     const location = calendarLaunchLocation(project)
-    const quote = String(project.quoteToken || "").trim().toUpperCase()
     const method = normalizeLaunchMethod(project.launchMethod) ? ` · ${launchMethodLabel(project.launchMethod)}` : ""
-    return `${timing} — ${project.name} · ${location}${quote ? ` · ${quote}` : ""}${method}`
+    return `${timing} — ${project.name} · ${location}${method}`
   })
   const timingButtons = launches
     .filter(({ project }: any) => projectLaunchTimingStatus(project) === "tentative")
