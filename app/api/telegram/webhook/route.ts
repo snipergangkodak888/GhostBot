@@ -111,7 +111,7 @@ async function setBotCommands(token: string) {
       { command: "menu", description: "Show Ghost Team actions" },
       { command: "profit", description: "Show today profit" },
       { command: "projects", description: "Show active projects" },
-      { command: "calendar", description: "Show launches and reminders" },
+      { command: "calendar", description: "Show the daily launch schedule" },
       { command: "schedulelaunch", description: "Create a launch with guided setup" },
       { command: "organicsetup", description: "Set up organic trade notifications" },
       { command: "launchcalc", description: "Build a client launch-capital quote" },
@@ -853,42 +853,53 @@ async function sendReminders(token: string, chatId: number | string) {
   ])
 }
 
-async function sendCalendar(token: string, chatId: number | string) {
+function calendarDayLabel(dateKey: string) {
+  return new Intl.DateTimeFormat("en-US", { timeZone: TEAM_TIME_ZONE, weekday: "long", month: "short", day: "numeric" }).format(new Date(`${dateKey}T12:00:00Z`))
+}
+
+function calendarTimeLabel(value: Date) {
+  return `${new Intl.DateTimeFormat("en-US", { timeZone: TEAM_TIME_ZONE, hour: "numeric", minute: "2-digit" }).format(value)} ET`
+}
+
+function calendarLaunchLocation(project: any) {
+  const chain = String(project.chain || project.revenueChain || "").toLowerCase()
+  const chainLabel = chain === "solana" ? "Solana"
+    : chain === "robinhood" ? "Robinhood"
+      : chain === "bnb" ? "BNB Chain"
+        : chain === "ethereum" ? "Ethereum"
+          : chain === "base" ? "Base"
+            : "Chain TBD"
+  const venue = launchPad(String(project.launchVenue || ""))?.name
+    ?.replace(/^Uniswap\s+/i, "Uni ")
+    .replace(/\s*\(full range\)$/i, "")
+  return venue ? `${chainLabel}/${venue}` : chainLabel
+}
+
+async function sendCalendar(token: string, chatId: number | string, requestedDateKey?: string) {
   const db = await getDb()
-  const [projects, reminders] = await Promise.all([
-    db.collection("opsProjects").find({ status: { $ne: "inactive" } }).toArray(),
-    db.collection("opsReminders").find({ status: { $ne: "done" } }).sort({ dueAt: 1 }).limit(6).toArray(),
-  ])
+  const projects = await db.collection("opsProjects").find({ status: { $ne: "inactive" } }).toArray()
   const today = dateKeyInTimeZone(new Date(), TEAM_TIME_ZONE)
+  const targetDate = /^\d{4}-\d{2}-\d{2}$/.test(String(requestedDateKey || "")) ? String(requestedDateKey) : today
   const launches = projects
     .map((project: any) => ({ project, dateKey: projectLaunchDateKey(project, TEAM_TIME_ZONE), launchAt: projectLaunchAt(project) }))
-    .filter((row: any) => row.dateKey && row.dateKey >= today)
-    .sort((a: any, b: any) => a.dateKey.localeCompare(b.dateKey) || (a.launchAt && b.launchAt ? a.launchAt.getTime() - b.launchAt.getTime() : a.launchAt ? -1 : b.launchAt ? 1 : String(a.project.name || "").localeCompare(String(b.project.name || ""))))
-    .slice(0, 8)
-  const launchLines = launches.map(({ project, dateKey, launchAt }: any) => {
-    const tentative = projectLaunchTimingStatus(project) === "tentative"
-    const day = new Intl.DateTimeFormat("en-US", { timeZone: TEAM_TIME_ZONE, month: "short", day: "numeric" }).format(new Date(`${dateKey}T12:00:00Z`))
-    const timing = launchAt ? formatTeamDateTime(launchAt, project.launchTimeZone || TEAM_TIME_ZONE) : `${day} · Time TBD`
-    const status = project.status === "active" ? "Active" : tentative ? "Tentative" : "Scheduled"
+    .filter((row: any) => row.dateKey === targetDate)
+    .sort((a: any, b: any) => a.launchAt && b.launchAt ? a.launchAt.getTime() - b.launchAt.getTime() : a.launchAt ? -1 : b.launchAt ? 1 : String(a.project.name || "").localeCompare(String(b.project.name || "")))
+  const launchLines = launches.map(({ project, launchAt }: any) => {
+    const timing = launchAt ? calendarTimeLabel(launchAt) : "TBD"
+    const location = calendarLaunchLocation(project)
+    const quote = String(project.quoteToken || "").trim().toUpperCase()
     const method = normalizeLaunchMethod(project.launchMethod) ? ` · ${launchMethodLabel(project.launchMethod)}` : ""
-    return `🚀 ${timing} — ${project.name} · ${status}${method}`
+    return `${timing} — ${project.name} · ${location}${quote ? ` · ${quote}` : ""}${method}`
   })
-  const lines = [
-    ...launchLines,
-    ...reminders.filter((r: any) => r.deliveryScope === "chat" && String(r.telegramChatId || "") === String(chatId)).map((r: any) => `🔔 ${dateLabel(r.dueAt, String(r.timeZone || TEAM_TIME_ZONE))} - ${r.title || r.message}`),
-  ].slice(0, 10)
   const timingButtons = launches
     .filter(({ project }: any) => projectLaunchTimingStatus(project) === "tentative")
     .slice(0, 5)
-    .flatMap(({ project }: any) => [
-      [{ text: `🕒 Set time: ${String(project.name || "Launch").slice(0, 35)}`, callback_data: `lifecycle:settime:${project._id}:${Number(project.scheduleVersion || 0)}` }],
-      [{ text: `📆 Move day: ${String(project.name || "Launch").slice(0, 35)}`, callback_data: `lifecycle:tentativeday:${project._id}:${Number(project.scheduleVersion || 0)}` }],
+    .map(({ project }: any) => [
+      { text: `Set ${String(project.name || "launch").slice(0, 24)} time`, callback_data: `lifecycle:settime:${project._id}:${Number(project.scheduleVersion || 0)}` },
+      { text: `Move ${String(project.name || "launch").slice(0, 24)}`, callback_data: `lifecycle:tentativeday:${project._id}:${Number(project.scheduleVersion || 0)}` },
     ])
-  await sendMessage(token, chatId, `📅 Calendar\n\n${lines.length ? lines.join("\n") : "No calendar items yet."}`, [
-    ...timingButtons,
-    [{ text: "➕ Add Reminder", callback_data: "reminder:add" }],
-    [{ text: "⬅️ Back", callback_data: "main:menu" }],
-  ])
+  const header = targetDate === today ? `Today’s Launches — ${calendarDayLabel(targetDate)}` : `Launches — ${calendarDayLabel(targetDate)}`
+  await sendMessage(token, chatId, `${header}\n\n${launchLines.length ? launchLines.join("\n") : "No launches scheduled."}`, timingButtons.length ? timingButtons : undefined)
 }
 
 async function sendPayroll(token: string, chatId: number | string) {
@@ -2334,7 +2345,10 @@ async function routeText(token: string, chatId: number | string, telegramId: num
   if (text === "📅 Calendar" || text === "🟠 Calendar" || isBotCommand(text, "calendar")) {
     const capability: BotCapability = context.profile === "trade" ? "trade" : "launch"
     if (!(await requireCapability(token, context, capability))) return
-    return sendCalendar(token, chatId)
+    const requestedDay = commandText.replace(/^\/calendar(?:\s+|$)/i, "").trim()
+    const targetDate = requestedDay ? parseNaturalTeamDate(requestedDay, TEAM_TIME_ZONE, new Date()) : dateKeyInTimeZone(new Date(), TEAM_TIME_ZONE)
+    if (requestedDay && !targetDate) return sendMessage(token, chatId, "I could not read that day. Try /calendar tomorrow or /calendar 2026-08-26.")
+    return sendCalendar(token, chatId, targetDate)
   }
   if (text === "🔔 Reminders" || isBotCommand(text, "reminders")) {
     const capability: BotCapability = context.profile === "launch" ? "launch" : "trade"

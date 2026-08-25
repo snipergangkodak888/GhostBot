@@ -147,7 +147,10 @@ try {
 
   const calendar = await sendBotLabUpdate(config, { text: "/calendar" })
   const calendarText = responseText(calendar)
-  if (!calendarText.includes(tentativeProjectName) || !calendarText.includes("Time TBD")) throw new Error(`Calendar did not display the tentative launch. Response: ${calendarText}`)
+  for (const expected of ["Today’s Launches —", `TBD — ${tentativeProjectName} · Solana/Pump.fun · SOL · Senzu plugin`]) {
+    if (!calendarText.includes(expected)) throw new Error(`Calendar is missing ${expected}. Response: ${calendarText}`)
+  }
+  if (calendarText.includes("🚀") || calendarText.includes("· Scheduled") || calendarText.match(/Aug \d{1,2}/g)?.length !== 1) throw new Error(`Calendar was not reduced to the compact one-day format. Response: ${calendarText}`)
   const setTimeCallback = callbackStartingWith(calendar, `lifecycle:settime:${tentativeProject._id}:`)
   if (!setTimeCallback) throw new Error(`Calendar did not include Set time for the tentative launch. Response: ${calendarText}`)
   const setTimePrompt = await sendBotLabUpdate(config, { callbackData: setTimeCallback, messageId: calendar.messages?.[0]?.messageId })
