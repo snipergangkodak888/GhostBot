@@ -8,6 +8,8 @@ import ts from "typescript"
 const deliveries = new Map()
 const messages = []
 let resumedActivations = 0
+let telegramTextSucceeds = true
+const reminders = []
 const projects = [{
   _id: "kolcoin",
   name: "KOLcoin",
@@ -24,7 +26,7 @@ const projects = [{
 
 const cursor = (items) => ({ toArray: async () => items })
 const db = { collection(name) { return {
-  find: () => cursor(name === "opsProjects" ? projects : []),
+  find: () => cursor(name === "opsProjects" ? projects : name === "opsReminders" ? reminders : []),
   findOne: async (filter) => name === "opsProjects"
     ? projects.find((row) => Object.entries(filter || {}).every(([key, value]) => String(row[key]) === String(value))) || null
     : deliveries.get(filter?.key) || null,
@@ -32,8 +34,10 @@ const db = { collection(name) { return {
   deleteOne: async ({ key }) => { const deleted = deliveries.delete(key); return { deletedCount: deleted ? 1 : 0 } },
   updateOne: async (filter, update) => {
     const project = projects.find((row) => String(row._id) === String(filter._id))
+    const reminder = reminders.find((row) => String(row._id) === String(filter._id))
     if (project) Object.assign(project, update.$set || {})
-    return { modifiedCount: project ? 1 : 0 }
+    if (reminder) Object.assign(reminder, update.$set || {})
+    return { modifiedCount: project || reminder ? 1 : 0 }
   },
 } } }
 
@@ -44,7 +48,7 @@ function localRequire(id) {
   if (id === "@/lib/db") return { getDb: async () => db }
   if (id === "@/lib/telegram-bot") return {
     getTelegramBotToken: async () => "test",
-    sendTelegramText: async () => true,
+    sendTelegramText: async () => telegramTextSucceeds,
     sendTelegramMessage: async (_token, chatId, text, options) => { messages.push({ chatId: String(chatId), text, options }); return messages.length },
   }
   if (id === "@/lib/team-timezone") return { TEAM_TIME_ZONE: "America/New_York", formatTeamDateTime: () => "Aug 24, 2:00 PM ET", nextRecurringDueAt: () => null }
@@ -129,4 +133,16 @@ assert.deepEqual(JSON.parse(JSON.stringify(messages.at(-1).options.replyMarkup.i
 await module.exports.processTentativeLaunchTimingFollowups("test", new Date("2026-08-24T16:05:00.000Z"))
 assert.equal(messages.length, 5, "the same tentative follow-up must only send once")
 
-console.log("PASS: exact launch prompts and one consolidated tentative timing follow-up target Launch Chat without activating Time TBD launches.")
+reminders.push({ _id: "daily-risk", title: "Morning risk check", message: "Post the morning risk check", dueAt: "2026-08-25T13:00:00.000Z", timeZone: "America/New_York", recurrence: "daily", deliveryScope: "chat", telegramChatId: "-1002", targetChatTitle: "Trade Floor", status: "scheduled" })
+telegramTextSucceeds = false
+const failedReminderRun = await module.exports.processDueReminders("test", new Date("2026-08-25T13:00:00.000Z"))
+assert.equal(failedReminderRun.failed, 1)
+assert.equal(reminders[0].status, "scheduled", "a failed Telegram delivery must remain scheduled for retry")
+assert.equal(deliveries.has("reminder:daily-risk:2026-08-25T13:00:00.000Z"), false, "a failed delivery claim must be released")
+
+telegramTextSucceeds = true
+const successfulReminderRun = await module.exports.processDueReminders("test", new Date("2026-08-25T13:01:00.000Z"))
+assert.equal(successfulReminderRun.sent, 1)
+assert.equal(reminders[0].status, "done", "the mock recurrence helper returns no next occurrence after a successful delivery")
+
+console.log("PASS: launch prompts target Launch Chat, and reminders retry failed Telegram deliveries before advancing.")

@@ -43,6 +43,8 @@ export const LAUNCH_PADS: LaunchPad[] = [
   { id: "aero", chainId: "base", name: "Aerodrome", symbol: "ETH", coinGeckoId: "ethereum", fallbackUsd: 1_915, type: "amm", supply: 1_000_000_000, feePct: 0.3, defaultLp: 0.5 },
   { id: "uni-rh-v2", chainId: "rh", name: "Uniswap V2", symbol: "ETH", coinGeckoId: "ethereum", fallbackUsd: 1_915, type: "amm", supply: 1_000_000_000, feePct: 0.3, defaultLp: 0.5 },
   { id: "uni-rh-v3", chainId: "rh", name: "Uniswap V3 (full range)", symbol: "ETH", coinGeckoId: "ethereum", fallbackUsd: 1_915, type: "amm", supply: 1_000_000_000, feePct: 0.3, defaultLp: 0.5 },
+  { id: "flap-rh", chainId: "rh", name: "Flap", symbol: "ETH", coinGeckoId: "ethereum", fallbackUsd: 1_915, type: "curve", virtualQuote: 1.9189797, virtualTokens: 1_107_036_752, sellableTokens: 800_000_000, supply: 1_000_000_000, feePct: 1 },
+  { id: "pons", chainId: "rh", name: "Pons V2", symbol: "ETH", coinGeckoId: "ethereum", fallbackUsd: 1_915, type: "curve", virtualQuote: 1.68, virtualTokens: 1_000_000_000, sellableTokens: 5_000_000_000 / 7, supply: 1_000_000_000, feePct: 1 },
 ]
 
 export function launchPad(id: string) {

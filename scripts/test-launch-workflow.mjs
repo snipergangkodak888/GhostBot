@@ -72,7 +72,7 @@ async function cleanup() {
   const headers = { apikey: key, Authorization: `Bearer ${key}` }
   const query = new URLSearchParams({
     select: "id,data,collection",
-    collection: "in.(opsProjects,opsSheets,opsAiActions,opsBotLogs)",
+    collection: "in.(opsProjects,opsProjectNotes,opsSheets,opsAiActions,opsBotLogs)",
     limit: "1000",
   })
   const response = await fetch(`${url}/rest/v1/documents?${query}`, { headers })
@@ -81,6 +81,7 @@ async function cleanup() {
   const projectIds = new Set(rows.filter((row) => row.collection === "opsProjects" && testProjectNames.has(row.data?.name)).map((row) => String(row.data?._id || "")))
   const ids = rows.filter((row) => {
     if (row.collection === "opsProjects") return testProjectNames.has(row.data?.name)
+    if (row.collection === "opsProjectNotes") return testProjectNames.has(row.data?.projectName) || projectIds.has(String(row.data?.projectId || ""))
     if (row.collection === "opsSheets") return testProjectNames.has(row.data?.projectName) || projectIds.has(String(row.data?.projectId || ""))
     return Number(row.data?.telegramId) === telegramId
   }).map((row) => row.id)
@@ -156,14 +157,14 @@ try {
   }
   if (calendarText.includes("🚀") || calendarText.includes("· Scheduled") || calendarText.match(/Aug \d{1,2}/g)?.length !== 1) throw new Error(`Calendar was not reduced to the compact one-day format. Response: ${calendarText}`)
   const calendarButtons = (calendar.messages || []).flatMap((message) => message.replyMarkup?.inline_keyboard || []).flat()
-  if (calendarButtons.length !== 1 || !String(calendarButtons[0]?.callback_data || "").startsWith("calendar:edit:")) throw new Error(`Calendar should contain only one Edit launches button. Buttons: ${JSON.stringify(calendarButtons)}`)
+  if (calendarButtons.length !== 1 || calendarButtons[0]?.text !== "Open launches" || !String(calendarButtons[0]?.callback_data || "").startsWith("calendar:edit:")) throw new Error(`Calendar should contain only one Open launches button. Buttons: ${JSON.stringify(calendarButtons)}`)
   const editPicker = await sendBotLabUpdate(config, { callbackData: calendarButtons[0].callback_data, messageId: calendar.messages?.[0]?.messageId })
   if (!responseText(editPicker).includes("Choose a launch:")) throw new Error(`Edit launches did not open the launch picker. Response: ${responseText(editPicker)}`)
   const tentativeLaunchCallback = callbackStartingWith(editPicker, `calendar:launch:${tentativeProject._id}:`)
   if (!tentativeLaunchCallback) throw new Error(`Launch picker did not include the tentative launch. Response: ${responseText(editPicker)}`)
   const launchEditor = await sendBotLabUpdate(config, { callbackData: tentativeLaunchCallback, messageId: editPicker.messages?.[0]?.messageId || calendar.messages?.[0]?.messageId })
   const venueCallback = callbackStartingWith(launchEditor, `calendar:venue:${tentativeProject._id}:`)
-  if (!venueCallback || !responseText(launchEditor).includes("What would you like to edit?")) throw new Error(`Tentative launch editor did not include venue editing. Response: ${responseText(launchEditor)}`)
+  if (!venueCallback || !responseText(launchEditor).includes("Notes\nNo notes yet.")) throw new Error(`Tentative launch details did not include venue editing and notes. Response: ${responseText(launchEditor)}`)
   const venuePicker = await sendBotLabUpdate(config, { callbackData: venueCallback, messageId: launchEditor.messages?.[0]?.messageId || calendar.messages?.[0]?.messageId })
   const meteoraCallback = (venuePicker.messages || []).flatMap((message) => message.replyMarkup?.inline_keyboard || []).flat().find((button) => String(button.callback_data || "").includes(":meteora~"))?.callback_data
   if (!meteoraCallback || !responseText(venuePicker).includes("Choose the launch venue / DEX")) throw new Error(`Venue picker did not include Meteora. Response: ${responseText(venuePicker)}`)
@@ -175,10 +176,35 @@ try {
   if (!setTimeCallback) throw new Error(`Updated launch editor did not retain Set exact time. Response: ${responseText(venueUpdated)}`)
   const setTimePrompt = await sendBotLabUpdate(config, { callbackData: setTimeCallback, messageId: venueUpdated.messages?.[0]?.messageId || calendar.messages?.[0]?.messageId })
   if (!responseText(setTimePrompt).includes("Send the launch timing") || !responseText(setTimePrompt).includes("A time by itself applies to")) throw new Error(`Set-time action did not explain the contextual timing flow. Response: ${responseText(setTimePrompt)}`)
+  const calendarDuringTiming = await sendBotLabUpdate(config, { text: "/calendar" })
+  if (!responseText(calendarDuringTiming).includes("Today’s Launches —") || responseText(calendarDuringTiming).includes("could not read that timing")) throw new Error(`/calendar did not escape the pending timing prompt. Response: ${responseText(calendarDuringTiming)}`)
+  const reopenPicker = await sendBotLabUpdate(config, { callbackData: callbackStartingWith(calendarDuringTiming, "calendar:edit:"), messageId: calendarDuringTiming.messages?.[0]?.messageId })
+  const reopenLaunch = await sendBotLabUpdate(config, { callbackData: callbackStartingWith(reopenPicker, `calendar:launch:${tentativeProject._id}:`), messageId: reopenPicker.messages?.[0]?.messageId })
+  const reopenTime = await sendBotLabUpdate(config, { callbackData: callbackStartingWith(reopenLaunch, `lifecycle:settime:${tentativeProject._id}:`), messageId: reopenLaunch.messages?.[0]?.messageId })
+  if (!responseText(reopenTime).includes("Send the launch timing")) throw new Error(`Could not reopen the timing flow after /calendar. Response: ${responseText(reopenTime)}`)
   const exactTime = await sendBotLabUpdate(config, { text: "/time 6:20 PM ET" })
-  if (!responseText(exactTime).includes("now has a confirmed launch time")) throw new Error(`Tentative launch did not accept an exact time. Response: ${responseText(exactTime)}`)
+  if (!responseText(exactTime).includes("rescheduled") || !responseText(exactTime).includes("6:20 PM")) throw new Error(`Tentative launch did not accept an exact time. Response: ${responseText(exactTime)}`)
   const confirmedTentativeProject = await lookupTestProject(tentativeProjectName)
   if (confirmedTentativeProject.launchTimingStatus !== "confirmed" || !confirmedTentativeProject.launchAt || confirmedTentativeProject.tentativeLaunchDate) throw new Error(`Tentative launch was not converted cleanly to confirmed timing: ${JSON.stringify(confirmedTentativeProject)}`)
+
+  const notesCalendar = await sendBotLabUpdate(config, { text: "/calendar" })
+  const notesPicker = await sendBotLabUpdate(config, { callbackData: callbackStartingWith(notesCalendar, "calendar:edit:"), messageId: notesCalendar.messages?.[0]?.messageId })
+  const notesLaunch = await sendBotLabUpdate(config, { callbackData: callbackStartingWith(notesPicker, `calendar:launch:${tentativeProject._id}:`), messageId: notesPicker.messages?.[0]?.messageId })
+  const addNoteCallback = callbackStartingWith(notesLaunch, `calendar:addnote:${tentativeProject._id}:`)
+  if (!addNoteCallback) throw new Error(`Launch details did not expose Add note. Response: ${responseText(notesLaunch)}`)
+  const notePrompt = await sendBotLabUpdate(config, { callbackData: addNoteCallback, messageId: notesLaunch.messages?.[0]?.messageId })
+  if (!responseText(notePrompt).includes(`Send one note for ${tentativeProjectName}`)) throw new Error(`Add-note prompt was not shown in place. Response: ${responseText(notePrompt)}`)
+  const noteAdded = await sendBotLabUpdate(config, { text: "Staircase chart; waiting on final team parameters." })
+  if (!responseText(noteAdded).includes("Note added.") || !responseText(noteAdded).includes("• Staircase chart; waiting on final team parameters.")) throw new Error(`Launch note was not returned as an individual bullet. Response: ${responseText(noteAdded)}`)
+  const naturalNote = await sendBotLabUpdate(config, { text: `/ai add a note to ${tentativeProjectName}: Client needs the final chart image.` })
+  const naturalNoteConfirm = callbackStartingWith(naturalNote, "ai:confirm:")
+  if (!naturalNoteConfirm || !responseText(naturalNote).includes("Action: Add project note")) throw new Error(`Natural-language note request was not proposed safely. Response: ${responseText(naturalNote)}`)
+  const naturalNoteAdded = await sendBotLabUpdate(config, { callbackData: naturalNoteConfirm, messageId: naturalNote.messages?.[0]?.messageId })
+  if (!responseText(naturalNoteAdded).includes(`Note added: ${tentativeProjectName}`)) throw new Error(`Natural-language note was not saved after confirmation. Response: ${responseText(naturalNoteAdded)}`)
+  const noteQuestion = await sendBotLabUpdate(config, { text: `/ai show notes for ${tentativeProjectName}` })
+  for (const expectedNote of ["• Client needs the final chart image.", "• Staircase chart; waiting on final team parameters."]) {
+    if (!responseText(noteQuestion).includes(expectedNote)) throw new Error(`Natural-language note lookup is missing ${expectedNote}. Response: ${responseText(noteQuestion)}`)
+  }
 
   const methodDraft = await sendBotLabUpdate(config, { text: `/schedulelaunch MethodChoice${suffix} pumpfun sol launch tomorrow at 2 PM ET no referrer` })
   const methodDraftText = responseText(methodDraft)
@@ -201,7 +227,7 @@ try {
 
   console.log(text)
   console.log(tentativeCreatedText)
-  console.log("\nPASS: guided launch setup handles time-only edits, Time TBD launches, operational Uniswap V4, venue edits without quote changes, and the compact /calendar edit flow.")
+  console.log("\nPASS: guided launch setup handles time-only edits, command escape from pending prompts, Time TBD launches, button and natural-language notes as bullets, operational Uniswap V4, venue edits without quote changes, and the compact /calendar flow.")
 } finally {
   const deleted = await cleanup().catch((error) => {
     console.error(`Cleanup warning: ${error instanceof Error ? error.message : String(error)}`)

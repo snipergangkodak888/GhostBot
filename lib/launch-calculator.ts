@@ -61,6 +61,8 @@ const VENUE_BUDGETS: Record<string, VenueBudget> = {
   aero: { agedWallets: 1.5, routing: 0, defaultMm: 2.5 },
   "uni-rh-v2": { agedWallets: 1.5, routing: 0, defaultMm: 2.5 },
   "uni-rh-v3": { agedWallets: 1.5, routing: 0, defaultMm: 2.5 },
+  "flap-rh": { agedWallets: 1.5, routing: 0, defaultMm: 2.5 },
+  pons: { agedWallets: 1.5, routing: 0, defaultMm: 2.5 },
 }
 
 function budgetFor(pad: LaunchPad) {

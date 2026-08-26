@@ -77,7 +77,7 @@ async function sendToRecipients(token: string, recipients: CronRecipient[], text
   return { sent, failed }
 }
 
-async function processDueReminders(token: string, now: Date) {
+export async function processDueReminders(token: string, now: Date) {
   const db = await getDb()
   const reminders = await db.collection("opsReminders").find({}).toArray()
   const due = reminders.filter((reminder: any) => {
@@ -120,6 +120,15 @@ async function processDueReminders(token: string, now: Date) {
     const result = await sendToRecipients(token, recipients, text)
     sent += result.sent
     failed += result.failed
+
+    if (result.sent === 0) {
+      await releaseDelivery(key)
+      await db.collection("opsReminders").updateOne(
+        { _id: reminder._id },
+        { $set: { lastDeliveryFailedAt: now, updatedAt: now } },
+      )
+      continue
+    }
 
     const next = nextRecurringDueAt(dueAt, String(reminder.recurrence || "none"), reminderTimeZone, now)
     await db.collection("opsReminders").updateOne(

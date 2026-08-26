@@ -365,7 +365,7 @@ export default function ProjectsPage() {
           {noteFormOpen ? (
             <section className="rounded-2xl border border-[#ffd43b]/20 bg-[#ffd43b]/[0.055] p-4">
               <div className="mb-3 flex items-center justify-between">
-                <h2 className="font-bold text-white">Post Update</h2>
+                <h2 className="font-bold text-white">Add Note</h2>
                 <button onClick={() => setNoteFormOpen(false)} className="grid h-8 w-8 place-items-center rounded-lg border border-white/[0.08] bg-white/[0.04] text-white/60"><X className="h-4 w-4" /></button>
               </div>
               <select value={noteProjectId} onChange={(event) => setNoteProjectId(event.target.value)} className="h-10 w-full rounded-lg border border-white/[0.08] bg-black px-3 text-sm text-white outline-none focus:border-[#ffd43b]/60">
@@ -375,7 +375,7 @@ export default function ProjectsPage() {
               <textarea value={noteText} onChange={(event) => setNoteText(event.target.value)} placeholder="What did you update today?" className="mt-2 min-h-28 w-full rounded-xl border border-white/[0.08] bg-black/35 p-3 text-sm text-white outline-none focus:border-[#ffd43b]/60" />
               <button onClick={saveNote} disabled={noteSaving} className="mt-2 inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-[#ffd43b] text-sm font-bold text-black disabled:opacity-50">
                 <MessageSquareText className="h-4 w-4" />
-                Post Note
+                Add Note
               </button>
             </section>
           ) : null}

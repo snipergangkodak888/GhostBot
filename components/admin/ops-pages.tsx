@@ -669,7 +669,7 @@ export function AdminProjectsPage() {
           </div>
         )}
       </SectionBlock> : (
-        <SectionBlock title="Project Notes" detail="Newest trader updates appear first. Filter the feed by project.">
+        <SectionBlock title="Project Notes" detail="Each note is timestamped and attributed. Newest entries appear first; filter by project.">
           <div className="mb-4 flex gap-2 overflow-x-auto pb-1">
             <button onClick={() => setSelectedId("")} className={`h-9 shrink-0 rounded-full border px-3 text-xs font-bold ${!selectedId ? "border-[#ffd43b]/40 bg-[#ffd43b]/15 text-[#ffe066]" : "border-white/[0.08] text-white/50"}`}>All Projects</button>
             {projects.map((project) => <button key={project._id} onClick={() => setSelectedId(project._id)} className={`h-9 shrink-0 rounded-full border px-3 text-xs font-bold ${selectedId === project._id ? "border-[#ffd43b]/40 bg-[#ffd43b]/15 text-[#ffe066]" : "border-white/[0.08] text-white/50"}`}>{project.name}</button>)}
@@ -677,7 +677,7 @@ export function AdminProjectsPage() {
           {showNoteForm ? <div className="mb-4 rounded-xl border border-[#ffd43b]/20 bg-[#ffd43b]/[0.05] p-4">
             <div className="grid gap-3 md:grid-cols-[240px_1fr_auto]">
               <Select value={noteProjectId} onChange={(e) => setNoteProjectId(e.target.value)}><option value="">Choose project</option>{projects.map((project) => <option key={project._id} value={project._id}>{project.name}</option>)}</Select>
-              <Input value={noteText} onChange={(e) => setNoteText(e.target.value)} placeholder="What did the trader update?" />
+              <Input value={noteText} onChange={(e) => setNoteText(e.target.value)} placeholder="Add a note" />
               <IconButton onClick={saveNote} className="border-[#ffd43b]/50 bg-[#ffd43b] text-black"><MessageSquareText className="h-4 w-4" />Post</IconButton>
             </div>
           </div> : null}

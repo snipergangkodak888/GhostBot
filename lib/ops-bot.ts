@@ -26,6 +26,7 @@ import {
   parseNaturalTeamDateTime,
   parseTeamDateTime,
   partsInTimeZone,
+  reminderRecurrenceFromText,
   temporalDateConflict,
   TEAM_TIME_ZONE,
 } from "@/lib/team-timezone"
@@ -256,10 +257,12 @@ export type OpsAiOptions = {
 function scopedActionPayload(actionType: string, payload: Record<string, any>, scope: OpsAiOptions["dataScope"]) {
   if (!scope || scope === "full") return payload
   const allowed = actionType === "create_reminder"
-    ? ["title", "message", "dueAt", "timeZone", "deliveryScope", "telegramChatId", "targetChatTitle"]
+    ? ["title", "message", "dueAt", "timeZone", "recurrence", "deliveryScope", "telegramChatId", "targetChatTitle"]
+    : actionType === "create_project_note"
+      ? ["projectName", "text", "note", "message", "_projectId"]
     : scope === "launch"
       ? ["projectName", "name", "owner", "referrer", "referrerWallet", "referrerAccountId", "referralPercentage", "referrerStatus", "status", "service", "startDate", "launchAt", "launchDate", "tentativeLaunchDate", "launchTimingStatus", "launchTimeZone", "launchVenue", "launchVenueLabel", "launchFundingAsset", "launchMethod", "chain", "revenueChain", "quoteToken", "quoteAssets", "dailyTradingFeeEnabled", "dailyTradingFeeUsd", "launchFeeUsd", "feeConfigurationConfirmed", "endDate", "notes", "tags", "_candidates"]
-      : ["projectName", "name", "status", "service", "notes", "tags", "_candidates"]
+      : ["projectName", "name", "status", "service", "tags", "_candidates"]
   return Object.fromEntries(Object.entries(payload).filter(([key]) => allowed.includes(key)))
 }
 
@@ -338,6 +341,7 @@ function actionLabel(actionType: string) {
   const labels: Record<string, string> = {
     create_project: "Create project",
     update_project: "Update project",
+    create_project_note: "Add project note",
     create_reminder: "Create reminder",
     create_payroll: "Add payroll row",
     add_sheet_row: "Add data row",
@@ -719,7 +723,40 @@ function tentativeLaunchTimingRequested(text: string) {
   return hasLaunchDay && !hasExplicitLaunchTime(text)
 }
 
+function inferProjectNoteAction(text: string, projects: any[]) {
+  if (!isActionRequest(text) || !/\bnotes?\b/i.test(text)) return null
+  const matches = projectMatchesRequest(projects, text)
+  if (matches.length !== 1) return null
+  const project = matches[0]
+  const name = String(project.name || "").trim()
+  if (!name) return null
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const prefixes = [
+    new RegExp(`^(?:please\\s+)?(?:add|record|post|log|create)\\s+(?:a\\s+)?(?:(?:launch|project)\\s+)?note\\s+(?:to|for|on)\\s+${escapedName}\\s*(?::|[-—]|that\\s+|saying\\s+)?`, "i"),
+    new RegExp(`^${escapedName}\\s+(?:(?:launch|project)\\s+)?note\\s*(?::|[-—]|that\\s+|saying\\s+)?`, "i"),
+  ]
+  let noteText = ""
+  for (const prefix of prefixes) {
+    if (!prefix.test(text)) continue
+    noteText = text.replace(prefix, "").trim()
+    break
+  }
+  if (!noteText) {
+    const colonText = text.match(/:\s*([\s\S]+)$/)?.[1]?.trim()
+    if (colonText) noteText = colonText
+  }
+  if (!noteText) return null
+  return {
+    actionType: "create_project_note",
+    summary: `Add a note to ${name}`,
+    payload: { projectName: name, text: noteText },
+    warnings: [],
+  }
+}
+
 function inferCapabilityAction(text: string, projects: any[], timeZone: string, now: Date) {
+  const noteAction = inferProjectNoteAction(text, projects)
+  if (noteAction) return noteAction
   if (!/\b(?:launch|launches|launching|launch\s+calendar)\b/i.test(text)) return null
   if (!isActionRequest(text)) return null
   const tentativeTiming = tentativeLaunchTimingRequested(text)
@@ -846,6 +883,20 @@ async function resolveActionPreview(actionType: string, payload: any, context: {
 
   if (actionType === "update_project" && !project) {
     warnings.push("I could not identify the project to update.")
+  }
+
+  if (actionType === "create_project_note") {
+    const noteText = String(nextPayload.text || nextPayload.note || nextPayload.message || "").trim()
+    nextPayload.text = noteText
+    delete nextPayload.note
+    delete nextPayload.message
+    if (!project) warnings.push("I could not identify the project for this note.")
+    else {
+      nextPayload._projectId = String(project._id)
+      nextPayload.projectName = String(project.name)
+    }
+    if (!noteText) warnings.push("The note is empty.")
+    else preview.push(`📝 Note: ${noteText}`)
   }
 
   if ((actionType === "create_project" || actionType === "update_project") && (nextPayload.launchAt || nextPayload.launchDate || nextPayload.tentativeLaunchDate)) {
@@ -990,6 +1041,7 @@ async function resolveActionPreview(actionType: string, payload: any, context: {
       preview.push(`📅 Due: ${parsed ? formatTeamDateTime(parsed, timeZone) : String(nextPayload.dueAt)}`)
     }
     if (actionType === "create_reminder" && nextPayload.targetChatTitle) preview.push(`💬 Deliver to: ${nextPayload.targetChatTitle}`)
+    if (actionType === "create_reminder" && nextPayload.recurrence && nextPayload.recurrence !== "none") preview.push(`🔁 Repeats: ${nextPayload.recurrence}`)
     if (actionType === "create_payroll" && nextPayload.member) preview.push(`💸 Payroll member: ${nextPayload.member}`)
   }
 
@@ -1075,7 +1127,7 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
   if (!plan) {
     const supportedActions = options.allowedActionTypes?.length
       ? [...options.allowedActionTypes, "none"]
-      : ["create_project", "update_project", "create_reminder", "create_payroll", "add_sheet_row", "delete_project", "delete_reminder", "delete_payroll", "delete_sheet", "delete_sheet_row", "none"]
+      : ["create_project", "update_project", "create_project_note", "create_reminder", "create_payroll", "add_sheet_row", "delete_project", "delete_reminder", "delete_payroll", "delete_sheet", "delete_sheet_row", "none"]
     const raw = await aiChat([
       {
         role: "system",
@@ -1092,11 +1144,14 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
           "• Launch scheduling should capture launchAt, launchTimeZone, launchVenue, chain, and one quoteToken whenever the user supplied them. The project's quote token is used for both launch-fee and daily-fee receipts.",
           "• A scheduled project is not active until a trusted Launch Chat member confirms the launch. Never mark a newly scheduled launch active.",
           "• Reminders create scheduled Telegram deliveries. They are different from project launches.",
+          "• A request to add, post, log, or record a project note must use create_project_note. Never place a timestamped note in update_project.notes.",
+          "• Reminder recurrence must be none, hourly, daily, or weekly. Preserve explicit phrases such as every day, daily, weekly, or every Monday.",
           "• Payroll actions add or remove payroll rows. Data-row actions modify a project's existing data file.",
           "Payload shapes:",
           "create_project: {name, referrer, referrerWallet, referrerStatus, status, service, startDate, launchAt, tentativeLaunchDate, launchTimingStatus, launchTimeZone, launchVenue, launchFundingAsset, launchMethod, chain, quoteToken, dailyTradingFeeEnabled, dailyTradingFeeUsd, launchFeeUsd, feeConfigurationConfirmed, endDate, currentProfitLoss, notes, tags}",
           "update_project: {projectName, name, referrer, referrerWallet, referrerStatus, status, service, startDate, launchAt, tentativeLaunchDate, launchTimingStatus, launchTimeZone, launchVenue, launchFundingAsset, launchMethod, chain, quoteToken, dailyTradingFeeEnabled, dailyTradingFeeUsd, launchFeeUsd, feeConfigurationConfirmed, endDate, currentProfitLoss, notes, tags}",
-          "create_reminder: {title, message, dueAt, timeZone?}",
+          "create_project_note: {projectName, text}",
+          "create_reminder: {title, message, dueAt, timeZone?, recurrence?}",
           "create_payroll: {member, amount, projectName, date, status, currency, notes}",
           "add_sheet_row: {projectName, sheetType, row}",
           "delete_project: {projectName}",
@@ -1140,7 +1195,7 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
 
   const actionType = String(plan?.actionType || "none")
   if (actionType === "none") return null
-  if (!["create_project", "update_project", "create_reminder", "create_payroll", "add_sheet_row", "delete_project", "delete_reminder", "delete_payroll", "delete_sheet", "delete_sheet_row"].includes(actionType)) return null
+  if (!["create_project", "update_project", "create_project_note", "create_reminder", "create_payroll", "add_sheet_row", "delete_project", "delete_reminder", "delete_payroll", "delete_sheet", "delete_sheet_row"].includes(actionType)) return null
   if (options.allowedActionTypes?.length && !options.allowedActionTypes.includes(actionType)) {
     return { actionId: "", message: "⛔ That action is outside this chat's permitted functions.", needsChoice: false }
   }
@@ -1150,10 +1205,13 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
   if (actionType === "create_reminder") {
     payload.timeZone = explicitTimeZone || payload.timeZone || memberTimeZone || TEAM_TIME_ZONE
     const normalized = normalizeReminderDueAt(payload, requestNow)
-    if (normalized) {
-      payload.dueAt = normalized.dueAt
-      payload.timeZone = normalized.timeZone
+      || normalizeReminderDueAt({ dueAt: text, timeZone: payload.timeZone }, requestNow)
+    if (!normalized) {
+      return { actionId: "", message: "🕐 What date and time should I use? Include a time such as ‘tomorrow at 9 AM’ or ‘in 20 minutes’.", needsChoice: false }
     }
+    payload.dueAt = normalized.dueAt
+    payload.timeZone = normalized.timeZone
+    payload.recurrence = reminderRecurrenceFromText(text, payload.recurrence)
     if (options.chatId !== undefined && options.chatId !== null) {
       payload.deliveryScope = "chat"
       payload.telegramChatId = String(options.chatId)
@@ -1393,17 +1451,39 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
       : `✅ Project updated: ${project.name}`
   }
 
+  if (action.actionType === "create_project_note") {
+    const project = payload._projectId
+      ? await db.collection("opsProjects").findOne({ _id: String(payload._projectId) })
+      : (await db.collection("opsProjects").find({}).toArray()).find((item: any) => sameName(item.name, payload.projectName))
+    const text = String(payload.text || payload.note || payload.message || "").trim()
+    if (!project) return "⚠️ I could not find that project. I did not post anything."
+    if (!text) return "⚠️ The note is empty. I did not post anything."
+    const member = telegramId ? await db.collection("guardMembers").findOne({ telegramId }) : null
+    const authorName = member?.name || member?.firstName || member?.username || "Team member"
+    await db.collection("opsProjectNotes").insertOne({
+      text,
+      projectId: String(project._id),
+      projectName: project.name,
+      authorName,
+      authorTelegramId: telegramId || null,
+      createdAt: now,
+      updatedAt: now,
+    })
+    done = `✅ Note added: ${project.name}`
+  }
+
   if (action.actionType === "create_reminder") {
     const title = String(payload.title || payload.message || "").trim()
     if (!title) return "⚠️ Missing reminder title. I did not change anything."
     const normalized = normalizeReminderDueAt(payload)
-    const dueAt = normalized?.dueAt || new Date(Date.now() + 60 * 60 * 1000).toISOString()
+    if (!normalized) return "⚠️ Missing or invalid reminder time. I did not change anything. Please create a new reminder with a specific date and time."
+    const dueAt = normalized.dueAt
     await db.collection("opsReminders").insertOne({
       title,
       message: String(payload.message || title).trim(),
       dueAt,
-      timeZone: normalized?.timeZone || TEAM_TIME_ZONE,
-      recurrence: "none",
+      timeZone: normalized.timeZone,
+      recurrence: reminderRecurrenceFromText(action.request, payload.recurrence),
       audience: "team",
       deliveryScope: payload.deliveryScope === "chat" && payload.telegramChatId ? "chat" : "team",
       telegramChatId: payload.telegramChatId ? String(payload.telegramChatId) : "",
@@ -1414,8 +1494,9 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
       createdAt: now,
       updatedAt: now,
     })
-    const reminderTimeZone = normalized?.timeZone || TEAM_TIME_ZONE
-    done = `✅ Reminder created: ${title}\n📅 Due: ${formatTeamDateTime(dueAt, reminderTimeZone)}${payload.targetChatTitle ? `\n💬 Deliver to: ${payload.targetChatTitle}` : ""}`
+    const reminderTimeZone = normalized.timeZone
+    const recurrence = reminderRecurrenceFromText(action.request, payload.recurrence)
+    done = `✅ Reminder created: ${title}\n📅 Due: ${formatTeamDateTime(dueAt, reminderTimeZone)}${recurrence !== "none" ? `\n🔁 Repeats: ${recurrence}` : ""}${payload.targetChatTitle ? `\n💬 Deliver to: ${payload.targetChatTitle}` : ""}`
   }
 
   if (action.actionType === "create_payroll") {
@@ -1560,6 +1641,25 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
   if (!done) return "⚠️ I could not execute that action."
   await db.collection("opsAiActions").updateOne({ _id: actionId }, { $set: { status: "confirmed", executedAt: now, updatedAt: now } })
   return formatBotText(done, { allowEmoji: true })
+}
+
+export async function answerProjectNotes(textInput: string) {
+  const text = String(textInput || "").trim()
+  const db = await getDb()
+  const [projects, notes] = await Promise.all([
+    db.collection("opsProjects").find({ status: { $ne: "inactive" } }).toArray(),
+    db.collection("opsProjectNotes").find({}).sort({ createdAt: -1 }).limit(50).toArray(),
+  ])
+  const scoped = scopeOpsQuestion(text, projects, [])
+  const projectIds = new Set(scoped.projects.map((project: any) => String(project._id)))
+  const matching = (scoped.hasScope ? notes.filter((note: any) => projectIds.has(String(note.projectId))) : notes).slice(0, 10)
+  const title = scoped.hasScope ? `${scoped.label} Notes` : "Recent Launch Notes"
+  if (!matching.length) return `${title}\n\nNo notes yet.`
+  return `${title}\n\n${matching.map((note: any) => {
+    const prefix = scoped.hasScope ? "" : `${note.projectName || "Project"}: `
+    const author = note.authorName ? ` — ${note.authorName}` : ""
+    return `• ${prefix}${String(note.text || "").trim().replace(/\s*\n\s*/g, " ")}${author}`
+  }).join("\n")}`
 }
 
 export async function answerOpsBot(textInput: string, telegramId?: number | null, options: OpsAiOptions = {}) {

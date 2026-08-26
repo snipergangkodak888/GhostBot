@@ -13,7 +13,7 @@ const module = { exports: {} }
 const localRequire = (id) => id === "chrono-node" ? nodeRequire("chrono-node") : nodeRequire(id)
 vm.runInNewContext(`(function (exports, require, module) { ${output}\n})(module.exports, require, module)`, { module, require: localRequire, Intl, Date })
 
-const { parseContextualTeamDateTime } = module.exports
+const { nextRecurringDueAt, normalizeReminderDueAt, parseContextualTeamDateTime, reminderRecurrenceFromText } = module.exports
 const now = new Date("2026-08-25T17:15:00.000Z") // Tuesday, 1:15 PM ET
 const defaults = {
   timeZone: "America/New_York",
@@ -45,4 +45,20 @@ assert.equal(dayOnlyTbd.issue, "missing_time")
 assert.equal(dayOnlyTbd.resolvedDateKey, "2026-08-27")
 assert.equal(parsedIso("2 PM", { ...defaults, defaultDate: dayOnlyTbd.resolvedDateKey, defaultTime: null }), "2026-08-27T18:00:00.000Z", "a follow-up time should use the previously resolved day")
 
-console.log("PASS: contextual launch timing understands time-only, relative days, weekdays, same-time phrases, explicit zones, slot filling, and ambiguity safeguards.")
+const naturalReminder = normalizeReminderDueAt({ dueAt: "tomorrow at 9 AM", timeZone: "America/New_York" }, now)
+assert.equal(naturalReminder?.dueAt, "2026-08-26T13:00:00.000Z", "natural reminder dates should resolve in the requester's timezone")
+assert.equal(naturalReminder?.timeZone, "America/New_York")
+const relativeReminder = normalizeReminderDueAt({ dueAt: "in 20 minutes", timeZone: "America/Mexico_City" }, now)
+assert.equal(relativeReminder?.dueAt, "2026-08-25T17:35:00.000Z", "relative durations should resolve from the reference instant")
+assert.equal(relativeReminder?.timeZone, "America/Mexico_City")
+assert.equal(reminderRecurrenceFromText("remind us every day at 9 AM"), "daily")
+assert.equal(reminderRecurrenceFromText("every Monday at noon"), "weekly")
+assert.equal(reminderRecurrenceFromText("check this hourly"), "hourly")
+assert.equal(reminderRecurrenceFromText("tomorrow at 3 PM"), "none")
+assert.equal(
+  nextRecurringDueAt("2026-10-31T13:00:00.000Z", "daily", "America/New_York", new Date("2026-10-31T14:00:00.000Z")),
+  "2026-11-01T14:00:00.000Z",
+  "daily reminders should keep the same local clock time across DST",
+)
+
+console.log("PASS: launch timing and reminders understand relative dates, explicit zones, recurrence, and DST-safe daily delivery.")

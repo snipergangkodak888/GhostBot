@@ -438,6 +438,21 @@ export function normalizeReminderDueAt(payload: { dueAt?: unknown; timeZone?: un
   return { dueAt: parsed.toISOString(), timeZone }
 }
 
+export type ReminderRecurrence = "none" | "hourly" | "daily" | "weekly"
+
+export function reminderRecurrenceFromText(text: unknown, requested?: unknown): ReminderRecurrence {
+  const normalizedRequested = String(requested || "").trim().toLowerCase()
+  if (["hourly", "daily", "weekly"].includes(normalizedRequested)) {
+    return normalizedRequested as ReminderRecurrence
+  }
+
+  const normalized = String(text || "").trim().toLowerCase()
+  if (/\b(?:every|each)\s+hour\b|\bhourly\b/.test(normalized)) return "hourly"
+  if (/\b(?:every|each)\s+(?:day|morning|afternoon|evening|night)\b|\bdaily\b/.test(normalized)) return "daily"
+  if (/\b(?:every|each)\s+week\b|\bweekly\b|\bevery\s+(?:mon|tues|wednes|thurs|fri|satur|sun)day\b/.test(normalized)) return "weekly"
+  return "none"
+}
+
 export function nextRecurringDueAt(
   currentDueAt: string,
   recurrence: string,

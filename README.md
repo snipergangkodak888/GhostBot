@@ -320,7 +320,7 @@ Guard Team members have either a `Member` or `Admin` role. Set existing admins i
 Run one of these commands inside each Telegram group. The caller must be both a GhostBot admin and a Telegram group administrator:
 
 - `/setchat launch` — launch schedule, launch calculator, natural-language launch changes, and chat-specific reminders; enables the morning launch schedule.
-- `/setchat trade` — project operations, trader notes, and chat-specific reminders; no automatic digest.
+- `/setchat trade` — project operations, project notes, and chat-specific one-time or recurring reminders; no automatic digest.
 - `/setchat fee` — admin-only receipt, fee, and consolidation review; enables individual fee/receipt alerts.
 - `/setchat finance` — admin-only revenue, profit, payroll, and reporting; no automatic notifications.
 - `/setchat management` — all functions for admins; no automatic notifications.

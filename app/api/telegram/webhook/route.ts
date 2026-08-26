@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
-import { answerOpsAi, answerOpsBot, buildConversationContext, chooseOpsAiActionCandidate, executeOpsAiAction, formatOpsProjectDetails, proposeOpsAiAction, rejectOpsAiAction, type OpsAiOptions } from "@/lib/ops-bot"
+import { answerOpsAi, answerOpsBot, answerProjectNotes, buildConversationContext, chooseOpsAiActionCandidate, executeOpsAiAction, formatOpsProjectDetails, proposeOpsAiAction, rejectOpsAiAction, type OpsAiOptions } from "@/lib/ops-bot"
 import { getMemberTimeZone, getTeamAccess, guardCodeFromText, redeemGuardInviteCode, saveMemberTimeZone } from "@/lib/team-access"
 import { getDb } from "@/lib/db"
 import { deleteProjectCascade } from "@/lib/platform-data"
 import { getSheetSchema, SHEET_KIND_ORDER, valuesForKind, type SheetKind } from "@/lib/sheet-schemas"
-import { dateKeyInTimeZone, detectExplicitTimeZone, formatTeamDateTime, parseContextualTeamDateTime, parseNaturalTeamDate, parseNaturalTeamDateTime, parseTeamDateTime, teamZoneLabel, TIME_ZONE_OPTIONS, timeZoneFromOption, TEAM_TIME_ZONE } from "@/lib/team-timezone"
+import { dateKeyInTimeZone, detectExplicitTimeZone, formatTeamDateTime, parseContextualTeamDateTime, parseNaturalTeamDate, parseNaturalTeamDateTime, parseTeamDateTime, reminderRecurrenceFromText, teamZoneLabel, TIME_ZONE_OPTIONS, timeZoneFromOption, TEAM_TIME_ZONE } from "@/lib/team-timezone"
 import { editTelegramMessage, getTelegramBotToken, getTelegramBotUsername, isTelegramCaptureActive, sendChatAction, sendTelegramDocument, sendTelegramMessage, sendTelegramPhoto, telegramApi, telegramApiJson, withTelegramLoading } from "@/lib/telegram-bot"
 import { savePayrollDay } from "@/lib/payroll-day"
 import { loadDailyPayrollReport, parseReportDateFromText } from "@/lib/payroll-daily-report"
@@ -57,17 +57,42 @@ function removeGroupKeyboard() {
 
 async function sendMessage(token: string, chatId: number | string, text: string, inline?: InlineButton[][]) {
   const inGroup = isGroupChatId(chatId)
-  await telegramApi(token, "sendMessage", {
-    chat_id: chatId,
-    text,
-    ...(hasTelegramHtml(text) ? { parse_mode: "HTML" } : {}),
-    disable_web_page_preview: true,
-    ...(inline
-      ? { reply_markup: { inline_keyboard: inline } }
+  return sendTelegramMessage(token, chatId, text, {
+    parseMode: hasTelegramHtml(text) ? "HTML" : undefined,
+    disableWebPagePreview: true,
+    replyMarkup: inline
+      ? { inline_keyboard: inline }
       : inGroup
-        ? { reply_markup: removeGroupKeyboard() }
-        : { reply_markup: replyKeyboard() }),
+        ? removeGroupKeyboard()
+        : replyKeyboard(),
   })
+}
+
+function telegramMessageId(message: any) {
+  const messageId = Number(message?.message_id || 0)
+  return messageId > 0 ? messageId : null
+}
+
+async function deleteWorkflowMessages(token: string, chatId: number | string, messageIds: Array<unknown>) {
+  const ids = Array.from(new Set(messageIds.map(Number).filter((id) => Number.isInteger(id) && id > 0)))
+  await Promise.all(ids.map((messageId) => telegramApiJson(token, "deleteMessage", { chat_id: chatId, message_id: messageId }).catch(() => null)))
+}
+
+async function editOrSendWorkflowMessage(
+  token: string,
+  chatId: number | string,
+  messageId: number | null | undefined,
+  text: string,
+  buttons: InlineButton[][] = [],
+) {
+  if (messageId) {
+    const edited = await editTelegramMessage(token, chatId, messageId, text, {
+      parseMode: hasTelegramHtml(text) ? "HTML" : undefined,
+      replyMarkup: { inline_keyboard: buttons },
+    })
+    if (edited) return messageId
+  }
+  return sendMessage(token, chatId, text, buttons.length ? buttons : undefined)
 }
 
 function botReplyMarkup(chatId: number | string, inline?: InlineButton[][]) {
@@ -161,7 +186,7 @@ function helpMessage() {
     "💸 /payroll",
     "📊 /report [today|yesterday|YYYY-MM-DD]",
     "🧾 /log <project id> <trading|dev> <amount>",
-    "📝 /notes",
+    "📝 /notes - project notes",
     "🧠 @me your question",
     "🌍 /timezone - set your local timezone",
     "💰 /fees - show today’s revenue inbox",
@@ -318,11 +343,11 @@ function chatPrimaryCapability(context: BotPermissionContext): BotCapability {
 }
 
 function aiPermissionPolicy(context: BotPermissionContext) {
-  if (context.profile === "launch") return { capability: "launch" as const, dataScope: "launch" as const, allowedActionTypes: ["create_project", "update_project", "create_reminder"] }
-  if (context.profile === "trade" || context.role === "member") return { capability: "trade" as const, dataScope: "trade" as const, allowedActionTypes: ["update_project", "create_reminder"] }
+  if (context.profile === "launch") return { capability: "launch" as const, dataScope: "launch" as const, allowedActionTypes: ["create_project", "update_project", "create_project_note", "create_reminder"] }
+  if (context.profile === "trade" || context.role === "member") return { capability: "trade" as const, dataScope: "trade" as const, allowedActionTypes: ["update_project", "create_project_note", "create_reminder"] }
   if (context.profile === "finance") return { capability: "finance" as const, dataScope: "full" as const, allowedActionTypes: ["create_payroll"] }
   if (context.profile === "fee") return { capability: "finance" as const, dataScope: "full" as const, allowedActionTypes: ["none"] }
-  return { capability: "management" as const, dataScope: "full" as const, allowedActionTypes: ["create_project", "update_project", "create_reminder", "create_payroll", "add_sheet_row", "delete_project", "delete_reminder", "delete_payroll", "delete_sheet", "delete_sheet_row"] }
+  return { capability: "management" as const, dataScope: "full" as const, allowedActionTypes: ["create_project", "update_project", "create_project_note", "create_reminder", "create_payroll", "add_sheet_row", "delete_project", "delete_reminder", "delete_payroll", "delete_sheet", "delete_sheet_row"] }
 }
 
 async function telegramUserIsChatAdmin(token: string, chatId: number | string, telegramId: number) {
@@ -335,7 +360,7 @@ async function telegramUserIsChatAdmin(token: string, chatId: number | string, t
 function profileAccessSummary(profile: ChatProfile) {
   return {
     launch: "launch schedule, launch calculator, natural-language launch management, and this chat's reminders",
-    trade: "project operations, trader notes, and this chat's reminders",
+    trade: "project operations, project notes, and this chat's reminders",
     fee: "receipt, fee, and consolidation review for admins",
     finance: "revenue summaries, profit, payroll, and reports for admins",
     management: "all bot functions for admins",
@@ -513,7 +538,43 @@ async function takeState(telegramId: number, chatId?: number | string) {
   const db = await getDb()
   const state = await db.collection("opsBotStates").findOne({ telegramId })
   if (state?.telegramChatId && chatId != null && String(state.telegramChatId) !== String(chatId)) return null
+  const updatedAt = state?.updatedAt ? new Date(state.updatedAt).getTime() : 0
+  if (state && updatedAt && Date.now() - updatedAt > 30 * 60 * 1000) {
+    await db.collection("opsBotStates").deleteOne({ telegramId })
+    return null
+  }
   return state
+}
+
+async function finishState(
+  token: string,
+  chatId: number | string,
+  telegramId: number,
+  state: any,
+  inboundMessage?: any,
+  preserveMessageIds: Array<unknown> = [],
+) {
+  await clearState(telegramId)
+  const preserve = new Set(preserveMessageIds.map(Number).filter(Boolean))
+  const candidates = [state?.promptMessageId, telegramMessageId(inboundMessage)].filter((id) => !preserve.has(Number(id)))
+  await deleteWorkflowMessages(token, chatId, candidates)
+}
+
+async function beginTextWorkflow(params: {
+  token: string
+  chatId: number | string
+  telegramId: number
+  state: Record<string, any>
+  text: string
+  reviewMessageId?: number | null
+}) {
+  const messageId = await editOrSendWorkflowMessage(params.token, params.chatId, params.reviewMessageId, params.text)
+  await setState(params.telegramId, {
+    ...params.state,
+    reviewMessageId: params.reviewMessageId || null,
+    promptMessageId: messageId,
+  }, params.chatId)
+  return messageId
 }
 
 async function startOrganicChannelSetup(token: string, chatId: number | string, telegramId: number, tickerInput: unknown) {
@@ -776,7 +837,7 @@ async function sendProjects(token: string, chatId: number | string) {
     ? projects.map((p: any, i: number) => `${i + 1}. ${p.name} - ${p.status || "active"}${projectLaunchAt(p) ? ` - ${dateLabel(projectLaunchAt(p)!.toISOString())}` : ""}\nID: <code>${p._id}</code>`).join("\n\n")
     : "No projects yet."
   await sendMessage(token, chatId, `📁 Projects\n\n${lines}`, [
-    [{ text: "➕ Add Project", callback_data: "project:add" }, { text: "📝 Notes Feed", callback_data: "notes:project:all" }],
+    [{ text: "➕ Add Project", callback_data: "project:add" }, { text: "📝 Notes", callback_data: "notes:project:all" }],
     ...projects.map((p: any) => [{ text: `Open ${p.name}`.slice(0, 60), callback_data: `project:view:${p._id}` }]),
     [{ text: "⬅️ Back", callback_data: "main:menu" }],
   ])
@@ -794,7 +855,7 @@ async function sendProjectDetail(token: string, chatId: number | string, id: str
   ])
 }
 
-async function sendProjectNotes(token: string, chatId: number | string, projectId?: string) {
+async function sendProjectNotes(token: string, chatId: number | string, projectId?: string, messageId?: number | null) {
   const db = await getDb()
   const project = projectId && projectId !== "all" ? await db.collection("opsProjects").findOne({ _id: projectId }) : null
   const notes = await db.collection("opsProjectNotes")
@@ -803,10 +864,10 @@ async function sendProjectNotes(token: string, chatId: number | string, projectI
     .limit(10)
     .toArray()
   const lines = notes.length
-    ? notes.map((note: any) => `• ${note.projectName} - ${note.authorName || "Team member"}\n${note.text}`).join("\n\n")
-    : "No project notes yet."
-  await sendMessage(token, chatId, `📝 ${project?.name ? `${project.name} Notes` : "Project Notes"}\n\n${lines}`, [
-    ...(project ? [[{ text: "➕ Add Note", callback_data: `note:add:${project._id}` }]] : []),
+    ? notes.map((note: any) => `• ${note.projectName} — ${note.authorName || "Team member"}${note.createdAt ? ` · ${dateLabel(note.createdAt)}` : ""}\n${note.text}`).join("\n\n")
+    : "No notes yet."
+  await editOrSendWorkflowMessage(token, chatId, messageId, `${project?.name ? `${project.name} Notes` : "Project Notes"}\n\n${lines}`, [
+    ...(project ? [[{ text: "Add note", callback_data: `note:add:${project._id}` }]] : []),
     [{ text: "⬅️ Projects", callback_data: "projects:list" }],
   ])
 }
@@ -847,7 +908,7 @@ async function sendReminders(token: string, chatId: number | string) {
   const db = await getDb()
   const rows = await db.collection("opsReminders").find({ status: { $ne: "done" } }).sort({ dueAt: 1 }).toArray()
   const reminders = rows.filter((reminder: any) => reminder.deliveryScope === "chat" && String(reminder.telegramChatId || "") === String(chatId)).slice(0, 8)
-  await sendMessage(token, chatId, `🔔 Reminders\n\n${reminders.length ? reminders.map((r: any, i: number) => `${i + 1}. ${r.title || r.message} - ${dateLabel(r.dueAt, String(r.timeZone || TEAM_TIME_ZONE))}${r.targetChatTitle ? ` → ${r.targetChatTitle}` : ""}`).join("\n") : "No reminders yet."}`, [
+  await sendMessage(token, chatId, `🔔 Reminders\n\n${reminders.length ? reminders.map((r: any, i: number) => `${i + 1}. ${r.title || r.message} - ${dateLabel(r.dueAt, String(r.timeZone || TEAM_TIME_ZONE))}${r.recurrence && r.recurrence !== "none" ? ` · ${r.recurrence}` : ""}${r.targetChatTitle ? ` → ${r.targetChatTitle}` : ""}`).join("\n") : "No reminders yet."}`, [
     [{ text: "➕ Add Reminder", callback_data: "reminder:add" }],
     ...reminders.map((r: any) => [{ text: `Open ${r.title || r.message}`.slice(0, 60), callback_data: `reminder:view:${r._id}` }]),
     [{ text: "⬅️ Back", callback_data: "main:menu" }],
@@ -896,9 +957,8 @@ async function sendCalendar(token: string, chatId: number | string, requestedDat
     const method = normalizeLaunchMethod(project.launchMethod) ? ` · ${launchMethodLabel(project.launchMethod)}` : ""
     return `${timing} — ${project.name} · ${location}${method}`
   })
-  const editableLaunches = launches.filter(({ project }: any) => ["scheduled", "in_progress"].includes(String(project.status || "")))
-  const buttons: InlineButton[][] = editableLaunches.length
-    ? [[{ text: "Edit launches", callback_data: `calendar:edit:${targetDate}` }]]
+  const buttons: InlineButton[][] = launches.length
+    ? [[{ text: "Open launches", callback_data: `calendar:edit:${targetDate}` }]]
     : []
   const header = targetDate === today ? `Today’s Launches — ${calendarDayLabel(targetDate)}` : `Launches — ${calendarDayLabel(targetDate)}`
   const text = `${header}\n\n${launchLines.length ? launchLines.join("\n") : "No launches scheduled."}`
@@ -910,6 +970,7 @@ async function sendCalendar(token: string, chatId: number | string, requestedDat
 }
 
 async function showCalendarLaunchEditor(token: string, chatId: number | string, project: any, messageId?: number | null, notice = "") {
+  const db = await getDb()
   const id = String(project._id)
   const scheduleVersion = Number(project.scheduleVersion || 0)
   const dateKey = projectLaunchDateKey(project, TEAM_TIME_ZONE) || dateKeyInTimeZone(new Date(), TEAM_TIME_ZONE)
@@ -918,19 +979,33 @@ async function showCalendarLaunchEditor(token: string, chatId: number | string, 
   const method = normalizeLaunchMethod(project.launchMethod) ? ` · ${launchMethodLabel(project.launchMethod)}` : ""
   const timing = launchAt ? calendarTimeLabel(launchAt) : "TBD"
   const timingStatus = projectLaunchTimingStatus(project)
-  const buttons: InlineButton[][] = timingStatus === "tentative"
-    ? [
+  const scheduled = ["scheduled", "in_progress"].includes(String(project.status || ""))
+  const notes = await db.collection("opsProjectNotes").find({ projectId: id }).sort({ createdAt: -1 }).limit(6).toArray()
+  const noteLines = notes.map((note: any) => {
+    const noteText = String(note.text || "").trim().replace(/\s*\n\s*/g, " ").slice(0, 350)
+    return `• ${noteText}${note.authorName ? ` — ${note.authorName}` : ""}`
+  })
+  const buttons: InlineButton[][] = !scheduled
+    ? []
+    : timingStatus === "tentative"
+      ? [
         [{ text: "Set exact time", callback_data: `lifecycle:settime:${id}:${scheduleVersion}` }],
         [{ text: "Move day", callback_data: `lifecycle:tentativeday:${id}:${scheduleVersion}` }],
       ]
-    : [
+      : [
         [{ text: "Change date or time", callback_data: `lifecycle:delay:${id}:${scheduleVersion}` }],
         [{ text: "Make time TBD / move day", callback_data: `lifecycle:tentativeday:${id}:${scheduleVersion}` }],
       ]
   buttons.push([{ text: "Change launch venue / DEX", callback_data: `calendar:venue:${id}:${scheduleVersion}` }])
-  buttons.push([{ text: "Cancel launch", callback_data: `lifecycle:cancel:${id}:${scheduleVersion}` }])
+  buttons.push([{ text: "Add note", callback_data: `calendar:addnote:${id}:${scheduleVersion}` }])
+  if (scheduled) buttons.push([{ text: "Cancel launch", callback_data: `lifecycle:cancel:${id}:${scheduleVersion}` }])
   buttons.push([{ text: "Back to launches", callback_data: `calendar:edit:${dateKey}` }])
-  const text = [notice, `${project.name}\n${timing} · ${location}${method}`, "What would you like to edit?"].filter(Boolean).join("\n\n")
+  const status = String(project.status || "scheduled").replace(/_/g, " ").replace(/^./, (char) => char.toUpperCase())
+  const text = [
+    notice,
+    `${project.name}\n${timing} · ${location}${method}\n${status}`,
+    `Notes\n${noteLines.length ? noteLines.join("\n") : "No notes yet."}`,
+  ].filter(Boolean).join("\n\n")
   return showLaunchSetupPicker(token, chatId, messageId, text, buttons)
 }
 
@@ -1113,8 +1188,8 @@ async function sendAiResponse(token: string, chatId: number | string, telegramId
         ] : undefined),
       }
     }
-    if (policy.dataScope === "launch") return { text: "I can add, update, reschedule, or cancel launches here. Use /calendar to view the schedule or /launchcalc for launch math. Financial questions are unavailable in this chat." }
-    if (policy.dataScope === "trade") return { text: "I can update project operations, post trader notes, and create reminders for this Trade Floor. Financial and revenue questions are unavailable here." }
+    if (policy.dataScope === "launch") return { text: /\bnotes?\b/i.test(text) ? await answerProjectNotes(text) : "I can add, update, reschedule, cancel, or add notes to launches here. Use /calendar to view the schedule or /launchcalc for launch math. Financial questions are unavailable in this chat." }
+    if (policy.dataScope === "trade") return { text: "I can update project operations, add project notes, and create one-time or recurring reminders for this Trade Floor. Financial and revenue questions are unavailable here." }
     if (context.profile === "fee") return { text: "Use receipt and fee messages in this chat to classify revenue, match expectations, or review consolidations." }
     return { text: await answerOpsAi(text, telegramId, aiOptions) }
   }, "🧠 Working on it…")
@@ -1134,12 +1209,22 @@ async function processState(token: string, chatId: number | string, telegramId: 
   const context = permissionContext || await botPermissions(telegramId, chatId)
 
   if (text === "⬅️ Back" || text === "/cancel") {
-    await clearState(telegramId)
-    await sendMessage(token, chatId, "Cancelled.")
+    const reviewMessageId = Number(state.reviewMessageId || 0) || null
+    if (String(state.action || "").startsWith("launch_setup") && state.actionId && reviewMessageId) {
+      const draft = await getLaunchSetupAction(db, String(state.actionId), telegramId, chatId)
+      await finishState(token, chatId, telegramId, state, message, [reviewMessageId])
+      if (draft.ok) await showLaunchSetupReview(token, chatId, draft.action, reviewMessageId, "Edit cancelled.")
+      else await editOrSendWorkflowMessage(token, chatId, reviewMessageId, "Edit cancelled.")
+      return true
+    }
+    const resolvedMessageId = reviewMessageId || Number(state.promptMessageId || 0) || null
+    if (resolvedMessageId) await editOrSendWorkflowMessage(token, chatId, resolvedMessageId, "Cancelled.")
+    await finishState(token, chatId, telegramId, state, message, resolvedMessageId ? [resolvedMessageId] : [])
+    if (!resolvedMessageId) await sendMessage(token, chatId, "Cancelled.")
     return true
   }
 
-  const stateCapability: BotCapability = String(state.action || "").startsWith("launch_calc") || String(state.action || "").startsWith("launch_setup") || String(state.action || "").startsWith("organic_setup") || state.action === "schedule_launch_request" || state.action === "reschedule_launch" || state.action === "tentative_launch_day"
+  const stateCapability: BotCapability = String(state.action || "").startsWith("launch_calc") || String(state.action || "").startsWith("launch_setup") || String(state.action || "").startsWith("organic_setup") || state.action === "schedule_launch_request" || state.action === "reschedule_launch" || state.action === "tentative_launch_day" || state.action === "add_launch_note"
     ? "launch"
     : ["add_project", "edit_project", "add_reminder", "timezone_for_manual_reminder", "timezone_for_reminder"].includes(String(state.action || ""))
       ? (context.profile === "launch" ? "launch" : "trade")
@@ -1236,7 +1321,7 @@ async function processState(token: string, chatId: number | string, telegramId: 
   if (["launch_setup_name", "launch_setup_referrer", "launch_setup_refpct", "launch_setup_exact_time", "launch_setup_tentative_day"].includes(String(state.action || ""))) {
     const draft = await getLaunchSetupAction(db, String(state.actionId || ""), telegramId, chatId)
     if (!draft.ok) {
-      await clearState(telegramId)
+      await finishState(token, chatId, telegramId, state, message)
       await sendMessage(token, chatId, `⚠️ ${draft.error}`)
       return true
     }
@@ -1258,12 +1343,14 @@ async function processState(token: string, chatId: number | string, telegramId: 
             : parsed.issue === "invalid_local_time"
               ? `That local time does not exist in ${teamZoneLabel(parsed.timeZone)}, likely because of a daylight-saving change. Send another time.`
               : "I could not read that timing. Try “12:30 PM ET”, “tomorrow at 2 PM”, or “Thursday at noon”."
-        await sendMessage(token, chatId, `${error}\n\nSend /cancel to stop.`)
+        await editOrSendWorkflowMessage(token, chatId, Number(state.promptMessageId || state.reviewMessageId || 0) || null, `${error}\n\nSend /cancel to stop.`)
+        await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
         return true
       }
       action = await updateLaunchSetupAction(db, action, { launchAt: parsed.date.toISOString(), launchDate: parsed.date.toISOString(), tentativeLaunchDate: null, launchTimingStatus: "confirmed", launchTimeZone: parsed.timeZone, status: "scheduled" })
-      await clearState(telegramId)
-      await showLaunchSetupReview(token, chatId, action, Number(state.reviewMessageId || 0) || null, "Exact launch time updated.")
+      const reviewMessageId = Number(state.reviewMessageId || 0) || null
+      await finishState(token, chatId, telegramId, state, message, reviewMessageId ? [reviewMessageId] : [])
+      await showLaunchSetupReview(token, chatId, action, reviewMessageId, "Exact launch time updated.")
       return true
     }
     if (state.action === "launch_setup_tentative_day") {
@@ -1271,24 +1358,28 @@ async function processState(token: string, chatId: number | string, telegramId: 
       const tentativeLaunchDate = parseNaturalTeamDate(text, timeZone, now)
       if (!tentativeLaunchDate) {
         await setState(telegramId, state, chatId)
-        await sendMessage(token, chatId, "I could not read that launch day. Send today, tomorrow, a calendar date, or YYYY-MM-DD. Send /cancel to stop.")
+        await editOrSendWorkflowMessage(token, chatId, Number(state.promptMessageId || state.reviewMessageId || 0) || null, "I could not read that launch day. Send today, tomorrow, a calendar date, or YYYY-MM-DD. Send /cancel to stop.")
+        await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
         return true
       }
       action = await updateLaunchSetupAction(db, action, { launchAt: null, launchDate: null, tentativeLaunchDate, launchTimingStatus: "tentative", launchTimeZone: timeZone, status: "scheduled" })
-      await clearState(telegramId)
-      await showLaunchSetupReview(token, chatId, action, Number(state.reviewMessageId || 0) || null, "Tentative launch day updated. Exact time can be added later.")
+      const reviewMessageId = Number(state.reviewMessageId || 0) || null
+      await finishState(token, chatId, telegramId, state, message, reviewMessageId ? [reviewMessageId] : [])
+      await showLaunchSetupReview(token, chatId, action, reviewMessageId, "Tentative launch day updated. Exact time can be added later.")
       return true
     }
     if (state.action === "launch_setup_name") {
       const name = cleanLaunchProjectName(text).slice(0, 80)
       if (!name) {
         await setState(telegramId, state, chatId)
-        await sendMessage(token, chatId, "Send a project name with at least one letter or number. Send /cancel to stop.")
+        await editOrSendWorkflowMessage(token, chatId, Number(state.promptMessageId || state.reviewMessageId || 0) || null, "Send a project name with at least one letter or number. Send /cancel to stop.")
+        await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
         return true
       }
       action = await updateLaunchSetupAction(db, action, { name })
-      await clearState(telegramId)
-      await showLaunchSetupReview(token, chatId, action, Number(state.reviewMessageId || 0) || null, "Project name updated.")
+      const reviewMessageId = Number(state.reviewMessageId || 0) || null
+      await finishState(token, chatId, telegramId, state, message, reviewMessageId ? [reviewMessageId] : [])
+      await showLaunchSetupReview(token, chatId, action, reviewMessageId, "Project name updated.")
       return true
     }
     if (state.action === "launch_setup_referrer") {
@@ -1296,23 +1387,27 @@ async function processState(token: string, chatId: number | string, telegramId: 
       const percentage = Number(percentageText)
       if (!name || !(percentage > 0 && percentage <= 100)) {
         await setState(telegramId, state, chatId)
-        await sendMessage(token, chatId, "Send: Referrer name | Percentage\n\nExample: BK | 20\nSend /cancel to stop.")
+        await editOrSendWorkflowMessage(token, chatId, Number(state.promptMessageId || state.reviewMessageId || 0) || null, "Send: Referrer name | Percentage\n\nExample: BK | 20\nSend /cancel to stop.")
+        await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
         return true
       }
       action = await updateLaunchSetupAction(db, action, { referrer: name.slice(0, 80), referrerWallet: "", referrerAccountId: null, referralPercentage: percentage, referrerStatus: "assigned" })
-      await clearState(telegramId)
-      await showLaunchSetupReview(token, chatId, action, Number(state.reviewMessageId || 0) || null, "Referrer updated.")
+      const reviewMessageId = Number(state.reviewMessageId || 0) || null
+      await finishState(token, chatId, telegramId, state, message, reviewMessageId ? [reviewMessageId] : [])
+      await showLaunchSetupReview(token, chatId, action, reviewMessageId, "Referrer updated.")
       return true
     }
     const percentage = Number(String(text).replace(/%/g, "").trim())
     if (!(percentage > 0 && percentage <= 100)) {
       await setState(telegramId, state, chatId)
-      await sendMessage(token, chatId, "Send a referral percentage from 1 to 100. Send /cancel to stop.")
+      await editOrSendWorkflowMessage(token, chatId, Number(state.promptMessageId || state.reviewMessageId || 0) || null, "Send a referral percentage from 1 to 100. Send /cancel to stop.")
+      await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
       return true
     }
     action = await updateLaunchSetupAction(db, action, { referralPercentage: percentage, referrerStatus: "assigned" })
-    await clearState(telegramId)
-    await showLaunchSetupReview(token, chatId, action, Number(state.reviewMessageId || 0) || null, "Referral percentage updated.")
+    const reviewMessageId = Number(state.reviewMessageId || 0) || null
+    await finishState(token, chatId, telegramId, state, message, reviewMessageId ? [reviewMessageId] : [])
+    await showLaunchSetupReview(token, chatId, action, reviewMessageId, "Referral percentage updated.")
     return true
   }
 
@@ -1333,7 +1428,8 @@ async function processState(token: string, chatId: number | string, telegramId: 
           : parsed.issue === "invalid_local_time"
             ? `That local time does not exist in ${teamZoneLabel(parsed.timeZone)}, likely because of a daylight-saving change. Send another time.`
             : "I could not read that timing. Try “12:30 PM ET”, “tomorrow at 2 PM”, “Thursday this time”, or “next Thursday at noon”."
-      await sendMessage(token, chatId, `${error}\n\nSend /cancel to stop.`)
+      await editOrSendWorkflowMessage(token, chatId, Number(state.promptMessageId || state.reviewMessageId || 0) || null, `${error}\n\nSend /cancel to stop.`)
+      await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
       return true
     }
     const result = await rescheduleProject({ projectId: String(state.projectId), launchAt: parsed.date, telegramId, chatId, timeZone: parsed.timeZone, expectedScheduleVersion: Number(state.scheduleVersion) })
@@ -1341,8 +1437,10 @@ async function processState(token: string, chatId: number | string, telegramId: 
       await sendMessage(token, chatId, `⚠️ ${result.error}`)
       return true
     }
-    await clearState(telegramId)
-    await sendMessage(token, chatId, `✅ ${(result.project as any).name} now has a confirmed launch time: ${formatTeamDateTime(parsed.date, parsed.timeZone)}.\n\nIt is Scheduled, and the old timing buttons are now invalid.`)
+    const resolvedText = `✅ ${(result.project as any).name} rescheduled\n${formatTeamDateTime(parsed.date, parsed.timeZone)}`
+    const reviewMessageId = Number(state.reviewMessageId || state.promptMessageId || 0) || null
+    await editOrSendWorkflowMessage(token, chatId, reviewMessageId, resolvedText)
+    await finishState(token, chatId, telegramId, state, message, reviewMessageId ? [reviewMessageId] : [])
     return true
   }
 
@@ -1351,7 +1449,8 @@ async function processState(token: string, chatId: number | string, telegramId: 
     const tentativeLaunchDate = parseNaturalTeamDate(text, timeZone, now)
     if (!tentativeLaunchDate) {
       await setState(telegramId, state, chatId)
-      await sendMessage(token, chatId, `I could not read that launch day. Send today, tomorrow, a calendar date, or YYYY-MM-DD.\n\nCurrent schedule timezone: ${teamZoneLabel(timeZone)}. Send /cancel to stop.`)
+      await editOrSendWorkflowMessage(token, chatId, Number(state.promptMessageId || state.reviewMessageId || 0) || null, `I could not read that launch day. Send today, tomorrow, a calendar date, or YYYY-MM-DD.\n\nCurrent schedule timezone: ${teamZoneLabel(timeZone)}. Send /cancel to stop.`)
+      await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
       return true
     }
     const result = await setTentativeProjectLaunchDate({ projectId: String(state.projectId), tentativeLaunchDate, telegramId, chatId, timeZone, expectedScheduleVersion: Number(state.scheduleVersion) })
@@ -1359,8 +1458,40 @@ async function processState(token: string, chatId: number | string, telegramId: 
       await sendMessage(token, chatId, `⚠️ ${result.error}`)
       return true
     }
-    await clearState(telegramId)
-    await sendMessage(token, chatId, `✅ ${(result.project as any).name} is tentatively set for ${tentativeLaunchDate} · Time TBD.\n\nUse /calendar when you are ready to set the exact time.`)
+    const resolvedText = `✅ ${(result.project as any).name} is tentative\n${tentativeLaunchDate} · Time TBD`
+    const reviewMessageId = Number(state.reviewMessageId || state.promptMessageId || 0) || null
+    await editOrSendWorkflowMessage(token, chatId, reviewMessageId, resolvedText)
+    await finishState(token, chatId, telegramId, state, message, reviewMessageId ? [reviewMessageId] : [])
+    return true
+  }
+
+  if (state.action === "add_launch_note") {
+    const project = await db.collection("opsProjects").findOne({ _id: String(state.projectId) })
+    const noteText = String(text || "").trim()
+    const reviewMessageId = Number(state.reviewMessageId || state.promptMessageId || 0) || null
+    if (!project || String(project.status || "") === "inactive") {
+      await finishState(token, chatId, telegramId, state, message, reviewMessageId ? [reviewMessageId] : [])
+      await editOrSendWorkflowMessage(token, chatId, reviewMessageId, "This launch is no longer available. Open /calendar for the latest schedule.")
+      return true
+    }
+    if (!noteText) {
+      await setState(telegramId, state, chatId)
+      await editOrSendWorkflowMessage(token, chatId, reviewMessageId, `Send one note for ${project.name}.\n\nIt will appear as a separate bullet. Send /cancel to stop.`)
+      await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
+      return true
+    }
+    await db.collection("opsProjectNotes").insertOne({
+      text: noteText,
+      projectId: String(project._id),
+      projectName: project.name,
+      authorName: state.authorName || "Team member",
+      authorTelegramId: telegramId,
+      createdAt: now,
+      updatedAt: now,
+    })
+    await finishState(token, chatId, telegramId, state, message, reviewMessageId ? [reviewMessageId] : [])
+    const updated = await db.collection("opsProjects").findOne({ _id: String(project._id) })
+    if (updated) await showCalendarLaunchEditor(token, chatId, updated, reviewMessageId, "Note added.")
     return true
   }
 
@@ -1380,9 +1511,9 @@ async function processState(token: string, chatId: number | string, telegramId: 
   }
 
   if (state.action === "add_reminder") {
-    const [title = "", dueAt = "", reminderMessage = ""] = text.split("|").map((part) => part.trim())
+    const [title = "", dueAt = "", reminderMessage = "", repeat = ""] = text.split("|").map((part) => part.trim())
     if (!title) {
-      await sendMessage(token, chatId, "Send: Reminder title | YYYY-MM-DD HH:mm | message")
+      await sendMessage(token, chatId, "Send: Reminder title | YYYY-MM-DD HH:mm | message | optional repeat")
       return true
     }
     const timeZone = await getMemberTimeZone(telegramId) || TEAM_TIME_ZONE
@@ -1392,9 +1523,10 @@ async function processState(token: string, chatId: number | string, telegramId: 
       return true
     }
     const targetChatTitle = chatTitle(message, chatId)
-    await db.collection("opsReminders").insertOne({ title, message: reminderMessage || title, dueAt: parsedDueAt.toISOString(), timeZone, recurrence: "none", audience: "team", deliveryScope: "chat", telegramChatId: String(chatId), targetChatTitle, status: "scheduled", createdFrom: "bot", telegramId, createdAt: now, updatedAt: now })
+    const recurrence = reminderRecurrenceFromText(repeat, repeat)
+    await db.collection("opsReminders").insertOne({ title, message: reminderMessage || title, dueAt: parsedDueAt.toISOString(), timeZone, recurrence, audience: "team", deliveryScope: "chat", telegramChatId: String(chatId), targetChatTitle, status: "scheduled", createdFrom: "bot", telegramId, createdAt: now, updatedAt: now })
     await clearState(telegramId)
-    await sendMessage(token, chatId, `✅ Reminder added.\n📅 Due: ${formatTeamDateTime(parsedDueAt, timeZone)}\n💬 Deliver to: ${targetChatTitle}`)
+    await sendMessage(token, chatId, `✅ Reminder added.\n📅 Due: ${formatTeamDateTime(parsedDueAt, timeZone)}${recurrence !== "none" ? `\n🔁 Repeats: ${recurrence}` : ""}\n💬 Deliver to: ${targetChatTitle}`)
     await sendReminders(token, chatId)
     return true
   }
@@ -1402,7 +1534,8 @@ async function processState(token: string, chatId: number | string, telegramId: 
   if (state.action === "add_project_note") {
     const project = await db.collection("opsProjects").findOne({ _id: state.projectId })
     if (!project || !text.trim()) {
-      await sendMessage(token, chatId, "Send the project update as one message.")
+      await editOrSendWorkflowMessage(token, chatId, Number(state.reviewMessageId || state.promptMessageId || 0) || null, "Send one note as a single message. Send /cancel to stop.")
+      await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
       return true
     }
     await db.collection("opsProjectNotes").insertOne({
@@ -1414,9 +1547,9 @@ async function processState(token: string, chatId: number | string, telegramId: 
       createdAt: now,
       updatedAt: now,
     })
-    await clearState(telegramId)
-    await sendMessage(token, chatId, "✅ Project note posted.")
-    await sendProjectNotes(token, chatId, String(project._id))
+    const reviewMessageId = Number(state.reviewMessageId || state.promptMessageId || 0) || null
+    await finishState(token, chatId, telegramId, state, message, reviewMessageId ? [reviewMessageId] : [])
+    await sendProjectNotes(token, chatId, String(project._id), reviewMessageId)
     return true
   }
 
@@ -1689,30 +1822,52 @@ async function handleCallback(token: string, chatId: number | string, telegramId
 
     if (action === "edit") {
       const { launches, targetDate } = await calendarRows(id)
-      const editableLaunches = launches.filter(({ project }: any) => ["scheduled", "in_progress"].includes(String(project.status || "")))
-      if (!editableLaunches.length) return sendCalendar(token, chatId, targetDate, messageId)
-      const launchButtons: InlineButton[][] = editableLaunches.slice(0, 20).map(({ project, launchAt }: any) => [{
+      if (!launches.length) return sendCalendar(token, chatId, targetDate, messageId)
+      const launchButtons: InlineButton[][] = launches.slice(0, 20).map(({ project, launchAt }: any) => [{
         text: `${launchAt ? new Intl.DateTimeFormat("en-US", { timeZone: TEAM_TIME_ZONE, hour: "numeric", minute: "2-digit" }).format(launchAt) : "TBD"} — ${String(project.name || "Unnamed project")}`.slice(0, 60),
         callback_data: `calendar:launch:${project._id}:${Number(project.scheduleVersion || 0)}`,
       }])
       launchButtons.push([{ text: "Back to calendar", callback_data: `calendar:day:${targetDate}` }])
-      return showLaunchSetupPicker(token, chatId, messageId, `Edit launches — ${calendarDayLabel(targetDate)}\n\nChoose a launch:`, launchButtons)
+      return showLaunchSetupPicker(token, chatId, messageId, `Launches — ${calendarDayLabel(targetDate)}\n\nChoose a launch:`, launchButtons)
     }
 
     if (action === "launch") {
       const project = await db.collection("opsProjects").findOne({ _id: id })
       const scheduleVersion = Number(extra || 0)
-      if (!project || !["scheduled", "in_progress"].includes(String(project.status || "")) || Number(project.scheduleVersion || 0) !== scheduleVersion) {
-        return sendMessage(token, chatId, "⚠️ This launch schedule was already updated. Open /calendar for the latest version.")
+      if (!project || String(project.status || "") === "inactive" || Number(project.scheduleVersion || 0) !== scheduleVersion) {
+        return editOrSendWorkflowMessage(token, chatId, messageId, "This launch was already updated. Open /calendar for the latest version.")
       }
       return showCalendarLaunchEditor(token, chatId, project, messageId)
+    }
+
+    if (action === "addnote") {
+      const project = await db.collection("opsProjects").findOne({ _id: id })
+      const scheduleVersion = Number(extra || 0)
+      if (!project || String(project.status || "") === "inactive" || Number(project.scheduleVersion || 0) !== scheduleVersion) {
+        return editOrSendWorkflowMessage(token, chatId, messageId, "This launch was already updated. Open /calendar for the latest version.")
+      }
+      const member = await db.collection("guardMembers").findOne({ telegramId })
+      await beginTextWorkflow({
+        token,
+        chatId,
+        telegramId,
+        reviewMessageId: messageId,
+        state: {
+          action: "add_launch_note",
+          projectId: id,
+          scheduleVersion,
+          authorName: member?.name || member?.firstName || member?.username || "Team member",
+        },
+        text: `Send one note for ${project.name}.\n\nIt will appear as a separate bullet. Send /cancel to stop.`,
+      })
+      return
     }
 
     if (action === "venue") {
       const project = await db.collection("opsProjects").findOne({ _id: id })
       const scheduleVersion = Number(extra || 0)
-      if (!project || !["scheduled", "in_progress"].includes(String(project.status || "")) || Number(project.scheduleVersion || 0) !== scheduleVersion) {
-        return sendMessage(token, chatId, "⚠️ This launch schedule was already updated. Open /calendar for the latest version.")
+      if (!project || String(project.status || "") === "inactive" || Number(project.scheduleVersion || 0) !== scheduleVersion) {
+        return editOrSendWorkflowMessage(token, chatId, messageId, "This launch was already updated. Open /calendar for the latest version.")
       }
       const chainId = launchChainIdForProject(project.chain || project.revenueChain)
       if (!chainId) return sendMessage(token, chatId, "⚠️ Set the project chain before choosing its launch venue / DEX.")
@@ -1730,8 +1885,8 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       const project = await db.collection("opsProjects").findOne({ _id: id })
       const venue = operationalLaunchVenue(venueId)
       const chainId = launchChainIdForProject(project?.chain || project?.revenueChain)
-      if (!project || !venue || !chainId || venue.chainId !== chainId || !["scheduled", "in_progress"].includes(String(project.status || "")) || Number(project.scheduleVersion || 0) !== scheduleVersion) {
-        return sendMessage(token, chatId, "⚠️ That venue is no longer available for this launch. Open /calendar and try again.")
+      if (!project || !venue || !chainId || venue.chainId !== chainId || String(project.status || "") === "inactive" || Number(project.scheduleVersion || 0) !== scheduleVersion) {
+        return editOrSendWorkflowMessage(token, chatId, messageId, "That venue is no longer available. Open /calendar and try again.")
       }
       const now = new Date()
       await db.collection("opsProjects").updateOne(
@@ -1780,23 +1935,23 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     if (action === "exacttime") {
       const defaultLaunchDate = projectLaunchDateKey(launchAction.payload, launchAction.payload?.launchTimeZone || TEAM_TIME_ZONE) || dateKeyInTimeZone(new Date(), launchAction.payload?.launchTimeZone || TEAM_TIME_ZONE)
       const defaultLaunchAt = projectLaunchAt(launchAction.payload)?.toISOString() || null
-      await setState(telegramId, { action: "launch_setup_exact_time", actionId: id, reviewMessageId: messageId, tentativeLaunchDate: launchAction.payload?.tentativeLaunchDate, defaultLaunchDate, defaultLaunchAt, timeZone: launchAction.payload?.launchTimeZone || TEAM_TIME_ZONE }, chatId)
-      return sendMessage(token, chatId, [
+      await beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: messageId, state: { action: "launch_setup_exact_time", actionId: id, tentativeLaunchDate: launchAction.payload?.tentativeLaunchDate, defaultLaunchDate, defaultLaunchAt, timeZone: launchAction.payload?.launchTimeZone || TEAM_TIME_ZONE }, text: [
         `Send the launch timing for ${launchAction.payload?.name || "this launch"}.`,
         "",
         `A time by itself keeps ${calendarDayLabel(defaultLaunchDate)}.`,
         defaultLaunchAt ? `A day by itself keeps ${calendarTimeLabel(new Date(defaultLaunchAt))}.` : "If you send only a day, I’ll ask for the time next.",
         "Examples: 12:30 PM ET · tomorrow at 2 PM · Thursday this time · next Thursday at noon",
         "Send /cancel to stop.",
-      ].join("\n"))
+      ].join("\n") })
+      return
     }
     if (action === "tentativeday") {
-      await setState(telegramId, { action: "launch_setup_tentative_day", actionId: id, reviewMessageId: messageId, timeZone: launchAction.payload?.launchTimeZone || TEAM_TIME_ZONE }, chatId)
-      return sendMessage(token, chatId, "Send the tentative launch day.\n\nExamples: today, tomorrow, August 25, or 2026-08-25\nSend /cancel to stop.")
+      await beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: messageId, state: { action: "launch_setup_tentative_day", actionId: id, timeZone: launchAction.payload?.launchTimeZone || TEAM_TIME_ZONE }, text: "Send the tentative launch day.\n\nExamples: today, tomorrow, August 25, or 2026-08-25\nSend /cancel to stop." })
+      return
     }
     if (action === "name") {
-      await setState(telegramId, { action: "launch_setup_name", actionId: id, reviewMessageId: messageId }, chatId)
-      return sendMessage(token, chatId, `Send the exact project name for this launch.\n\nCurrent name: ${launchAction.payload?.name || "Not selected"}\nSend /cancel to stop.`)
+      await beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: messageId, state: { action: "launch_setup_name", actionId: id }, text: `Send the exact project name for this launch.\n\nCurrent name: ${launchAction.payload?.name || "Not selected"}\nSend /cancel to stop.` })
+      return
     }
     if (action === "chain") {
       return showLaunchSetupPicker(token, chatId, messageId, `⛓ <b>Choose the chain for ${String(launchAction.payload?.name || "this launch")}</b>`, [
@@ -1902,12 +2057,12 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       return showLaunchSetupReview(token, chatId, launchAction, messageId, "Referral percentage updated.")
     }
     if (action === "manualref") {
-      await setState(telegramId, { action: "launch_setup_referrer", actionId: id, reviewMessageId: messageId }, chatId)
-      return sendMessage(token, chatId, "Send the referrer as: Name | Percentage\n\nExample: BK | 20\nSend /cancel to stop.")
+      await beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: messageId, state: { action: "launch_setup_referrer", actionId: id }, text: "Send the referrer as: Name | Percentage\n\nExample: BK | 20\nSend /cancel to stop." })
+      return
     }
     if (action === "custompct") {
-      await setState(telegramId, { action: "launch_setup_refpct", actionId: id, reviewMessageId: messageId }, chatId)
-      return sendMessage(token, chatId, "Send the referral percentage from 1 to 100.\n\nSend /cancel to stop.")
+      await beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: messageId, state: { action: "launch_setup_refpct", actionId: id }, text: "Send the referral percentage from 1 to 100.\n\nSend /cancel to stop." })
+      return
     }
     if (action === "cancel") {
       const text = await rejectOpsAiAction(id, telegramId)
@@ -1937,27 +2092,28 @@ async function handleCallback(token: string, chatId: number | string, telegramId
 
   if (area === "lifecycle") {
     if (context.profile !== "launch") return sendMessage(token, chatId, "⛔ Launch activation confirmations must be handled in the configured Launch Chat.")
+    const messageId = Number(callbackMessage?.message_id || 0) || null
     const scheduleVersion = Number(extra || 0)
     if (action === "settime") {
       const project = await db.collection("opsProjects").findOne({ _id: id })
-      if (!project || !["scheduled", "in_progress"].includes(String(project.status || "")) || Number(project.scheduleVersion || 0) !== scheduleVersion) return sendMessage(token, chatId, "⚠️ This launch schedule was already updated. Open /calendar for the newest timing controls.")
+      if (!project || !["scheduled", "in_progress"].includes(String(project.status || "")) || Number(project.scheduleVersion || 0) !== scheduleVersion) return editOrSendWorkflowMessage(token, chatId, messageId, "This launch was already updated. Open /calendar for the latest schedule.")
       const timeZone = project.launchTimeZone || TEAM_TIME_ZONE
       const defaultLaunchDate = projectLaunchDateKey(project, timeZone) || dateKeyInTimeZone(new Date(), timeZone)
       const defaultLaunchAt = projectLaunchAt(project)?.toISOString() || null
-      await setState(telegramId, { action: "reschedule_launch", projectId: id, scheduleVersion, defaultLaunchDate, defaultLaunchAt, timeZone }, chatId)
-      return sendMessage(token, chatId, [
+      await beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: messageId, state: { action: "reschedule_launch", projectId: id, scheduleVersion, defaultLaunchDate, defaultLaunchAt, timeZone }, text: [
         `Send the launch timing for ${project.name}.`,
         "",
         `A time by itself applies to ${calendarDayLabel(defaultLaunchDate)}.`,
         "Examples: 12:30 PM ET · tomorrow at 2 PM · Thursday at noon · next Thursday at 3 PM",
         "Send /cancel to stop.",
-      ].join("\n"))
+      ].join("\n") })
+      return
     }
     if (action === "tentativeday") {
       const project = await db.collection("opsProjects").findOne({ _id: id })
-      if (!project || !["scheduled", "in_progress"].includes(String(project.status || "")) || Number(project.scheduleVersion || 0) !== scheduleVersion) return sendMessage(token, chatId, "⚠️ This launch schedule was already updated. Open /calendar for the newest timing controls.")
-      await setState(telegramId, { action: "tentative_launch_day", projectId: id, scheduleVersion, timeZone: project.launchTimeZone || TEAM_TIME_ZONE }, chatId)
-      return sendMessage(token, chatId, `📆 Send the new tentative launch day for ${project.name}.\n\nExamples: today, tomorrow, August 25, or 2026-08-25\nThe launch will remain Time TBD. Send /cancel to stop.`)
+      if (!project || !["scheduled", "in_progress"].includes(String(project.status || "")) || Number(project.scheduleVersion || 0) !== scheduleVersion) return editOrSendWorkflowMessage(token, chatId, messageId, "This launch was already updated. Open /calendar for the latest schedule.")
+      await beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: messageId, state: { action: "tentative_launch_day", projectId: id, scheduleVersion, timeZone: project.launchTimeZone || TEAM_TIME_ZONE }, text: `Send the tentative launch day for ${project.name}.\n\nExamples: today, tomorrow, August 25, or 2026-08-25\nThe time will remain TBD. Send /cancel to stop.` })
+      return
     }
     if (action === "ontime" || action === "now") {
       const result = await activateScheduledProject({ projectId: id, telegramId, actual: action === "ontime" ? "scheduled" : "now", expectedScheduleVersion: scheduleVersion })
@@ -1966,46 +2122,46 @@ async function handleCallback(token: string, chatId: number | string, telegramId
         const buttons: InlineButton[][] = []
         if (readiness?.missing?.includes("fee configuration") && readiness.chain && readiness.quoteToken) buttons.push([{ text: "✅ Use standard $1K launch + $500/day fees", callback_data: `lifecycle:fees:${id}:${scheduleVersion}` }])
         if (readiness?.missing?.includes("referrer decision")) buttons.push([{ text: "Confirm no referrer", callback_data: `lifecycle:refnone:${id}:${scheduleVersion}` }])
-        return sendMessage(token, chatId, `⚠️ ${result.error}`, buttons.length ? buttons : undefined)
+        return editOrSendWorkflowMessage(token, chatId, messageId, `⚠️ ${result.error}`, buttons)
       }
-      if (result.alreadyActive) return sendMessage(token, chatId, `✅ ${(result.project as any).name} is already active.`)
-      return sendMessage(token, chatId, `✅ ${(result.project as any).name} is now Active.\n\nDaily trading fees begin on ${result.dailyFeeStartDate} because each $500 charge covers the prior 24 hours.`)
+      if (result.alreadyActive) return editOrSendWorkflowMessage(token, chatId, messageId, `✅ ${(result.project as any).name} is already active.`)
+      return editOrSendWorkflowMessage(token, chatId, messageId, `✅ ${(result.project as any).name} is Active\nDaily trading fees begin ${result.dailyFeeStartDate}.`)
     }
     if (action === "delay") {
       const project = await db.collection("opsProjects").findOne({ _id: id })
-      if (!project || !["scheduled", "in_progress"].includes(String(project.status || "")) || Number(project.scheduleVersion || 0) !== scheduleVersion) return sendMessage(token, chatId, "⚠️ This launch schedule was already updated. Use the newest confirmation message.")
+      if (!project || !["scheduled", "in_progress"].includes(String(project.status || "")) || Number(project.scheduleVersion || 0) !== scheduleVersion) return editOrSendWorkflowMessage(token, chatId, messageId, "This launch was already updated. Open /calendar for the latest schedule.")
       const timeZone = project.launchTimeZone || TEAM_TIME_ZONE
       const defaultLaunchDate = projectLaunchDateKey(project, timeZone) || dateKeyInTimeZone(new Date(), timeZone)
       const defaultLaunchAt = projectLaunchAt(project)?.toISOString() || null
-      await setState(telegramId, { action: "reschedule_launch", projectId: id, scheduleVersion, defaultLaunchDate, defaultLaunchAt, timeZone }, chatId)
-      return sendMessage(token, chatId, [
+      await beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: messageId, state: { action: "reschedule_launch", projectId: id, scheduleVersion, defaultLaunchDate, defaultLaunchAt, timeZone }, text: [
         `Send the new timing for ${project.name}.`,
         "",
         `A time by itself keeps ${calendarDayLabel(defaultLaunchDate)}.`,
         defaultLaunchAt ? `A day by itself keeps ${calendarTimeLabel(new Date(defaultLaunchAt))}.` : "If you send only a day, I’ll ask for the time next.",
         "Examples: 12:30 PM ET · tomorrow at 2 PM · Thursday this time · same time tomorrow",
         "Send /cancel to stop.",
-      ].join("\n"))
+      ].join("\n") })
+      return
     }
     if (action === "cancel") {
       const result = await cancelScheduledProject(id, telegramId, new Date(), scheduleVersion)
-      return sendMessage(token, chatId, result.ok ? `✅ ${(result.project as any).name} was marked Inactive and removed from launch confirmations.` : `⚠️ ${result.error}`)
+      return editOrSendWorkflowMessage(token, chatId, messageId, result.ok ? `✅ ${(result.project as any).name} was cancelled.` : `⚠️ ${result.error}`)
     }
     if (action === "fees") {
       const result = await confirmStandardProjectFees(id, telegramId, scheduleVersion)
-      if (!result.ok) return sendMessage(token, chatId, `⚠️ ${result.error}`)
-      if (result.alreadyActive) return sendMessage(token, chatId, `✅ ${(result.project as any).name} is already active.`)
-      if (result.activated) return sendMessage(token, chatId, `✅ Standard fee setup confirmed and ${(result.project as any).name} is now Active.\n\nDaily trading fees begin on ${result.dailyFeeStartDate} because each $500 charge covers the prior 24 hours.`)
+      if (!result.ok) return editOrSendWorkflowMessage(token, chatId, messageId, `⚠️ ${result.error}`)
+      if (result.alreadyActive) return editOrSendWorkflowMessage(token, chatId, messageId, `✅ ${(result.project as any).name} is already active.`)
+      if (result.activated) return editOrSendWorkflowMessage(token, chatId, messageId, `✅ ${(result.project as any).name} is Active\nDaily trading fees begin ${result.dailyFeeStartDate}.`)
       const readiness = result.readiness
-      return sendMessage(token, chatId, readiness.ready ? "✅ Standard launch and daily fee setup confirmed. You can now use the launch confirmation button." : `✅ Fee setup confirmed. Still needed before activation: ${readiness.missing.join(", ")}.`)
+      return editOrSendWorkflowMessage(token, chatId, messageId, readiness.ready ? "✅ Fee setup confirmed. This launch is ready to activate." : `Fee setup confirmed. Still needed: ${readiness.missing.join(", ")}.`)
     }
     if (action === "refnone") {
       const result = await confirmNoProjectReferrer(id, telegramId, scheduleVersion)
-      if (!result.ok) return sendMessage(token, chatId, `⚠️ ${result.error}`)
-      if (result.alreadyActive) return sendMessage(token, chatId, `✅ ${(result.project as any).name} is already active.`)
-      if (result.activated) return sendMessage(token, chatId, `✅ No referrer confirmed and ${(result.project as any).name} is now Active.\n\nDaily trading fees begin on ${result.dailyFeeStartDate} because each $500 charge covers the prior 24 hours.`)
+      if (!result.ok) return editOrSendWorkflowMessage(token, chatId, messageId, `⚠️ ${result.error}`)
+      if (result.alreadyActive) return editOrSendWorkflowMessage(token, chatId, messageId, `✅ ${(result.project as any).name} is already active.`)
+      if (result.activated) return editOrSendWorkflowMessage(token, chatId, messageId, `✅ ${(result.project as any).name} is Active\nDaily trading fees begin ${result.dailyFeeStartDate}.`)
       const readiness = result.readiness
-      return sendMessage(token, chatId, readiness.ready ? "✅ No referrer confirmed. This launch is ready to activate." : `✅ No referrer confirmed. Still needed before activation: ${readiness.missing.join(", ")}.`)
+      return editOrSendWorkflowMessage(token, chatId, messageId, readiness.ready ? "✅ No referrer confirmed. This launch is ready to activate." : `No referrer confirmed. Still needed: ${readiness.missing.join(", ")}.`)
     }
   }
 
@@ -2022,7 +2178,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     }
     if (state?.action === "timezone_for_manual_reminder") {
       await setState(telegramId, { action: "add_reminder" }, chatId)
-      return sendMessage(token, chatId, `✅ Timezone saved as ${teamZoneLabel(saved.timeZone)}.\n\n➕ Send reminder like this:\n\nReminder title | YYYY-MM-DD HH:mm | message\n\nSend /cancel to stop.`)
+      return sendMessage(token, chatId, `✅ Timezone saved as ${teamZoneLabel(saved.timeZone)}.\n\n➕ Send reminder like this:\n\nReminder title | YYYY-MM-DD HH:mm | message | optional repeat\n\nRepeat can be hourly, daily, or weekly. Send /cancel to stop.`)
     }
     await clearState(telegramId)
     return sendMessage(token, chatId, `✅ Your timezone is now ${saved.timeZone} (${teamZoneLabel(saved.timeZone)}).\nCurrent local time: ${formatTeamDateTime(new Date(), saved.timeZone)}`)
@@ -2173,7 +2329,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   }
   if (data === "projects:list") return sendProjects(token, chatId)
   if (data === "data:list") return sendDataProjects(token, chatId)
-  if (area === "notes" && action === "project") return sendProjectNotes(token, chatId, id)
+  if (area === "notes" && action === "project") return sendProjectNotes(token, chatId, id, Number(callbackMessage?.message_id || 0) || null)
 
   if (area === "ai" && action === "confirm") {
     const pendingLaunch = await db.collection("opsAiActions").findOne({ _id: id })
@@ -2240,12 +2396,15 @@ async function handleCallback(token: string, chatId: number | string, telegramId
 
   if (area === "note" && action === "add") {
     const member = await db.collection("guardMembers").findOne({ telegramId })
-    await setState(telegramId, {
-      action: "add_project_note",
-      projectId: id,
-      authorName: member?.name || member?.firstName || member?.username || "Team member",
-    }, chatId)
-    return sendMessage(token, chatId, "📝 Send the project update as one message.\n\nSend /cancel to stop.")
+    await beginTextWorkflow({
+      token,
+      chatId,
+      telegramId,
+      reviewMessageId: Number(callbackMessage?.message_id || 0) || null,
+      state: { action: "add_project_note", projectId: id, authorName: member?.name || member?.firstName || member?.username || "Team member" },
+      text: "Send one note as a single message. It will be timestamped and attributed to you.\n\nSend /cancel to stop.",
+    })
+    return
   }
 
   if (area === "data" && action === "project") return sendProjectSheets(token, chatId, id)
@@ -2284,12 +2443,12 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       return sendMessage(token, chatId, timeZonePrompt(), timeZoneButtons(telegramId))
     }
     await setState(telegramId, { action: "add_reminder" }, chatId)
-    return sendMessage(token, chatId, "➕ Send reminder like this:\n\nReminder title | YYYY-MM-DD HH:mm | message\n\nSend /cancel to stop.")
+    return sendMessage(token, chatId, "➕ Send reminder like this:\n\nReminder title | YYYY-MM-DD HH:mm | message | optional repeat\n\nRepeat can be hourly, daily, or weekly. Send /cancel to stop.")
   }
   if (area === "reminder" && action === "view") {
     const reminder = await db.collection("opsReminders").findOne({ _id: id, deliveryScope: "chat", telegramChatId: String(chatId) })
     if (!reminder) return sendReminders(token, chatId)
-    return sendMessage(token, chatId, `🔔 ${reminder.title}\n\nDue: ${dateLabel(reminder.dueAt, String(reminder.timeZone || TEAM_TIME_ZONE))}\nStatus: ${reminder.status || "scheduled"}\n\n${reminder.message || ""}`, [
+    return sendMessage(token, chatId, `🔔 ${reminder.title}\n\nDue: ${dateLabel(reminder.dueAt, String(reminder.timeZone || TEAM_TIME_ZONE))}\nRepeat: ${reminder.recurrence || "none"}\nStatus: ${reminder.status || "scheduled"}\n\n${reminder.message || ""}`, [
       [{ text: "✅ Mark Done", callback_data: `reminder:done:${id}` }, { text: "🗑 Remove", callback_data: `reminder:delete:${id}` }],
       [{ text: "⬅️ Reminders", callback_data: "reminders:list" }],
     ])
@@ -2447,7 +2606,7 @@ async function routeText(token: string, chatId: number | string, telegramId: num
     }
     if (state?.action === "timezone_for_manual_reminder") {
       await setState(telegramId, { action: "add_reminder" }, chatId)
-      return sendMessage(token, chatId, `✅ Timezone saved as ${teamZoneLabel(saved.timeZone)}.\n\n➕ Send reminder like this:\n\nReminder title | YYYY-MM-DD HH:mm | message\n\nSend /cancel to stop.`)
+      return sendMessage(token, chatId, `✅ Timezone saved as ${teamZoneLabel(saved.timeZone)}.\n\n➕ Send reminder like this:\n\nReminder title | YYYY-MM-DD HH:mm | message | optional repeat\n\nRepeat can be hourly, daily, or weekly. Send /cancel to stop.`)
     }
     return sendMessage(token, chatId, `✅ Your timezone is now ${saved.timeZone} (${teamZoneLabel(saved.timeZone)}).`)
   }
@@ -2488,7 +2647,10 @@ async function routeText(token: string, chatId: number | string, telegramId: num
     return sendMessage(token, chatId, "🧠 Send your AI question now.\n\nI will answer only the next message sent after this command.\n\nSend /cancel to stop.")
   }
 
-  if (await processState(token, chatId, telegramId, text, messageDateMs, message, context)) return
+  const navigationCommands = new Set(["calendar", "menu", "help", "commands", "projects", "profit", "payroll", "fees", "report", "reminders", "notes", "launchcalc", "setreminder"])
+  const navigationInput = navigationCommands.has(botCommandName(text)) || isGroupMenuButton(text)
+  if (navigationInput) await clearState(telegramId)
+  else if (await processState(token, chatId, telegramId, text, messageDateMs, message, context)) return
 
   if (/^(?:all\s+)?(?:launches?\s+)?(?:are\s+)?still\s+tbd(?:\s+today)?[.!]?$/i.test(commandText)) {
     if (!(await requireCapability(token, context, "launch"))) return
@@ -2562,8 +2724,8 @@ async function routeText(token: string, chatId: number | string, telegramId: num
         ] : undefined),
       }
     }
-    if (policy.dataScope === "launch") return { text: "I can add, update, reschedule, or cancel launches here. Use /calendar to view the schedule or /launchcalc for launch math." }
-    if (policy.dataScope === "trade") return { text: "I can update project operations, post trader notes, and create reminders for this Trade Floor. Financial and revenue questions are unavailable here." }
+    if (policy.dataScope === "launch") return { text: /\bnotes?\b/i.test(text) ? await answerProjectNotes(text) : "I can add, update, reschedule, cancel, or add notes to launches here. Use /calendar to view the schedule or /launchcalc for launch math." }
+    if (policy.dataScope === "trade") return { text: "I can update project operations, add project notes, and create one-time or recurring reminders for this Trade Floor. Financial and revenue questions are unavailable here." }
     if (context.profile === "fee") return { text: "Use the receipt and fee controls in this chat to review incoming revenue." }
     return { text: await answerOpsBot(text, telegramId, aiOptions) }
   }, "🧠 Working on it…")
@@ -2642,7 +2804,10 @@ export async function POST(req: NextRequest) {
       }
       return NextResponse.json({ ok: true })
     }
-    const groupMessage = await resolveGroupMessage(text, entities, message)
+    const pendingState = telegramId ? await takeState(telegramId, chatId) : null
+    const groupMessage = pendingState
+      ? { shouldRoute: true as const, routedText: text }
+      : await resolveGroupMessage(text, entities, message)
     if (!groupMessage.shouldRoute) {
       await hostGroupIfAllowed(chat, from)
       return NextResponse.json({ ok: true })

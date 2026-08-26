@@ -92,6 +92,41 @@
     "expectIncludes": ["Robinhood Chain", "launchpad or DEX"]
   },
   {
+    "name": "selects Pons V2 on Robinhood Chain",
+    "callbackData": "launch:venue:pons",
+    "expectIncludes": ["Pons V2", "calculator solve for"]
+  },
+  {
+    "name": "selects Pons supply control",
+    "callbackData": "launch:metric:supply:pons",
+    "expectIncludes": ["desired total supply control"]
+  },
+  {
+    "name": "calculates a forwardable Pons launch quote",
+    "text": "70%",
+    "expectIncludes": ["7.92 ETH total", "3.92 ETH for supply accumulation", "70% supply control", "1.5 ETH for aged wallets", "2.5 ETH designated for initial MM trading liquidity"]
+  },
+  {
+    "name": "returns to Robinhood Chain venues",
+    "callbackData": "launch:chain:rh",
+    "expectIncludes": ["Robinhood Chain", "launchpad or DEX"]
+  },
+  {
+    "name": "selects Flap on Robinhood Chain",
+    "callbackData": "launch:venue:flap-rh",
+    "expectIncludes": ["Flap", "calculator solve for"]
+  },
+  {
+    "name": "selects Robinhood Flap supply control",
+    "callbackData": "launch:metric:supply:flap-rh",
+    "expectIncludes": ["desired total supply control"]
+  },
+  {
+    "name": "calculates a forwardable Robinhood Flap launch quote",
+    "text": "70%",
+    "expectIncludes": ["7.3 ETH total", "3.3 ETH for supply accumulation", "70% supply control", "1.5 ETH for aged wallets", "2.5 ETH designated for initial MM trading liquidity"]
+  },
+  {
     "name": "selects Uniswap V2 on Robinhood Chain",
     "callbackData": "launch:venue:uni-rh-v2",
     "expectIncludes": ["Uniswap V2", "calculator solve for"]
