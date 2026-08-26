@@ -26,6 +26,7 @@ import { botPermissionDeniedMessage, canUseBotCapability, getBotPermissionContex
 import { createGuardEnrollmentLink, guardEnrollmentTokenFromText, guardEnrollmentUrl, handleGuardBotMembershipUpdate, handleGuardChatMemberUpdate, recordGuardChatMember, revokeGuardEnrollmentLinks, syncTelegramChatAdministrators, verifyAndRedeemGuardEnrollment } from "@/lib/guard-enrollment"
 import { activateScheduledProject, activationLifecycleFields, cancelScheduledProject, cleanLaunchProjectName, confirmNoProjectReferrer, confirmStandardProjectFees, projectActivationReadiness, projectLaunchAt, projectLaunchDateKey, projectLaunchTimingStatus, rescheduleProject, setTentativeProjectLaunchDate } from "@/lib/project-lifecycle"
 import { formatLaunchSetupReview, launchChainButtons, launchChainConfig, launchChainIdForProject, launchMethodButtons, launchQuoteButtons, launchSetupButtons, launchSetupReady, launchVenueButtons, launchVenueSelection } from "@/lib/launch-setup"
+import { parseCustomQuoteTokenInput, resolveCustomQuoteToken } from "@/lib/custom-quote-token"
 import { launchMethodLabel, normalizeLaunchMethod } from "@/lib/launch-method"
 import { ghostBotOrganicChannelUrl, normalizeOrganicTicker, organicChannelCompletionMessage, organicChannelTitle, SUMO_TRADE_BOT_USERNAME, sumoBotChannelUrl, sumoSubscribeCommand, validOrganicTicker, validSumoProfileId } from "@/lib/organic-channel-setup"
 import { telegramUserAutomationConfigured } from "@/lib/telegram-user-client"
@@ -1318,7 +1319,7 @@ async function processState(token: string, chatId: number | string, telegramId: 
     return true
   }
 
-  if (["launch_setup_name", "launch_setup_referrer", "launch_setup_refpct", "launch_setup_exact_time", "launch_setup_tentative_day"].includes(String(state.action || ""))) {
+  if (["launch_setup_name", "launch_setup_referrer", "launch_setup_refpct", "launch_setup_exact_time", "launch_setup_tentative_day", "launch_setup_custom_quote"].includes(String(state.action || ""))) {
     const draft = await getLaunchSetupAction(db, String(state.actionId || ""), telegramId, chatId)
     if (!draft.ok) {
       await finishState(token, chatId, telegramId, state, message)
@@ -1326,6 +1327,29 @@ async function processState(token: string, chatId: number | string, telegramId: 
       return true
     }
     let action = draft.action
+    if (state.action === "launch_setup_custom_quote") {
+      const parsed = parseCustomQuoteTokenInput(text)
+      try {
+        const customQuote = await resolveCustomQuoteToken(action.payload?.chain, parsed.symbol, parsed.address)
+        action = await updateLaunchSetupAction(db, action, {
+          ...customQuote,
+          quoteAssets: [customQuote.quoteToken],
+          dailyTradingFeeEnabled: true,
+          dailyTradingFeeUsd: Number(action.payload?.dailyTradingFeeUsd || 500),
+          launchFeeUsd: Number(action.payload?.launchFeeUsd || 1000),
+          feeConfigurationConfirmed: Boolean(action.payload?.chain),
+        })
+        const reviewMessageId = Number(state.reviewMessageId || 0) || null
+        await finishState(token, chatId, telegramId, state, message, reviewMessageId ? [reviewMessageId] : [])
+        await showLaunchSetupReview(token, chatId, action, reviewMessageId, `${customQuote.quoteToken} verified from its contract.`)
+      } catch (error) {
+        await setState(telegramId, state, chatId)
+        const detail = error instanceof Error ? error.message : "I could not verify that token."
+        await editOrSendWorkflowMessage(token, chatId, Number(state.promptMessageId || state.reviewMessageId || 0) || null, `${detail}\n\nSend: SYMBOL | contract address\nExample: AAPL | 0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9\nSend /cancel to stop.`)
+        await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
+      }
+      return true
+    }
     if (state.action === "launch_setup_exact_time") {
       const parsed = parseContextualTeamDateTime(text, {
         timeZone: String(state.timeZone || action.payload?.launchTimeZone || TEAM_TIME_ZONE),
@@ -1969,6 +1993,8 @@ async function handleCallback(token: string, chatId: number | string, telegramId
         revenueChain: chain.chain,
         quoteToken: chain.nativeQuoteToken,
         quoteAssets: [chain.nativeQuoteToken],
+        quoteTokenAddress: "",
+        quoteTokenDecimals: null,
         launchVenue: venueStillMatches ? currentVenue?.id : "",
         launchFundingAsset: venueStillMatches ? currentVenue?.symbol : "",
         dailyTradingFeeEnabled: true,
@@ -2009,12 +2035,25 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       launchAction = await updateLaunchSetupAction(db, launchAction, {
         quoteToken,
         quoteAssets: [quoteToken],
+        quoteTokenAddress: "",
+        quoteTokenDecimals: null,
         dailyTradingFeeEnabled: true,
         dailyTradingFeeUsd: Number(launchAction.payload?.dailyTradingFeeUsd || 500),
         launchFeeUsd: Number(launchAction.payload?.launchFeeUsd || 1000),
         feeConfigurationConfirmed: Boolean(launchAction.payload?.chain),
       })
       return showLaunchSetupReview(token, chatId, launchAction, messageId, "Quote token updated.")
+    }
+    if (action === "customquote") {
+      await beginTextWorkflow({
+        token,
+        chatId,
+        telegramId,
+        reviewMessageId: messageId,
+        state: { action: "launch_setup_custom_quote", actionId: id },
+        text: `Send the custom quote token for ${launchAction.payload?.name || "this launch"}.\n\nFormat: SYMBOL | contract address\nExample: AAPL | 0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9\nSend /cancel to stop.`,
+      })
+      return
     }
     if (action === "noref") {
       launchAction = await updateLaunchSetupAction(db, launchAction, { referrer: "", referrerWallet: "", referrerAccountId: null, referralPercentage: 0, referrerStatus: "none" })

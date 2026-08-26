@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto"
 import { NextRequest, NextResponse } from "next/server"
 import { getDb } from "@/lib/db"
-import { cleanRevenueWalletRole, normalizeQuickNodeRevenuePayload, verifyQuickNodeSignature } from "@/lib/quicknode-revenue"
+import { cleanRevenueWalletRole, normalizeQuickNodeRevenuePayload, verifyQuickNodeSignature, type RevenueTokenRegistry } from "@/lib/quicknode-revenue"
+import { projectFeeConfig } from "@/lib/revenue-projects"
 import { saveRevenueReceipt } from "@/lib/revenue-service"
 import { notifyConsolidationCandidate, notifyFeeInboxReceipt, notifyFeeInboxTreasuryReceipt } from "@/lib/revenue-telegram"
 import { reconcileConsolidationReceipt } from "@/lib/revenue-consolidation"
@@ -52,7 +53,17 @@ export async function POST(req: NextRequest) {
   const prior = await db.collection("quicknodeWebhookDeliveries").findOne({ nonce, walletRole })
   if (prior) return NextResponse.json({ ok: true, duplicate: true, inserted: 0 })
 
-  const normalized = normalizeQuickNodeRevenuePayload(payload, req.nextUrl.searchParams.get("chain"), walletRole)
+  const projects = await db.collection("opsProjects").find({ status: { $ne: "inactive" } }).toArray()
+  const projectTokenRegistry: RevenueTokenRegistry = {}
+  for (const project of projects) {
+    const config = projectFeeConfig(project)
+    if (!config.chain || !config.quoteToken || !config.quoteTokenAddress || config.quoteTokenDecimals == null) continue
+    const address = config.chain === "solana" ? config.quoteTokenAddress : config.quoteTokenAddress.toLowerCase()
+    projectTokenRegistry[config.chain] ||= {}
+    projectTokenRegistry[config.chain]![address] = { asset: config.quoteToken, decimals: config.quoteTokenDecimals }
+  }
+
+  const normalized = normalizeQuickNodeRevenuePayload(payload, req.nextUrl.searchParams.get("chain"), walletRole, projectTokenRegistry)
   if (!normalized.chain) return NextResponse.json({ ok: false, error: "Webhook chain is missing or unsupported" }, { status: 400 })
   if (!normalized.walletRole) return NextResponse.json({ ok: false, error: "Treasury monitoring is only supported on Solana" }, { status: 400 })
 

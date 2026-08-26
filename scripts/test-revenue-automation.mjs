@@ -314,6 +314,12 @@ const now = new Date().toISOString()
 const receipts = [300, 100, 200].map((amount, index) => ({ _id: `r${index}`, direction: "incoming", chain: "base", asset: "USDC", amount, amountUsd: amount, status: "unclassified", allocations: [], blockTime: now }))
 const match = matching.findReceiptCombination(receipts, { chain: "base", asset: "USDC", expectedAmount: 500, occurredAt: now })
 assert.deepEqual(Array.from(match.receiptIds).sort(), ["r0", "r2"])
+const customAddress = "0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9"
+const exactContractMatch = matching.findReceiptCombination([
+  { _id: "aapl-correct", direction: "incoming", chain: "robinhood", asset: "AAPL", tokenAddress: customAddress, amount: 2, amountUsd: 500, status: "unclassified", allocations: [], blockTime: now },
+  { _id: "aapl-spoof", direction: "incoming", chain: "robinhood", asset: "AAPL", tokenAddress: "0x00000000000000000000000000000000000000dd", amount: 2, amountUsd: 500, status: "unclassified", allocations: [], blockTime: now },
+], { chain: "robinhood", asset: "AAPL", tokenAddress: customAddress, expectedUsd: 500, occurredAt: now })
+assert.deepEqual(Array.from(exactContractMatch.receiptIds), ["aapl-correct"])
 
 const eventTime = new Date("2026-08-21T12:40:00.000Z")
 const privacyReceipts = Array.from({ length: 10 }, (_, index) => ({
@@ -405,6 +411,27 @@ assert.equal(evmUsdc.receipts[0].asset, "USDC")
 assert.equal(evmUsdc.receipts[0].amount, 500)
 assert.equal(evmUsdc.receipts[0].amountUsd, 500)
 assert.equal(evmUsdc.receipts[0].tokenAddress, "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913")
+
+const customAapl = quicknode.normalizeQuickNodeRevenuePayload({
+  matchingTransactions: null,
+  matchingReceipts: [{
+    status: "0x1",
+    transactionHash: "0xaapl",
+    logs: [{
+      address: customAddress,
+      topics: [erc20Topic, addressTopic(evmSender), addressTopic(evmWallet)],
+      data: "0x1bc16d674ec80000",
+      logIndex: "0x1",
+      transactionHash: "0xaapl",
+    }],
+  }],
+}, "robinhood", "revenue", {
+  robinhood: { [customAddress.toLowerCase()]: { asset: "AAPL", decimals: 18 } },
+})
+assert.equal(customAapl.receipts.length, 1)
+assert.equal(customAapl.receipts[0].asset, "AAPL")
+assert.equal(customAapl.receipts[0].amount, 2)
+assert.equal(customAapl.receipts[0].tokenAddress, customAddress.toLowerCase())
 
 const unknownToken = quicknode.normalizeQuickNodeRevenuePayload({
   matchingTransactions: null,

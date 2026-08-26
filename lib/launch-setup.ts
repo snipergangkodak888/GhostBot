@@ -3,6 +3,7 @@ import { operationalLaunchVenue, operationalVenuesForChain } from "@/lib/launch-
 import { LAUNCH_METHODS, launchMethodLabel, normalizeLaunchMethod } from "@/lib/launch-method"
 import { projectActivationReadiness } from "@/lib/project-lifecycle"
 import { formatTeamDateTime, TEAM_TIME_ZONE } from "@/lib/team-timezone"
+import { cleanQuoteTokenAddress, cleanQuoteTokenDecimals } from "@/lib/custom-quote-token"
 
 export type LaunchSetupButton = { text: string; callback_data: string }
 
@@ -51,6 +52,10 @@ export function launchSetupIssues(payload: any) {
   if (!normalizeLaunchMethod(payload?.launchMethod)) issues.push("launch method")
   const readiness = projectActivationReadiness(payload)
   issues.push(...readiness.missing)
+  const quoteToken = String(payload?.quoteToken || "").trim().toUpperCase()
+  const customQuote = Boolean(quoteToken && !(LAUNCH_QUOTE_TOKENS as readonly string[]).includes(quoteToken))
+  if (customQuote && !cleanQuoteTokenAddress(payload?.quoteTokenAddress, payload?.chain)) issues.push("custom quote token contract")
+  if (customQuote && cleanQuoteTokenDecimals(payload?.quoteTokenDecimals) == null) issues.push("custom quote token verification")
   if (readiness.referrerStatus === "assigned" && !(Number(payload?.referralPercentage || payload?.referrerPercentage || 0) > 0)) issues.push("referral percentage")
   return Array.from(new Set(issues))
 }
@@ -91,6 +96,7 @@ export function formatLaunchSetupReview(action: any, notice = "") {
     `Launchpad / DEX: <b>${escapeHtml(venue?.name || "Not selected")}</b>`,
     `Chain: <b>${escapeHtml(chainLabel)}</b>`,
     `Quote token: <b>${escapeHtml(String(payload.quoteToken || "Not selected").toUpperCase())}</b>`,
+    payload.quoteTokenAddress ? `Quote token CA: <code>${escapeHtml(payload.quoteTokenAddress)}</code>` : "",
     `Launch method: <b>${escapeHtml(launchMethodLabel(payload.launchMethod))}</b>`,
     `Fees: <b>${payload.feeConfigurationConfirmed ? `$${Number(payload.launchFeeUsd || 1000).toLocaleString("en-US")} launch + $${Number(payload.dailyTradingFeeUsd || 500).toLocaleString("en-US")}/day` : "Not confirmed"}</b>`,
     `Referrer: <b>${escapeHtml(referrer)}</b>`,
@@ -152,7 +158,10 @@ export function launchQuoteTokensForChain(chain: unknown) {
 }
 
 export function launchQuoteButtons(actionId: string, chain?: unknown): LaunchSetupButton[][] {
-  return launchQuoteTokensForChain(chain).map((quote) => [{ text: quote, callback_data: `launchsetup:setquote:${actionId}:${quote}` }])
+  return [
+    ...launchQuoteTokensForChain(chain).map((quote) => [{ text: quote, callback_data: `launchsetup:setquote:${actionId}:${quote}` }]),
+    [{ text: "Enter custom token / CA", callback_data: `launchsetup:customquote:${actionId}` }],
+  ]
 }
 
 export function launchVenueSelection(venueId: string) {
@@ -166,6 +175,8 @@ export function launchVenueSelection(venueId: string) {
     chain: chain.chain,
     quoteToken: venue.symbol,
     quoteAssets: [venue.symbol],
+    quoteTokenAddress: "",
+    quoteTokenDecimals: null,
     dailyTradingFeeEnabled: true,
     dailyTradingFeeUsd: 500,
     launchFeeUsd: 1000,

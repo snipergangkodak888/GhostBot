@@ -34,6 +34,11 @@ function stableAsset(asset: unknown) {
   return ["USD", "USDC"].includes(String(asset || "").toUpperCase())
 }
 
+function sameTokenAddress(chain: unknown, left: unknown, right: unknown) {
+  const normalize = (value: unknown) => String(chain || "") === "solana" ? String(value || "").trim() : String(value || "").trim().toLowerCase()
+  return normalize(left) === normalize(right)
+}
+
 function sourceFingerprint(chatId: number | string, messageId: number, text: string) {
   return createHash("sha256")
     .update(`${chatId}:${messageId}:${normalizedMessageFingerprint(text)}`)
@@ -147,6 +152,7 @@ export async function assignFeeProject(feeId: string, projectId: string) {
     projectName: String(project.name || ""),
     chain: config.chain,
     quoteAsset,
+    quoteTokenAddress: quoteAsset === config.quoteToken ? config.quoteTokenAddress || null : null,
     expectedAssetAmount,
     expectedUsd,
     recognizedUsd: expectedUsd,
@@ -174,7 +180,7 @@ export async function setFeeQuoteAsset(feeId: string, assetInput: string) {
   }
   await db.collection(FEES).updateOne(
     { _id: feeId },
-    { $set: { quoteAsset: asset, expectedAssetAmount, status: "awaiting_confirmation", updatedAt: iso() } },
+    { $set: { quoteAsset: asset, quoteTokenAddress: asset === config.quoteToken ? config.quoteTokenAddress || null : null, expectedAssetAmount, status: "awaiting_confirmation", updatedAt: iso() } },
   )
   return db.collection(FEES).findOne({ _id: feeId }) as Promise<RevenueFeeEvent>
 }
@@ -226,7 +232,7 @@ export async function createFeeFromReceipts(params: { receiptIds: string[]; feeT
   const receipts = await Promise.all(receiptIds.map((receiptId) => db.collection(RECEIPTS).findOne({ _id: receiptId })))
   if (receipts.some((receipt) => !receipt || receipt.direction !== "incoming")) throw new Error("One or more incoming receipts were not found")
   const [receipt] = receipts as any[]
-  if (receipts.some((row: any) => row.chain !== receipt.chain || row.asset !== receipt.asset)) throw new Error("Grouped receipts must use the same chain and asset")
+  if (receipts.some((row: any) => row.chain !== receipt.chain || row.asset !== receipt.asset || !sameTokenAddress(receipt.chain, row.tokenAddress, receipt.tokenAddress))) throw new Error("Grouped receipts must use the same chain and exact token contract")
   if (receipts.some((row: any) => row.status !== "unclassified")) throw new Error("One or more receipts are already classified or reserved")
   if (receipts.some((row: any) => row.consolidationBatchId)) throw new Error("Remove or reject the pending consolidation batch before classifying this receipt as revenue")
   if (!["daily_trading", "dev_allocation", "fee_collector", "fee_rebate", "sumo_ref_claim", "other"].includes(params.feeType)) throw new Error("Use a forwarded message for this fee type")
@@ -236,6 +242,7 @@ export async function createFeeFromReceipts(params: { receiptIds: string[]; feeT
   if (project) {
     const config = projectFeeConfig(project)
     if (config.chain !== receipt.chain || !config.quoteAssets.includes(receipt.asset)) throw new Error("Project chain or quote asset does not match this receipt")
+    if (config.quoteTokenAddress && !sameTokenAddress(config.chain, receipt.tokenAddress, config.quoteTokenAddress)) throw new Error("Receipt token contract does not match the project's custom quote token")
   }
   if (params.feeType === "daily_trading") {
     const date = receipt.date || dateKeyInTimeZone(new Date(receipt.blockTime || iso()))
@@ -260,7 +267,7 @@ export async function createFeeFromReceipts(params: { receiptIds: string[]; feeT
     const feeId = String(dailyFee._id)
     await db.collection(FEES).updateOne(
       { _id: feeId },
-      { $set: { quoteAsset: receipt.asset, expectedAssetAmount: receipt.asset === "USDC" ? expectedUsd : null, proposedReceiptIds: receiptIds, matchAlternatives: [], matchConfidence: Math.abs(Number(metrics.actualReceivedUsd) - expectedUsd) <= Math.max(2, expectedUsd * 0.005) ? "high" : "medium", matchDelta: round(Math.abs(Number(metrics.actualReceivedUsd) - expectedUsd), 2), manualReceiptSelection: true, status: "match_proposed", updatedAt: now } },
+      { $set: { quoteAsset: receipt.asset, quoteTokenAddress: receipt.tokenAddress || null, expectedAssetAmount: receipt.asset === "USDC" ? expectedUsd : null, proposedReceiptIds: receiptIds, matchAlternatives: [], matchConfidence: Math.abs(Number(metrics.actualReceivedUsd) - expectedUsd) <= Math.max(2, expectedUsd * 0.005) ? "high" : "medium", matchDelta: round(Math.abs(Number(metrics.actualReceivedUsd) - expectedUsd), 2), manualReceiptSelection: true, status: "match_proposed", updatedAt: now } },
     )
     for (const row of receipts as any[]) {
       await db.collection(RECEIPTS).updateOne({ _id: row._id }, { $set: { status: "match_proposed", proposedFeeEventId: feeId, updatedAt: now } })
@@ -295,6 +302,7 @@ export async function createFeeFromReceipts(params: { receiptIds: string[]; feeT
     projectName: project ? String(project.name || "") : params.feeType === "fee_rebate" ? "Fee rebate" : params.feeType === "sumo_ref_claim" ? "Sumo ref claim" : null,
     chain: receipt.chain,
     quoteAsset: receipt.asset,
+    quoteTokenAddress: receipt.tokenAddress || null,
     feeType: params.feeType,
     expectedAssetAmount,
     expectedUsd: fullyValued ? round(expectedUsd, 2) : null,
@@ -362,6 +370,7 @@ export async function proposeReceiptMatch(feeId: string) {
   const match = findReceiptCombination(receipts, {
     chain: fee.chain,
     asset: fee.quoteAsset,
+    tokenAddress: fee.quoteTokenAddress,
     expectedAmount: fee.expectedAssetAmount,
     expectedUsd: fee.expectedUsd,
     occurredAt: fee.occurredAt || fee.telegram?.originalDate || fee.createdAt,
@@ -388,6 +397,7 @@ export async function acceptReceiptMatch(feeId: string, telegramId?: number | nu
   const receipts = await Promise.all(receiptIds.map((id) => db.collection(RECEIPTS).findOne({ _id: id })))
   if (receipts.some((receipt) => !receipt)) throw new Error("One or more receipts were not found")
   if (receipts.some((receipt) => receipt.chain !== fee.chain || receipt.asset !== fee.quoteAsset)) throw new Error("Receipt chain or asset does not match the fee")
+  if (fee.quoteTokenAddress && receipts.some((receipt) => !sameTokenAddress(fee.chain, receipt.tokenAddress, fee.quoteTokenAddress))) throw new Error("Receipt token contract does not match the fee")
   if (receipts.some((receipt) => receipt.status === "match_proposed" && receipt.proposedFeeEventId && receipt.proposedFeeEventId !== feeId)) throw new Error("A selected receipt is reserved for another fee")
 
   const now = iso()
@@ -616,7 +626,7 @@ export async function updateReceiptClassification(receiptId: string, status: Rev
 export async function valuePendingRevenueReceipts(date = teamDateKey(0)) {
   const db = await getDb()
   const receipts = (await db.collection(RECEIPTS).find({ date, direction: "incoming" }).toArray())
-    .filter((receipt: any) => receipt.amountUsd == null && ["ETH", "SOL", "BNB"].includes(String(receipt.asset || "").toUpperCase()))
+    .filter((receipt: any) => receipt.amountUsd == null && (["ETH", "SOL", "BNB"].includes(String(receipt.asset || "").toUpperCase()) || (receipt.chain === "robinhood" && receipt.tokenAddress)))
   let valued = 0
   let pending = 0
   for (const receipt of receipts) {
@@ -678,6 +688,7 @@ export async function ensureDailyTradingFeeExpectations(date = teamDateKey(0)) {
       projectName: String(project.name || ""),
       chain: config.chain,
       quoteAsset,
+      quoteTokenAddress: quoteAsset === config.quoteToken ? config.quoteTokenAddress || null : null,
       feeType: "daily_trading" as FeeType,
       grossAmount: null,
       grossAsset: null,

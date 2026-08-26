@@ -1,5 +1,6 @@
 import type { ProjectFeeConfig, RevenueChain } from "@/lib/revenue-types"
 import { REVENUE_CHAINS } from "@/lib/revenue-types"
+import { cleanQuoteTokenAddress, cleanQuoteTokenDecimals } from "@/lib/custom-quote-token"
 
 export const CHAIN_LABELS: Record<RevenueChain, string> = {
   ethereum: "Ethereum Mainnet",
@@ -32,10 +33,13 @@ export function projectFeeConfig(project: any): ProjectFeeConfig {
   const chain = cleanRevenueChain(project?.chain || project?.revenueChain)
   const explicitQuote = String(project?.quoteToken || "").trim().toUpperCase()
   const quoteAssets = explicitQuote ? [explicitQuote] : cleanQuoteAssets(project?.quoteAssets, chain)
+  const quoteTokenAddress = cleanQuoteTokenAddress(project?.quoteTokenAddress, chain)
   return {
     chain,
     quoteToken: explicitQuote || (quoteAssets.length === 1 ? quoteAssets[0] : ""),
     quoteAssets,
+    quoteTokenAddress,
+    quoteTokenDecimals: quoteTokenAddress ? cleanQuoteTokenDecimals(project?.quoteTokenDecimals) : null,
     dailyTradingFeeEnabled: project?.dailyTradingFeeEnabled === true,
     dailyTradingFeeUsd: Math.max(0, Number(project?.dailyTradingFeeUsd ?? 500)),
     liquidationFeeEnabled: project?.liquidationFeeEnabled !== false,
@@ -48,10 +52,13 @@ export function cleanProjectFeeFields(body: any) {
   const chain = cleanRevenueChain(body?.chain || body?.revenueChain)
   const explicitQuote = String(body?.quoteToken || "").trim().toUpperCase()
   const quoteAssets = explicitQuote ? [explicitQuote] : cleanQuoteAssets(body?.quoteAssets, chain)
+  const quoteTokenAddress = cleanQuoteTokenAddress(body?.quoteTokenAddress, chain)
   return {
     chain,
     quoteToken: explicitQuote || (quoteAssets.length === 1 ? quoteAssets[0] : ""),
     quoteAssets,
+    quoteTokenAddress,
+    quoteTokenDecimals: quoteTokenAddress ? cleanQuoteTokenDecimals(body?.quoteTokenDecimals) : null,
     dailyTradingFeeEnabled: body?.dailyTradingFeeEnabled === true,
     dailyTradingFeeUsd: Math.max(0, Number(body?.dailyTradingFeeUsd ?? 500)),
     liquidationFeeEnabled: body?.liquidationFeeEnabled !== false,

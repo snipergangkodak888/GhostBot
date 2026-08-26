@@ -3,10 +3,16 @@ import type { RevenueReceipt } from "@/lib/revenue-types"
 export type MatchTarget = {
   chain: string
   asset?: string | null
+  tokenAddress?: string | null
   expectedAmount?: number | null
   expectedUsd?: number | null
   occurredAt?: string | null
   date?: string | null
+}
+
+function sameTokenAddress(chain: string, left: unknown, right: unknown) {
+  const normalize = (value: unknown) => chain === "solana" ? String(value || "").trim() : String(value || "").trim().toLowerCase()
+  return normalize(left) === normalize(right)
 }
 
 export type ReceiptMatchCandidate = {
@@ -112,6 +118,7 @@ export function findReceiptMatchCandidates(receipts: RevenueReceipt[], target: M
     .filter((receipt) => receipt.direction === "incoming")
     .filter((receipt) => receipt.chain === target.chain)
     .filter((receipt) => !target.asset || target.asset === "USD" || receipt.asset === target.asset)
+    .filter((receipt) => !target.tokenAddress || sameTokenAddress(target.chain, receipt.tokenAddress, target.tokenAddress))
     .filter((receipt) => receipt.status === "unclassified")
     .filter((receipt) => availableAmount(receipt) > 0)
     .filter((receipt) => !target.date || !receipt.date || receipt.date === target.date)

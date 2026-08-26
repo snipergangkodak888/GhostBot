@@ -120,13 +120,16 @@ export function inferLaunchConfiguration(text: unknown) {
   const chain = cleanRevenueChain(explicitChain || (venue ? CHAIN_BY_LAUNCH_CHAIN[venue.chainId] : ""))
   const quoteMatch = raw.match(/\b(SOL|ETH|BNB|USDC|USDT)\s+(?:quote(?:\s+token)?|pair)\b/i)
     || raw.match(/\b(?:quote(?:\s+token)?|quoted\s+in|pair(?:ed)?\s+with)\s*(?:is|:)?\s*(SOL|ETH|BNB|USDC|USDT)\b/i)
-  const quoteToken = String(quoteMatch?.[1] || venue?.symbol || "").toUpperCase()
+  const customQuoteMatch = raw.match(/\bcustom\s+quote(?:\s+token)?\s*(?:is|:)?\s*([A-Z0-9][A-Z0-9._-]{0,19})\b/i)
+  const quoteTokenAddress = raw.match(/\b(?:ca|contract(?:\s+address)?|token\s+address)\s*(?:is|:)?\s*(0x[0-9a-fA-F]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})\b/i)?.[1] || ""
+  const quoteToken = String(customQuoteMatch?.[1] || quoteMatch?.[1] || venue?.symbol || "").toUpperCase()
   return {
     launchVenue: venue?.id || "",
     launchVenueLabel: venue?.name || "",
     launchFundingAsset: venue?.symbol || "",
     chain,
     quoteToken,
+    ...(quoteTokenAddress ? { quoteTokenAddress } : {}),
   }
 }
 

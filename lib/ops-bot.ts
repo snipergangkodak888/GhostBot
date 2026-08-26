@@ -35,6 +35,7 @@ import { cleanLaunchProjectName, cleanLaunchProjectNameFromRequest, inferLaunchC
 import { formatLaunchSetupReview, launchSetupButtons, launchSetupReady } from "@/lib/launch-setup"
 import { inferLaunchMethod, normalizeLaunchMethod } from "@/lib/launch-method"
 import { cleanProjectFeeFields } from "@/lib/revenue-projects"
+import { resolveCustomQuoteToken } from "@/lib/custom-quote-token"
 
 function includes(text: string, words: string[]) {
   const lower = text.toLowerCase()
@@ -261,7 +262,7 @@ function scopedActionPayload(actionType: string, payload: Record<string, any>, s
     : actionType === "create_project_note"
       ? ["projectName", "text", "note", "message", "_projectId"]
     : scope === "launch"
-      ? ["projectName", "name", "owner", "referrer", "referrerWallet", "referrerAccountId", "referralPercentage", "referrerStatus", "status", "service", "startDate", "launchAt", "launchDate", "tentativeLaunchDate", "launchTimingStatus", "launchTimeZone", "launchVenue", "launchVenueLabel", "launchFundingAsset", "launchMethod", "chain", "revenueChain", "quoteToken", "quoteAssets", "dailyTradingFeeEnabled", "dailyTradingFeeUsd", "launchFeeUsd", "feeConfigurationConfirmed", "endDate", "notes", "tags", "_candidates"]
+      ? ["projectName", "name", "owner", "referrer", "referrerWallet", "referrerAccountId", "referralPercentage", "referrerStatus", "status", "service", "startDate", "launchAt", "launchDate", "tentativeLaunchDate", "launchTimingStatus", "launchTimeZone", "launchVenue", "launchVenueLabel", "launchFundingAsset", "launchMethod", "chain", "revenueChain", "quoteToken", "quoteAssets", "quoteTokenAddress", "quoteTokenDecimals", "dailyTradingFeeEnabled", "dailyTradingFeeUsd", "launchFeeUsd", "feeConfigurationConfirmed", "endDate", "notes", "tags", "_candidates"]
       : ["projectName", "name", "status", "service", "tags", "_candidates"]
   return Object.fromEntries(Object.entries(payload).filter(([key]) => allowed.includes(key)))
 }
@@ -693,7 +694,7 @@ function launchProjectName(text: string, projects: any[]) {
     /\blaunch\s*\(\s*([^)]{1,80})\s*\)/i,
     /\b(?:add|put)\s+(.{1,80}?)\s+(?:to|on)\s+(?:the\s+)?launch\s+calendar\b/i,
     /\b(?:schedule|set|move|reschedule)\s+(.{1,80}?)\s+(?:for\s+)?(?:a\s+)?launch\b/i,
-    /^(?:please\s+)?(?:(?:add|put|schedule|set)\s+)?(.{1,80}?)\s+(?:on\s+)?(?:pump\.?fun|pump\s+fun|flap|four\.?meme|four\s+meme|aerodrome|uniswap|meteora|raydium|robinhood(?:\s+chain)?|solana|ethereum|base|bnb|bsc|binance\s+smart\s+chain)\b/i,
+    /^(?:please\s+)?(?:(?:add|put|schedule|set)\s+)?(.{1,80}?)\s+(?:on\s+)?(?:pump\.?fun|pump\s+fun|flap|four\.?meme|four\s+meme|aerodrome|pons(?:\s+v2)?|uniswap|meteora|raydium|robinhood(?:\s+chain)?|solana|ethereum|base|bnb|bsc|binance\s+smart\s+chain)\b/i,
     /^(.{1,80}?)\s+(?:launch|launches|launching)\b/i,
     /\blaunch(?:\s+(?:for|of))?\s+(.{1,80}?)(?=\s+(?:today|tomorrow|tonight|next|on|at)\b|$)/i,
   ]
@@ -775,6 +776,7 @@ function inferCapabilityAction(text: string, projects: any[], timeZone: string, 
     ...(config.launchFundingAsset ? { launchFundingAsset: config.launchFundingAsset } : {}),
     ...(config.chain ? { chain: config.chain } : {}),
     ...(config.quoteToken ? { quoteToken: config.quoteToken, quoteAssets: [config.quoteToken] } : {}),
+    ...(config.quoteTokenAddress ? { quoteTokenAddress: config.quoteTokenAddress } : {}),
     ...(launchMethod ? { launchMethod } : {}),
     ...(config.chain && config.quoteToken ? { dailyTradingFeeEnabled: true, dailyTradingFeeUsd: 500, launchFeeUsd: 1000, feeConfigurationConfirmed: true } : {}),
     ...(/\bno\s+referrer\b/i.test(text) ? { referrerStatus: "none" } : {}),
@@ -832,6 +834,7 @@ function normalizeActionDates(actionType: string, payload: any, text: string, ti
     if (!next.launchFundingAsset && inferred.launchFundingAsset) next.launchFundingAsset = inferred.launchFundingAsset
     if (!next.chain && inferred.chain) next.chain = inferred.chain
     if (!next.quoteToken && inferred.quoteToken) next.quoteToken = inferred.quoteToken
+    if (!next.quoteTokenAddress && inferred.quoteTokenAddress) next.quoteTokenAddress = inferred.quoteTokenAddress
     if (!normalizeLaunchMethod(next.launchMethod) && inferredLaunchMethod) next.launchMethod = inferredLaunchMethod
     if (next.quoteToken) next.quoteAssets = [String(next.quoteToken).toUpperCase()]
     if (next.chain && next.quoteToken && next.feeConfigurationConfirmed === undefined) {
@@ -1107,7 +1110,7 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
     db.collection("opsSheets").find({}).toArray(),
   ])
   const projects = options.dataScope === "launch"
-    ? projectRows.map((project: any) => ({ _id: project._id, name: project.name, owner: project.owner, referrer: project.referrer, referrerAccountId: project.referrerAccountId, referrerStatus: project.referrerStatus, status: project.status, service: project.service, startDate: project.startDate, launchAt: project.launchAt, launchDate: project.launchDate, tentativeLaunchDate: project.tentativeLaunchDate, launchTimingStatus: project.launchTimingStatus, launchTimeZone: project.launchTimeZone, launchVenue: project.launchVenue, launchVenueLabel: project.launchVenueLabel, launchFundingAsset: project.launchFundingAsset, launchMethod: project.launchMethod, chain: project.chain, quoteToken: project.quoteToken, dailyTradingFeeEnabled: project.dailyTradingFeeEnabled, dailyTradingFeeUsd: project.dailyTradingFeeUsd, launchFeeUsd: project.launchFeeUsd, feeConfigurationConfirmed: project.feeConfigurationConfirmed, endDate: project.endDate, notes: project.notes, tags: project.tags, createdAt: project.createdAt, updatedAt: project.updatedAt }))
+    ? projectRows.map((project: any) => ({ _id: project._id, name: project.name, owner: project.owner, referrer: project.referrer, referrerAccountId: project.referrerAccountId, referrerStatus: project.referrerStatus, status: project.status, service: project.service, startDate: project.startDate, launchAt: project.launchAt, launchDate: project.launchDate, tentativeLaunchDate: project.tentativeLaunchDate, launchTimingStatus: project.launchTimingStatus, launchTimeZone: project.launchTimeZone, launchVenue: project.launchVenue, launchVenueLabel: project.launchVenueLabel, launchFundingAsset: project.launchFundingAsset, launchMethod: project.launchMethod, chain: project.chain, quoteToken: project.quoteToken, quoteTokenAddress: project.quoteTokenAddress, quoteTokenDecimals: project.quoteTokenDecimals, dailyTradingFeeEnabled: project.dailyTradingFeeEnabled, dailyTradingFeeUsd: project.dailyTradingFeeUsd, launchFeeUsd: project.launchFeeUsd, feeConfigurationConfirmed: project.feeConfigurationConfirmed, endDate: project.endDate, notes: project.notes, tags: project.tags, createdAt: project.createdAt, updatedAt: project.updatedAt }))
     : options.dataScope === "trade"
       ? projectRows.map((project: any) => ({ _id: project._id, name: project.name, status: project.status, service: project.service, notes: project.notes, tags: project.tags, createdAt: project.createdAt, updatedAt: project.updatedAt }))
       : projectRows
@@ -1142,14 +1145,15 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
           "• If the team knows the launch day but not the exact time, use launchTimingStatus=tentative and tentativeLaunchDate=YYYY-MM-DD, with launchAt and launchDate null. Never invent a time for a tentative launch.",
           "• launchMethod must be one of sumo, senzu_plugin, or other_mm_plugin. Infer Senzu from 'senzu plugin' or 'launch dev plugin', and infer other_mm_plugin from 'other MM plugin'.",
           "• Launch scheduling should capture launchAt, launchTimeZone, launchVenue, chain, and one quoteToken whenever the user supplied them. The project's quote token is used for both launch-fee and daily-fee receipts.",
+          "• For a custom quote token, capture both quoteToken (symbol) and quoteTokenAddress (its exact contract or mint address). Never invent an address or token decimals.",
           "• A scheduled project is not active until a trusted Launch Chat member confirms the launch. Never mark a newly scheduled launch active.",
           "• Reminders create scheduled Telegram deliveries. They are different from project launches.",
           "• A request to add, post, log, or record a project note must use create_project_note. Never place a timestamped note in update_project.notes.",
           "• Reminder recurrence must be none, hourly, daily, or weekly. Preserve explicit phrases such as every day, daily, weekly, or every Monday.",
           "• Payroll actions add or remove payroll rows. Data-row actions modify a project's existing data file.",
           "Payload shapes:",
-          "create_project: {name, referrer, referrerWallet, referrerStatus, status, service, startDate, launchAt, tentativeLaunchDate, launchTimingStatus, launchTimeZone, launchVenue, launchFundingAsset, launchMethod, chain, quoteToken, dailyTradingFeeEnabled, dailyTradingFeeUsd, launchFeeUsd, feeConfigurationConfirmed, endDate, currentProfitLoss, notes, tags}",
-          "update_project: {projectName, name, referrer, referrerWallet, referrerStatus, status, service, startDate, launchAt, tentativeLaunchDate, launchTimingStatus, launchTimeZone, launchVenue, launchFundingAsset, launchMethod, chain, quoteToken, dailyTradingFeeEnabled, dailyTradingFeeUsd, launchFeeUsd, feeConfigurationConfirmed, endDate, currentProfitLoss, notes, tags}",
+          "create_project: {name, referrer, referrerWallet, referrerStatus, status, service, startDate, launchAt, tentativeLaunchDate, launchTimingStatus, launchTimeZone, launchVenue, launchFundingAsset, launchMethod, chain, quoteToken, quoteTokenAddress, dailyTradingFeeEnabled, dailyTradingFeeUsd, launchFeeUsd, feeConfigurationConfirmed, endDate, currentProfitLoss, notes, tags}",
+          "update_project: {projectName, name, referrer, referrerWallet, referrerStatus, status, service, startDate, launchAt, tentativeLaunchDate, launchTimingStatus, launchTimeZone, launchVenue, launchFundingAsset, launchMethod, chain, quoteToken, quoteTokenAddress, dailyTradingFeeEnabled, dailyTradingFeeUsd, launchFeeUsd, feeConfigurationConfirmed, endDate, currentProfitLoss, notes, tags}",
           "create_project_note: {projectName, text}",
           "create_reminder: {title, message, dueAt, timeZone?, recurrence?}",
           "create_payroll: {member, amount, projectName, date, status, currency, notes}",
@@ -1202,6 +1206,16 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
 
   const rawPayload = plan?.payload && typeof plan.payload === "object" ? plan.payload : {}
   const payload = scopedActionPayload(actionType, normalizeActionDates(actionType, rawPayload, text, requestTimeZone, requestNow), options.dataScope)
+  const customQuoteWarnings: string[] = []
+  if ((actionType === "create_project" || actionType === "update_project") && payload.quoteTokenAddress) {
+    try {
+      Object.assign(payload, await resolveCustomQuoteToken(payload.chain || payload.revenueChain, payload.quoteToken, payload.quoteTokenAddress))
+      payload.quoteAssets = [payload.quoteToken]
+    } catch (error) {
+      payload.quoteTokenDecimals = null
+      customQuoteWarnings.push(error instanceof Error ? error.message : "The custom quote token could not be verified on-chain.")
+    }
+  }
   if (actionType === "create_reminder") {
     payload.timeZone = explicitTimeZone || payload.timeZone || memberTimeZone || TEAM_TIME_ZONE
     const normalized = normalizeReminderDueAt(payload, requestNow)
@@ -1222,6 +1236,7 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
   const summary = String(plan?.summary || actionLabel(actionType)).trim()
   const warnings = [
     ...(Array.isArray(plan?.warnings) ? plan.warnings.map(String).filter(Boolean) : []),
+    ...customQuoteWarnings,
     ...resolved.warnings,
   ]
   const now = new Date()
@@ -1439,7 +1454,7 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
     }
     for (const key of ["launchTimeZone", "launchVenue", "launchVenueLabel", "launchFundingAsset"]) if (payload[key] !== undefined) update[key] = String(payload[key] || "").trim()
     if (payload.launchMethod !== undefined) update.launchMethod = normalizeLaunchMethod(payload.launchMethod) || ""
-    if (["chain", "quoteToken", "quoteAssets", "dailyTradingFeeEnabled", "dailyTradingFeeUsd", "launchFeeUsd"].some((key) => payload[key] !== undefined)) Object.assign(update, cleanProjectFeeFields({ ...project, ...payload }))
+    if (["chain", "quoteToken", "quoteAssets", "quoteTokenAddress", "quoteTokenDecimals", "dailyTradingFeeEnabled", "dailyTradingFeeUsd", "launchFeeUsd"].some((key) => payload[key] !== undefined)) Object.assign(update, cleanProjectFeeFields({ ...project, ...payload }))
     if (payload.feeConfigurationConfirmed !== undefined) update.feeConfigurationConfirmed = payload.feeConfigurationConfirmed === true
     if (payload.referrerStatus !== undefined || payload.referrer !== undefined) update.referrerStatus = String(payload.referrerStatus || (payload.referrer ? "assigned" : "none"))
     if (payload.status === "inactive") update.status = "inactive"

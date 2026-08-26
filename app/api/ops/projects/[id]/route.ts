@@ -6,6 +6,7 @@ import { cleanProjectFeeFields } from '@/lib/revenue-projects'
 import { activationLifecycleFields, normalizeProjectStatus, projectActivationReadiness, projectLaunchAt, scheduledLifecycleFields } from '@/lib/project-lifecycle'
 import { parseTeamDateTime } from '@/lib/team-timezone'
 import { normalizeLaunchMethod } from '@/lib/launch-method'
+import { resolveCustomQuoteToken } from '@/lib/custom-quote-token'
 
 export const dynamic = 'force-dynamic'
 
@@ -59,8 +60,16 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   if (body.referrerStatus !== undefined || body.referrer !== undefined || body.referrerAccountId !== undefined) {
     update.referrerStatus = String(body.referrerStatus || (body.referrerAccountId || body.referrer ? 'assigned' : 'pending'))
   }
-  if (["chain", "revenueChain", "quoteToken", "quoteAssets", "dailyTradingFeeEnabled", "dailyTradingFeeUsd", "liquidationFeeEnabled", "liquidationFeePercentage", "launchFeeUsd"].some((key) => body[key] !== undefined)) {
-    Object.assign(update, cleanProjectFeeFields({ ...existing, ...body, chain: body.chain ?? body.revenueChain ?? existing.chain }))
+  if (["chain", "revenueChain", "quoteToken", "quoteAssets", "quoteTokenAddress", "quoteTokenDecimals", "dailyTradingFeeEnabled", "dailyTradingFeeUsd", "liquidationFeeEnabled", "liquidationFeePercentage", "launchFeeUsd"].some((key) => body[key] !== undefined)) {
+    const feeInput = { ...existing, ...body, chain: body.chain ?? body.revenueChain ?? existing.chain }
+    try {
+      const customQuote = feeInput.quoteTokenAddress
+        ? await resolveCustomQuoteToken(feeInput.chain, feeInput.quoteToken, feeInput.quoteTokenAddress)
+        : {}
+      Object.assign(update, cleanProjectFeeFields({ ...feeInput, ...customQuote }))
+    } catch (error) {
+      return NextResponse.json({ error: error instanceof Error ? error.message : 'Custom quote token verification failed.' }, { status: 400 })
+    }
   }
 
   if (body.feeConfigurationConfirmed !== undefined) update.feeConfigurationConfirmed = body.feeConfigurationConfirmed === true

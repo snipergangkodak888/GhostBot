@@ -33,6 +33,8 @@ export type ProjectFeeConfig = {
   chain: RevenueChain | ""
   quoteToken: string
   quoteAssets: string[]
+  quoteTokenAddress: string
+  quoteTokenDecimals: number | null
   dailyTradingFeeEnabled: boolean
   dailyTradingFeeUsd: number
   liquidationFeeEnabled: boolean
@@ -79,7 +81,7 @@ export type RevenueReceipt = {
   amountUsd?: number | null
   valuationStatus?: "valued" | "pending" | "manual"
   priceUsd?: number | null
-  priceSource?: "stablecoin" | "coingecko" | "defillama" | "manual" | null
+  priceSource?: "stablecoin" | "coingecko" | "defillama" | "blockscout" | "manual" | null
   priceTimestamp?: string | null
   priceFetchedAt?: string | null
   notificationSuppressedReason?: "dust" | "internal_swap" | "consolidation_candidate" | null
@@ -139,6 +141,7 @@ export type RevenueFeeEvent = {
   projectName?: string | null
   chain?: RevenueChain | null
   quoteAsset?: string | null
+  quoteTokenAddress?: string | null
   feeType: FeeType | null
   grossAmount?: number | null
   grossAsset?: string | null

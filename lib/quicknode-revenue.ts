@@ -9,13 +9,13 @@ const SOLANA_REVENUE_WALLET = String(process.env.REVENUE_SOLANA_WALLET || "").tr
 const SOLANA_TREASURY_WALLET = String(process.env.REVENUE_SOLANA_TREASURY_WALLET || "").trim()
 const ERC20_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 
-type TokenMetadata = { asset: string; decimals: number }
-type TokenRegistry = Partial<Record<RevenueChain, Record<string, TokenMetadata>>>
+export type RevenueTokenMetadata = { asset: string; decimals: number }
+export type RevenueTokenRegistry = Partial<Record<RevenueChain, Record<string, RevenueTokenMetadata>>>
 
 // Circle's canonical mainnet USDC contracts/mint. Other accepted tokens must be
 // explicitly allowlisted through REVENUE_TOKEN_REGISTRY_JSON so spam tokens do
 // not become accounting receipts.
-const DEFAULT_TOKEN_REGISTRY: TokenRegistry = {
+const DEFAULT_TOKEN_REGISTRY: RevenueTokenRegistry = {
   ethereum: {
     "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": { asset: "USDC", decimals: 6 },
   },
@@ -128,14 +128,14 @@ function scaledInteger(value: bigint, decimals: number) {
   return Number.isFinite(number) ? number : null
 }
 
-function configuredTokenRegistry(): TokenRegistry {
-  let configured: TokenRegistry = {}
+function configuredTokenRegistry(): RevenueTokenRegistry {
+  let configured: RevenueTokenRegistry = {}
   try {
-    configured = JSON.parse(String(process.env.REVENUE_TOKEN_REGISTRY_JSON || "{}")) as TokenRegistry
+    configured = JSON.parse(String(process.env.REVENUE_TOKEN_REGISTRY_JSON || "{}")) as RevenueTokenRegistry
   } catch {
     configured = {}
   }
-  const registry: TokenRegistry = {}
+  const registry: RevenueTokenRegistry = {}
   for (const chain of REVENUE_CHAINS) {
     registry[chain] = {}
     for (const source of [DEFAULT_TOKEN_REGISTRY[chain], configured?.[chain]]) {
@@ -152,8 +152,9 @@ function configuredTokenRegistry(): TokenRegistry {
 
 const TOKEN_REGISTRY = configuredTokenRegistry()
 
-function tokenMetadata(chain: RevenueChain, address: unknown) {
-  return TOKEN_REGISTRY[chain]?.[normalizedAddress(address, chain)] || null
+function tokenMetadata(chain: RevenueChain, address: unknown, projectRegistry?: RevenueTokenRegistry) {
+  const normalized = normalizedAddress(address, chain)
+  return TOKEN_REGISTRY[chain]?.[normalized] || projectRegistry?.[chain]?.[normalized] || null
 }
 
 function eventItems(payload: any) {
@@ -267,7 +268,7 @@ function topicAddress(value: unknown) {
   return /^0x[0-9a-f]{64}$/.test(topic) ? `0x${topic.slice(-40)}` : ""
 }
 
-function normalizeEvmTemplatePayload(payload: any, chain: RevenueChain, walletRole: RevenueWalletRole) {
+function normalizeEvmTemplatePayload(payload: any, chain: RevenueChain, walletRole: RevenueWalletRole, projectRegistry?: RevenueTokenRegistry) {
   const wallet = monitoredWallet(chain, walletRole)
   const receipts: ReceiptInput[] = []
   let rejected = 0
@@ -313,7 +314,7 @@ function normalizeEvmTemplatePayload(payload: any, chain: RevenueChain, walletRo
       if (!match) continue
       const transactionHash = String(log?.transactionHash || receipt?.transactionHash || "").trim()
       const tokenAddress = normalizedAddress(log?.address, chain)
-      const metadata = tokenMetadata(chain, tokenAddress)
+      const metadata = tokenMetadata(chain, tokenAddress, projectRegistry)
       const rawAmount = integer(log?.data)
       const amount = rawAmount == null || !metadata ? null : scaledInteger(rawAmount, metadata.decimals)
       const eventIndex = integerNumber(log?.logIndex) ?? logPosition
@@ -365,7 +366,7 @@ function addTokenBalances(target: Map<string, { amount: bigint; decimals: number
   }
 }
 
-function normalizeSolanaTemplatePayload(payload: any, chain: RevenueChain, walletRole: RevenueWalletRole) {
+function normalizeSolanaTemplatePayload(payload: any, chain: RevenueChain, walletRole: RevenueWalletRole, projectRegistry?: RevenueTokenRegistry) {
   const wallet = monitoredWallet(chain, walletRole)
   const receipts: ReceiptInput[] = []
   let rejected = 0
@@ -430,7 +431,7 @@ function normalizeSolanaTemplatePayload(payload: any, chain: RevenueChain, walle
       for (const [mint, delta] of Array.from(tokenDeltas.entries())) {
         if (delta.amount === BigInt(0)) continue
         handledMovements += 1
-        const metadata = tokenMetadata(chain, mint)
+        const metadata = tokenMetadata(chain, mint, projectRegistry)
         if (!metadata || (delta.decimals != null && delta.decimals !== metadata.decimals)) {
           rejected += 1
           continue
@@ -465,7 +466,7 @@ function normalizeSolanaTemplatePayload(payload: any, chain: RevenueChain, walle
   return { receipts, rejected }
 }
 
-function itemReceipt(item: any, chain: RevenueChain, walletRole: RevenueWalletRole, fallbackIndex: number): ReceiptInput | null {
+function itemReceipt(item: any, chain: RevenueChain, walletRole: RevenueWalletRole, fallbackIndex: number, projectRegistry?: RevenueTokenRegistry): ReceiptInput | null {
   const configuredWallet = normalizedAddress(monitoredWallet(chain, walletRole), chain)
   if (!configuredWallet) return null
   const wallet = normalizedAddress(item.wallet ?? item.account ?? item.monitoredWallet ?? configuredWallet, chain)
@@ -480,15 +481,17 @@ function itemReceipt(item: any, chain: RevenueChain, walletRole: RevenueWalletRo
   if (!direction) return null
   const transactionHash = String(item.transactionHash ?? item.transaction_hash ?? item.txHash ?? item.hash ?? item.signature ?? "").trim()
   if (!transactionHash) return null
-  const decimals = item.decimals == null ? null : Number(item.decimals)
+  const tokenAddress = String(item.tokenAddress ?? item.contractAddress ?? item.mint ?? "").trim() || null
+  const metadata = tokenAddress ? tokenMetadata(chain, tokenAddress, projectRegistry) : null
+  if (tokenAddress && !metadata) return null
+  const decimals = metadata?.decimals ?? (item.decimals == null ? null : Number(item.decimals))
   const rawAmount = item.amount ?? item.changeAmount ?? item.uiAmount ?? item.tokenAmount ?? item.value
-  const asset = String(item.asset ?? item.symbol ?? item.tokenSymbol ?? item.currency ?? (item.mint ? "TOKEN" : chain === "solana" ? "SOL" : chain === "bnb" ? "BNB" : "ETH")).trim().toUpperCase()
+  const asset = String(metadata?.asset ?? item.asset ?? item.symbol ?? item.tokenSymbol ?? item.currency ?? (item.mint ? "TOKEN" : chain === "solana" ? "SOL" : chain === "bnb" ? "BNB" : "ETH")).trim().toUpperCase()
   const valueIsRaw = item.rawAmount != null || item.valueIsRaw === true || (typeof rawAmount === "string" && rawAmount.startsWith("0x"))
   const fallbackDecimals = asset === "USDC" ? 6 : chain === "solana" && asset === "SOL" ? 9 : chain !== "solana" && ["ETH", "BNB"].includes(asset) ? 18 : null
   const amount = numeric(item.rawAmount ?? rawAmount, valueIsRaw ? decimals ?? fallbackDecimals : null)
   if (amount == null || amount <= 0) return null
   const eventIndex = Number(item.eventIndex ?? item.logIndex ?? item.instructionIndex ?? item.index ?? fallbackIndex)
-  const tokenAddress = String(item.tokenAddress ?? item.contractAddress ?? item.mint ?? "").trim() || null
   return receiptInput({
     chain,
     walletRole,
@@ -513,21 +516,21 @@ function itemReceipt(item: any, chain: RevenueChain, walletRole: RevenueWalletRo
  * common wallet-webhook transfer shapes. Unknown shapes are retained in the
  * delivery audit but intentionally do not become accounting receipts.
  */
-export function normalizeQuickNodeRevenuePayload(payload: any, chainInput?: unknown, walletRoleInput?: unknown) {
+export function normalizeQuickNodeRevenuePayload(payload: any, chainInput?: unknown, walletRoleInput?: unknown, projectRegistry?: RevenueTokenRegistry) {
   const chain = cleanWebhookChain(chainInput ?? payload?.metadata?.chain ?? payload?.metadata?.network ?? payload?.network)
   if (!chain) return { chain: null, receipts: [] as ReceiptInput[], rejected: eventItems(payload).length }
   const walletRole = cleanRevenueWalletRole(walletRoleInput)
   if (!walletRole || (walletRole === "treasury" && chain !== "solana")) return { chain, walletRole: null, receipts: [] as ReceiptInput[], rejected: eventItems(payload).length }
   if (chain === "solana" && asArray(payload).some((item) => item?.block && Array.isArray(item?.transactions))) {
-    const normalized = normalizeSolanaTemplatePayload(payload, chain, walletRole)
+    const normalized = normalizeSolanaTemplatePayload(payload, chain, walletRole, projectRegistry)
     return { chain, walletRole, ...normalized, receipts: classifyDeterministicInternalMovements(normalized.receipts) }
   }
   if (chain !== "solana" && payload && (Object.hasOwn(payload, "matchingTransactions") || Object.hasOwn(payload, "matchingReceipts"))) {
-    const normalized = normalizeEvmTemplatePayload(payload, chain, walletRole)
+    const normalized = normalizeEvmTemplatePayload(payload, chain, walletRole, projectRegistry)
     return { chain, walletRole, ...normalized, receipts: classifyDeterministicInternalMovements(normalized.receipts) }
   }
   const items = eventItems(payload)
-  const receipts = items.map((item, index) => itemReceipt(item, chain, walletRole, index)).filter(Boolean) as ReceiptInput[]
+  const receipts = items.map((item, index) => itemReceipt(item, chain, walletRole, index, projectRegistry)).filter(Boolean) as ReceiptInput[]
   return { chain, walletRole, receipts: classifyDeterministicInternalMovements(receipts), rejected: items.length - receipts.length }
 }
 

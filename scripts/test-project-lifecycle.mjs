@@ -43,6 +43,7 @@ function localRequire(id) {
     { id: "pumpfun", name: "Pump.fun", chainId: "sol", symbol: "SOL" },
     { id: "aero", name: "Aerodrome", chainId: "base", symbol: "ETH" },
     { id: "uni-rh-v4", name: "Uniswap V4", chainId: "rh", symbol: "ETH" },
+    { id: "pons", name: "Pons V2", chainId: "rh", symbol: "ETH" },
   ] }
   if (id === "@/lib/revenue-projects") return { cleanRevenueChain: (value) => ["solana", "base", "ethereum", "bnb", "robinhood"].includes(String(value)) ? String(value) : "" }
   if (id === "@/lib/team-timezone") return {
@@ -64,6 +65,7 @@ assert.deepEqual(JSON.parse(JSON.stringify(inferred)), { launchVenue: "pumpfun",
 const exactRequestConfig = lifecycle.inferLaunchConfiguration("add KOLCOIN launch today at 2pm et to the calendar, its solana/pumpfun")
 assert.deepEqual(JSON.parse(JSON.stringify(exactRequestConfig)), { launchVenue: "pumpfun", launchVenueLabel: "Pump.fun", launchFundingAsset: "SOL", chain: "solana", quoteToken: "SOL" })
 assert.deepEqual(JSON.parse(JSON.stringify(lifecycle.inferLaunchConfiguration("Weave on Robinhood Uniswap V4 with ETH quote"))), { launchVenue: "uni-rh-v4", launchVenueLabel: "Uniswap V4", launchFundingAsset: "ETH", chain: "robinhood", quoteToken: "ETH" })
+assert.deepEqual(JSON.parse(JSON.stringify(lifecycle.inferLaunchConfiguration("Test launch on Pons V2 Robinhood with custom quote token AAPL, CA 0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9"))), { launchVenue: "pons", launchVenueLabel: "Pons V2", launchFundingAsset: "ETH", chain: "robinhood", quoteToken: "AAPL", quoteTokenAddress: "0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9" })
 assert.equal(lifecycle.cleanLaunchProjectName("add KOLCOIN"), "KOLCOIN")
 assert.equal(lifecycle.cleanLaunchProjectName("please schedule the project alpha coin"), "Alpha Coin")
 assert.equal(lifecycle.cleanLaunchProjectNameFromRequest("SnapGame pumpfun sol", "SnapGame pumpfun sol launch at 5:10 pm ET today"), "SnapGame")

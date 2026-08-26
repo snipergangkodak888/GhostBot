@@ -1,7 +1,7 @@
 type PriceQuote = {
   priceUsd: number
   priceTimestamp: string
-  priceSource: "coingecko" | "defillama"
+  priceSource: "coingecko" | "defillama" | "blockscout"
   priceFetchedAt: string
 }
 
@@ -14,6 +14,27 @@ const COIN_IDS: Record<string, string> = {
 const cache = new Map<string, { expiresAt: number; quote: PriceQuote }>()
 const historicalSeriesCache = new Map<string, { expiresAt: number; prices: Array<{ timestamp: number; price: number }> }>()
 const llamaCache = new Map<string, { expiresAt: number; quote: PriceQuote }>()
+const contractCache = new Map<string, { expiresAt: number; quote: PriceQuote }>()
+
+async function robinhoodContractQuote(addressInput: unknown, occurredAt: Date): Promise<PriceQuote | null> {
+  const address = String(addressInput || "").trim()
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address) || Math.abs(Date.now() - occurredAt.getTime()) > 30 * 60_000) return null
+  const key = address.toLowerCase()
+  const cached = contractCache.get(key)
+  if (cached && cached.expiresAt > Date.now()) return cached.quote
+  const response = await fetch(`https://robinhoodchain.blockscout.com/api/v2/tokens/${address}`, {
+    headers: { accept: "application/json" },
+    signal: AbortSignal.timeout(6_000),
+  })
+  if (!response.ok) throw new Error(`Robinhood token price lookup failed (${response.status})`)
+  const data = await response.json()
+  const priceUsd = Number(data?.exchange_rate)
+  if (!(priceUsd > 0)) return null
+  const now = new Date().toISOString()
+  const quote: PriceQuote = { priceUsd, priceTimestamp: now, priceSource: "blockscout", priceFetchedAt: now }
+  contractCache.set(key, { expiresAt: Date.now() + 45_000, quote })
+  return quote
+}
 
 function coinGeckoConfig() {
   const key = String(process.env.COINGECKO_API_KEY || "").trim()
@@ -118,7 +139,11 @@ export async function valueRevenueReceipt<T extends Record<string, any>>(receipt
     return { ...receipt, amountUsd: Number(receipt.amount || 0), valuationStatus: "valued", priceUsd: 1, priceSource: "stablecoin", priceTimestamp: receipt.blockTime || now, priceFetchedAt: now }
   }
   if (receipt.amountUsd != null) return receipt
-  const quote = await receiptPriceQuote(asset, receipt.blockTime || receipt.createdAt || now)
+  const occurredAt = validDate(receipt.blockTime || receipt.createdAt || now) || new Date()
+  const contractQuote = String(receipt.chain || "") === "robinhood" && receipt.tokenAddress
+    ? await robinhoodContractQuote(receipt.tokenAddress, occurredAt)
+    : null
+  const quote = contractQuote || await receiptPriceQuote(asset, occurredAt)
   if (!quote) return receipt
   const amountUsd = Math.round((Number(receipt.amount || 0) * quote.priceUsd + Number.EPSILON) * 100) / 100
   return { ...receipt, ...quote, amountUsd, valuationStatus: "valued" }

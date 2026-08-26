@@ -16,7 +16,9 @@ const config = botLabConfig({ telegramId, chatId: telegramId, chatType: "group" 
 const suffix = Date.now().toString().slice(-6)
 const projectName = `SnapGame${suffix}`
 const tentativeProjectName = `Tentative${suffix}`
-const testProjectNames = new Set([projectName, tentativeProjectName])
+const customQuoteProjectName = `CustomQuote${suffix}`
+const testProjectNames = new Set([projectName, tentativeProjectName, customQuoteProjectName])
+const aaplAddress = "0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9"
 const launchChatId = String(-Math.abs(config.chatId))
 const launchProfileId = `codex-launch-profile-${telegramId}`
 let server
@@ -225,9 +227,31 @@ try {
   const cancelV4Draft = callbackStartingWith(v4Draft, "launchsetup:cancel:")
   if (cancelV4Draft) await sendBotLabUpdate(config, { callbackData: cancelV4Draft, messageId: v4Draft.messages?.[0]?.messageId })
 
+  const customDraft = await sendBotLabUpdate(config, { text: `/schedulelaunch ${customQuoteProjectName} on Pons V2 Robinhood with custom quote token AAPL, CA ${aaplAddress}, launch today at 1 PM ET - other MM plugin - no referrer` })
+  const customDraftText = responseText(customDraft)
+  for (const expected of [
+    `Project name: <b>${customQuoteProjectName}</b>`,
+    "Launchpad / DEX: <b>Pons V2</b>",
+    "Chain: <b>Robinhood Chain</b>",
+    "Quote token: <b>AAPL</b>",
+    `Quote token CA: <code>${aaplAddress}</code>`,
+    "Everything is ready",
+  ]) {
+    if (!customDraftText.includes(expected)) throw new Error(`Custom-quote launch review is missing ${expected}. Response: ${customDraftText}`)
+  }
+  const createCustomCallback = callbackStartingWith(customDraft, "launchsetup:create:")
+  if (!createCustomCallback) throw new Error(`Custom-quote launch was not ready to create. Response: ${customDraftText}`)
+  const customCreated = await sendBotLabUpdate(config, { callbackData: createCustomCallback, messageId: customDraft.messages?.[0]?.messageId })
+  if (!responseText(customCreated).includes(`Launch scheduled successfully: ${customQuoteProjectName}`)) throw new Error(`Custom-quote launch was not created. Response: ${responseText(customCreated)}`)
+  const customProject = await lookupTestProject(customQuoteProjectName)
+  if (!customProject) throw new Error("The custom-quote launch was not stored.")
+  if (customProject.launchVenue !== "pons" || customProject.chain !== "robinhood" || customProject.quoteToken !== "AAPL" || customProject.quoteTokenAddress !== aaplAddress || customProject.quoteTokenDecimals !== 18) {
+    throw new Error(`Custom-quote fields were not stored correctly: ${JSON.stringify(customProject)}`)
+  }
+
   console.log(text)
   console.log(tentativeCreatedText)
-  console.log("\nPASS: guided launch setup handles time-only edits, command escape from pending prompts, Time TBD launches, button and natural-language notes as bullets, operational Uniswap V4, venue edits without quote changes, and the compact /calendar flow.")
+  console.log("\nPASS: guided launch setup handles time-only edits, command escape from pending prompts, Time TBD launches, button and natural-language notes as bullets, custom contract quote tokens, operational Uniswap V4, venue edits without quote changes, and the compact /calendar flow.")
 } finally {
   const deleted = await cleanup().catch((error) => {
     console.error(`Cleanup warning: ${error instanceof Error ? error.message : String(error)}`)

@@ -5,15 +5,19 @@ import { cleanProjectFeeFields } from '@/lib/revenue-projects'
 import { normalizeProjectStatus, scheduledLifecycleFields } from '@/lib/project-lifecycle'
 import { parseTeamDateTime } from '@/lib/team-timezone'
 import { normalizeLaunchMethod } from '@/lib/launch-method'
+import { resolveCustomQuoteToken } from '@/lib/custom-quote-token'
 
 export const dynamic = 'force-dynamic'
 
-function cleanProject(body: any) {
+async function cleanProject(body: any) {
   const launchSource = body.launchAt || body.launchDate
   const launchAt = launchSource ? parseTeamDateTime(launchSource, body.launchTimeZone || 'America/New_York')?.toISOString() || null : null
   const status = normalizeProjectStatus(body.status, launchAt)
   const startDate = body.startDate
   const currentProfitLoss = Number(body.currentProfitLoss ?? body.profitThisWeek ?? 0)
+  const customQuote = body.quoteTokenAddress
+    ? await resolveCustomQuoteToken(body.chain || body.revenueChain, body.quoteToken, body.quoteTokenAddress)
+    : {}
   return {
     name: String(body.name || '').trim(),
     referrer: String(body.referrer || '').trim(),
@@ -38,7 +42,7 @@ function cleanProject(body: any) {
     profitThisWeek: currentProfitLoss,
     notes: String(body.notes || '').trim(),
     tags: Array.isArray(body.tags) ? body.tags.map(String) : [],
-    ...cleanProjectFeeFields(body),
+    ...cleanProjectFeeFields({ ...body, ...customQuote }),
   }
 }
 
@@ -55,7 +59,12 @@ export async function GET() {
 
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}))
-  const project = cleanProject(body)
+  let project
+  try {
+    project = await cleanProject(body)
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : 'Custom quote token verification failed.' }, { status: 400 })
+  }
   if (!project.name) return NextResponse.json({ error: 'Project name is required' }, { status: 400 })
   if ((body.launchAt || body.launchDate) && !project.launchAt) return NextResponse.json({ error: 'Launch time or timezone is invalid.' }, { status: 400 })
   if (project.status === 'scheduled' && !project.launchAt) return NextResponse.json({ error: 'A launch time is required for a scheduled project.' }, { status: 400 })
