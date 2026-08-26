@@ -17,7 +17,9 @@ const suffix = Date.now().toString().slice(-6)
 const projectName = `SnapGame${suffix}`
 const tentativeProjectName = `Tentative${suffix}`
 const customQuoteProjectName = `CustomQuote${suffix}`
-const testProjectNames = new Set([projectName, tentativeProjectName, customQuoteProjectName])
+const wizardProjectName = `WizardLaunch${suffix}`
+const parsedProjectName = `Pathelous${suffix}`
+const testProjectNames = new Set([projectName, tentativeProjectName, customQuoteProjectName, wizardProjectName])
 const aaplAddress = "0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9"
 const launchChatId = String(-Math.abs(config.chatId))
 const launchProfileId = `codex-launch-profile-${telegramId}`
@@ -31,6 +33,16 @@ function callbackStartingWith(data, prefix) {
   for (const message of data.messages || []) {
     for (const row of message.replyMarkup?.inline_keyboard || []) {
       const button = row.find((item) => String(item.callback_data || "").startsWith(prefix))
+      if (button) return button.callback_data
+    }
+  }
+  return ""
+}
+
+function callbackMatching(data, prefix, suffix) {
+  for (const message of data.messages || []) {
+    for (const row of message.replyMarkup?.inline_keyboard || []) {
+      const button = row.find((item) => String(item.callback_data || "").startsWith(prefix) && String(item.callback_data || "").endsWith(suffix))
       if (button) return button.callback_data
     }
   }
@@ -227,6 +239,43 @@ try {
   const cancelV4Draft = callbackStartingWith(v4Draft, "launchsetup:cancel:")
   if (cancelV4Draft) await sendBotLabUpdate(config, { callbackData: cancelV4Draft, messageId: v4Draft.messages?.[0]?.messageId })
 
+  const parsedNameDraft = await sendBotLabUpdate(config, { text: `/schedulelaunch add ${parsedProjectName} launch today 4pm et on pumpfun, sol - sumo - no referrer` })
+  const parsedNameText = responseText(parsedNameDraft)
+  if (!parsedNameText.includes(`Project name: <b>${parsedProjectName}</b>`) || parsedNameText.includes(`Project name: <b>Add ${parsedProjectName} Launch`)) {
+    throw new Error(`Natural-language launch name was not isolated correctly. Response: ${parsedNameText}`)
+  }
+  const cancelParsedDraft = callbackStartingWith(parsedNameDraft, "launchsetup:cancel:")
+  if (cancelParsedDraft) await sendBotLabUpdate(config, { callbackData: cancelParsedDraft, messageId: parsedNameDraft.messages?.[0]?.messageId })
+
+  const wizardStart = await sendBotLabUpdate(config, { text: "/addlaunch" })
+  if (!responseText(wizardStart).includes("exact project name")) throw new Error(`The /addlaunch wizard did not request a name. Response: ${responseText(wizardStart)}`)
+  const wizardTiming = await sendBotLabUpdate(config, { text: wizardProjectName })
+  if (!responseText(wizardTiming).includes(`When is ${wizardProjectName} launching?`)) throw new Error(`The /addlaunch wizard did not request timing. Response: ${responseText(wizardTiming)}`)
+  const wizardChain = await sendBotLabUpdate(config, { text: "today at 4:40 PM ET" })
+  const wizardSolChain = callbackMatching(wizardChain, "launchsetup:setchain:", ":sol")
+  if (!wizardSolChain || !responseText(wizardChain).includes("Choose the chain")) throw new Error(`The /addlaunch wizard did not request a chain. Response: ${responseText(wizardChain)}`)
+  const wizardVenue = await sendBotLabUpdate(config, { callbackData: wizardSolChain, messageId: wizardChain.messages?.[0]?.messageId })
+  const wizardPumpfun = callbackMatching(wizardVenue, "launchsetup:setvenue:", ":pumpfun")
+  if (!wizardPumpfun || !responseText(wizardVenue).includes("Choose the launchpad / DEX")) throw new Error(`The /addlaunch wizard did not request a venue. Response: ${responseText(wizardVenue)}`)
+  const wizardQuote = await sendBotLabUpdate(config, { callbackData: wizardPumpfun, messageId: wizardVenue.messages?.[0]?.messageId })
+  const wizardSolQuote = callbackMatching(wizardQuote, "launchsetup:setquote:", ":SOL")
+  if (!wizardSolQuote || !responseText(wizardQuote).includes("Choose the quote token")) throw new Error(`The /addlaunch wizard did not request a quote token. Response: ${responseText(wizardQuote)}`)
+  const wizardMethod = await sendBotLabUpdate(config, { callbackData: wizardSolQuote, messageId: wizardQuote.messages?.[0]?.messageId })
+  const wizardSumo = callbackMatching(wizardMethod, "launchsetup:setmethod:", ":sumo")
+  if (!wizardSumo || !responseText(wizardMethod).includes("Choose the launch method")) throw new Error(`The /addlaunch wizard did not request a method. Response: ${responseText(wizardMethod)}`)
+  const wizardReferrer = await sendBotLabUpdate(config, { callbackData: wizardSumo, messageId: wizardMethod.messages?.[0]?.messageId })
+  const wizardNoReferrer = callbackStartingWith(wizardReferrer, "launchsetup:noref:")
+  if (!wizardNoReferrer || !responseText(wizardReferrer).includes("have a referrer")) throw new Error(`The /addlaunch wizard did not request a referrer decision. Response: ${responseText(wizardReferrer)}`)
+  const wizardReview = await sendBotLabUpdate(config, { callbackData: wizardNoReferrer, messageId: wizardReferrer.messages?.[0]?.messageId })
+  const wizardCreate = callbackStartingWith(wizardReview, "launchsetup:create:")
+  if (!wizardCreate || !responseText(wizardReview).includes("Everything is ready")) throw new Error(`The /addlaunch wizard did not reach final review. Response: ${responseText(wizardReview)}`)
+  const wizardCreated = await sendBotLabUpdate(config, { callbackData: wizardCreate, messageId: wizardReview.messages?.[0]?.messageId })
+  if (!responseText(wizardCreated).includes(`Launch scheduled successfully: ${wizardProjectName}`)) throw new Error(`The /addlaunch wizard did not create its launch. Response: ${responseText(wizardCreated)}`)
+  const wizardProject = await lookupTestProject(wizardProjectName)
+  if (!wizardProject || wizardProject.launchVenue !== "pumpfun" || wizardProject.chain !== "solana" || wizardProject.quoteToken !== "SOL" || wizardProject.launchMethod !== "sumo" || wizardProject.referrerStatus !== "none") {
+    throw new Error(`The /addlaunch wizard stored incorrect fields: ${JSON.stringify(wizardProject)}`)
+  }
+
   const customDraft = await sendBotLabUpdate(config, { text: `/schedulelaunch ${customQuoteProjectName} on Pons V2 Robinhood with custom quote token AAPL, CA ${aaplAddress}, launch today at 1 PM ET - other MM plugin - no referrer` })
   const customDraftText = responseText(customDraft)
   for (const expected of [
@@ -251,7 +300,7 @@ try {
 
   console.log(text)
   console.log(tentativeCreatedText)
-  console.log("\nPASS: guided launch setup handles time-only edits, command escape from pending prompts, Time TBD launches, button and natural-language notes as bullets, custom contract quote tokens, operational Uniswap V4, venue edits without quote changes, and the compact /calendar flow.")
+  console.log("\nPASS: launch setup handles the /addlaunch wizard, clean natural-language names, time-only edits, command escape from pending prompts, Time TBD launches, notes, custom contract quote tokens, Uniswap V4, venue edits, and the compact /calendar flow.")
 } finally {
   const deleted = await cleanup().catch((error) => {
     console.error(`Cleanup warning: ${error instanceof Error ? error.message : String(error)}`)

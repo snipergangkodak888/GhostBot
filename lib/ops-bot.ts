@@ -694,8 +694,9 @@ function launchProjectName(text: string, projects: any[]) {
     /\blaunch\s*\(\s*([^)]{1,80})\s*\)/i,
     /\b(?:add|put)\s+(.{1,80}?)\s+(?:to|on)\s+(?:the\s+)?launch\s+calendar\b/i,
     /\b(?:schedule|set|move|reschedule)\s+(.{1,80}?)\s+(?:for\s+)?(?:a\s+)?launch\b/i,
-    /^(?:please\s+)?(?:(?:add|put|schedule|set)\s+)?(.{1,80}?)\s+(?:on\s+)?(?:pump\.?fun|pump\s+fun|flap|four\.?meme|four\s+meme|aerodrome|pons(?:\s+v2)?|uniswap|meteora|raydium|robinhood(?:\s+chain)?|solana|ethereum|base|bnb|bsc|binance\s+smart\s+chain)\b/i,
+    /^(?:please\s+)?(?:add|put|schedule|set)\s+(?:the\s+)?(?:project\s+)?(.{1,80}?)\s+(?:project\s+)?launch\b/i,
     /^(.{1,80}?)\s+(?:launch|launches|launching)\b/i,
+    /^(?:please\s+)?(?:(?:add|put|schedule|set)\s+)?(.{1,80}?)\s+(?:on\s+)?(?:pump\.?fun|pump\s+fun|flap|four\.?meme|four\s+meme|aerodrome|pons(?:\s+v2)?|uniswap|meteora|raydium|robinhood(?:\s+chain)?|solana|ethereum|base|bnb|bsc|binance\s+smart\s+chain)\b/i,
     /\blaunch(?:\s+(?:for|of))?\s+(.{1,80}?)(?=\s+(?:today|tomorrow|tonight|next|on|at)\b|$)/i,
   ]
   for (const pattern of patterns) {
@@ -1204,7 +1205,14 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
     return { actionId: "", message: "⛔ That action is outside this chat's permitted functions.", needsChoice: false }
   }
 
-  const rawPayload = plan?.payload && typeof plan.payload === "object" ? plan.payload : {}
+  const rawPayload = plan?.payload && typeof plan.payload === "object" ? { ...plan.payload } : {}
+  if ((actionType === "create_project" || actionType === "update_project") && /\b(?:launch|launches|launching)\b/i.test(text)) {
+    const parsedTarget = launchProjectName(text, projects)
+    if (parsedTarget?.name) {
+      if (actionType === "create_project") rawPayload.name = parsedTarget.name
+      else rawPayload.projectName = parsedTarget.project?.name || parsedTarget.name
+    }
+  }
   const payload = scopedActionPayload(actionType, normalizeActionDates(actionType, rawPayload, text, requestTimeZone, requestNow), options.dataScope)
   const customQuoteWarnings: string[] = []
   if ((actionType === "create_project" || actionType === "update_project") && payload.quoteTokenAddress) {

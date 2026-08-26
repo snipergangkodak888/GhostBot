@@ -139,6 +139,7 @@ async function setBotCommands(token: string) {
       { command: "profit", description: "Show today profit" },
       { command: "projects", description: "Show active projects" },
       { command: "calendar", description: "Show the daily launch schedule" },
+      { command: "addlaunch", description: "Add a launch step by step" },
       { command: "schedulelaunch", description: "Create a launch with guided setup" },
       { command: "organicsetup", description: "Set up organic trade notifications" },
       { command: "launchcalc", description: "Build a client launch-capital quote" },
@@ -180,6 +181,7 @@ function helpMessage() {
     "📈 /profit",
     "📁 /projects",
     "📅 /calendar",
+    "➕ /addlaunch - add a launch step by step",
     "🗓️ /schedulelaunch - create a launch with guided setup",
     "📣 /organicsetup TICKER - set up organic trade notifications",
     "🚀 /launchcalc - build a launch-capital quote",
@@ -1225,7 +1227,7 @@ async function processState(token: string, chatId: number | string, telegramId: 
     return true
   }
 
-  const stateCapability: BotCapability = String(state.action || "").startsWith("launch_calc") || String(state.action || "").startsWith("launch_setup") || String(state.action || "").startsWith("organic_setup") || state.action === "schedule_launch_request" || state.action === "reschedule_launch" || state.action === "tentative_launch_day" || state.action === "add_launch_note"
+  const stateCapability: BotCapability = String(state.action || "").startsWith("launch_calc") || String(state.action || "").startsWith("launch_setup") || String(state.action || "").startsWith("add_launch_wizard") || String(state.action || "").startsWith("organic_setup") || state.action === "schedule_launch_request" || state.action === "reschedule_launch" || state.action === "tentative_launch_day" || state.action === "add_launch_note"
     ? "launch"
     : ["add_project", "edit_project", "add_reminder", "timezone_for_manual_reminder", "timezone_for_reminder"].includes(String(state.action || ""))
       ? (context.profile === "launch" ? "launch" : "trade")
@@ -1236,6 +1238,60 @@ async function processState(token: string, chatId: number | string, telegramId: 
         : chatPrimaryCapability(context)
   if (!(await requireCapability(token, context, stateCapability))) {
     await clearState(telegramId)
+    return true
+  }
+
+  if (state.action === "add_launch_wizard_name") {
+    const name = cleanLaunchProjectName(text).slice(0, 80)
+    if (!name || !/[a-z0-9]/i.test(name)) {
+      await setState(telegramId, state, chatId)
+      await editOrSendWorkflowMessage(token, chatId, Number(state.promptMessageId || 0) || null, "Send the exact project name.\n\nExample: Pathelous\nSend /cancel to stop.")
+      await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
+      return true
+    }
+    const timeZone = await getMemberTimeZone(telegramId) || TEAM_TIME_ZONE
+    await setState(telegramId, { ...state, action: "add_launch_wizard_timing", name, timeZone, defaultLaunchDate: dateKeyInTimeZone(now, timeZone) }, chatId)
+    await editOrSendWorkflowMessage(token, chatId, Number(state.promptMessageId || 0) || null, `When is ${name} launching?\n\nExamples: today at 4 PM ET · tomorrow at noon · Thursday at 3:30 PM\nFor an unknown time: today TBD\nSend /cancel to stop.`)
+    await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
+    return true
+  }
+
+  if (state.action === "add_launch_wizard_timing") {
+    const timeZone = detectExplicitTimeZone(text) || String(state.timeZone || TEAM_TIME_ZONE)
+    const tentative = /\b(?:tbd|time\s+(?:unknown|tentative|not\s+set)|no\s+exact\s+time)\b/i.test(text)
+    let launchAt: string | null = null
+    let tentativeLaunchDate: string | null = null
+    if (tentative) {
+      tentativeLaunchDate = parseNaturalTeamDate(text, timeZone, now) || state.defaultLaunchDate || null
+    } else {
+      const parsed = parseContextualTeamDateTime(text, { timeZone, now, defaultDate: state.defaultLaunchDate })
+      if (parsed.date) launchAt = parsed.date.toISOString()
+      else {
+        const nextState = parsed.issue === "missing_time" && parsed.resolvedDateKey ? { ...state, defaultLaunchDate: parsed.resolvedDateKey } : state
+        await setState(telegramId, nextState, chatId)
+        const error = parsed.issue === "ambiguous_meridiem"
+          ? "Is that AM or PM? Send “4 PM” or use 24-hour time such as “16:00”."
+          : parsed.issue === "missing_time"
+            ? `I understood the day as ${calendarDayLabel(parsed.resolvedDateKey || String(state.defaultLaunchDate))}. What time should it launch?`
+            : "I could not read that timing. Try “today at 4 PM ET”, “tomorrow at noon”, or “today TBD”."
+        await editOrSendWorkflowMessage(token, chatId, Number(state.promptMessageId || 0) || null, `${error}\n\nSend /cancel to stop.`)
+        await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
+        return true
+      }
+    }
+    if (!launchAt && !tentativeLaunchDate) {
+      await setState(telegramId, state, chatId)
+      await editOrSendWorkflowMessage(token, chatId, Number(state.promptMessageId || 0) || null, "I could not read that launch day. Try “today at 4 PM ET”, “tomorrow at noon”, or “today TBD”.\n\nSend /cancel to stop.")
+      await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
+      return true
+    }
+    const draft = await createGuidedLaunchDraft(db, { telegramId, chatId, name: String(state.name), launchAt, tentativeLaunchDate, timeZone })
+    const promptMessageId = Number(state.promptMessageId || 0) || null
+    await finishState(token, chatId, telegramId, state, message, promptMessageId ? [promptMessageId] : [])
+    await showLaunchSetupPicker(token, chatId, promptMessageId, `Choose the chain for ${String(state.name)}:`, [
+      ...launchChainButtons(String(draft._id)),
+      [{ text: "Cancel", callback_data: `launchsetup:cancel:${draft._id}` }],
+    ])
     return true
   }
 
@@ -1341,7 +1397,12 @@ async function processState(token: string, chatId: number | string, telegramId: 
         })
         const reviewMessageId = Number(state.reviewMessageId || 0) || null
         await finishState(token, chatId, telegramId, state, message, reviewMessageId ? [reviewMessageId] : [])
-        await showLaunchSetupReview(token, chatId, action, reviewMessageId, `${customQuote.quoteToken} verified from its contract.`)
+        if (action.guidedWizard) {
+          await showLaunchSetupPicker(token, chatId, reviewMessageId, `Choose the launch method for ${String(action.payload?.name || "this launch")}:`, [
+            ...launchMethodButtons(String(action._id)),
+            [{ text: "Back to review", callback_data: `launchsetup:review:${action._id}` }],
+          ])
+        } else await showLaunchSetupReview(token, chatId, action, reviewMessageId, `${customQuote.quoteToken} verified from its contract.`)
       } catch (error) {
         await setState(telegramId, state, chatId)
         const detail = error instanceof Error ? error.message : "I could not verify that token."
@@ -1815,6 +1876,63 @@ async function showLaunchSetupPicker(token: string, chatId: number | string, mes
   await sendMessage(token, chatId, text, buttons)
 }
 
+async function createGuidedLaunchDraft(db: any, params: {
+  telegramId: number
+  chatId: number | string
+  name: string
+  launchAt?: string | null
+  tentativeLaunchDate?: string | null
+  timeZone: string
+}) {
+  const now = new Date()
+  const launchAt = params.launchAt || null
+  const tentativeLaunchDate = params.tentativeLaunchDate || null
+  const record = {
+    telegramId: params.telegramId,
+    chatId: String(params.chatId),
+    request: "/addlaunch",
+    actionType: "create_project",
+    summary: `Add ${params.name} to the launch calendar`,
+    payload: {
+      name: params.name,
+      launchAt,
+      launchDate: launchAt,
+      tentativeLaunchDate,
+      launchTimingStatus: launchAt ? "confirmed" : "tentative",
+      launchTimeZone: params.timeZone,
+      status: "scheduled",
+      referrerStatus: "pending",
+      dailyTradingFeeEnabled: true,
+      dailyTradingFeeUsd: 500,
+      launchFeeUsd: 1000,
+      feeConfigurationConfirmed: false,
+    },
+    preview: [],
+    warnings: [],
+    permissionScope: "launch",
+    allowedActionTypes: ["create_project"],
+    needsChoice: false,
+    guidedWizard: true,
+    status: "pending",
+    createdAt: now,
+    updatedAt: now,
+  }
+  const result = await db.collection("opsAiActions").insertOne(record)
+  return { ...record, _id: String(result.insertedId) }
+}
+
+async function guidedReferrerButtons(db: any, actionId: string): Promise<InlineButton[][]> {
+  const accounts = (await db.collection("accounts").find({}).sort({ name: 1 }).toArray())
+    .filter((account: any) => String(account.type || "").toUpperCase() === "REFERRER" && String(account.status || "active").toLowerCase() !== "inactive")
+    .slice(0, 10)
+  return [
+    ...accounts.map((account: any, index: number) => [{ text: String(account.name || `Referrer ${index + 1}`).slice(0, 48), callback_data: `launchsetup:setref:${actionId}:${index}` }]),
+    [{ text: "Enter manually", callback_data: `launchsetup:manualref:${actionId}` }],
+    [{ text: "No referrer", callback_data: `launchsetup:noref:${actionId}` }],
+    [{ text: "Back to review", callback_data: `launchsetup:review:${actionId}` }],
+  ]
+}
+
 async function handleCallback(token: string, chatId: number | string, telegramId: number, data: string, req: NextRequest, callbackMessage?: any) {
   const db = await getDb()
   const [area, action, id, extra] = data.split(":")
@@ -1954,6 +2072,9 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       const launchMethod = normalizeLaunchMethod(extra)
       if (!launchMethod) return sendMessage(token, chatId, "⚠️ That launch method is not available.")
       launchAction = await updateLaunchSetupAction(db, launchAction, { launchMethod })
+      if (launchAction.guidedWizard) {
+        return showLaunchSetupPicker(token, chatId, messageId, `Does ${String(launchAction.payload?.name || "this launch")} have a referrer?`, await guidedReferrerButtons(db, id))
+      }
       return showLaunchSetupReview(token, chatId, launchAction, messageId, `${launchMethodLabel(launchMethod)} selected.`)
     }
     if (action === "exacttime") {
@@ -2002,6 +2123,13 @@ async function handleCallback(token: string, chatId: number | string, telegramId
         launchFeeUsd: Number(launchAction.payload?.launchFeeUsd || 1000),
         feeConfigurationConfirmed: true,
       })
+      if (launchAction.guidedWizard) {
+        const chainId = launchChainIdForProject(chain.chain)
+        return showLaunchSetupPicker(token, chatId, messageId, `Choose the launchpad / DEX for ${String(launchAction.payload?.name || "this launch")}:`, [
+          ...launchVenueButtons(id, chainId!),
+          [{ text: "Back to review", callback_data: `launchsetup:review:${id}` }],
+        ])
+      }
       return showLaunchSetupReview(token, chatId, launchAction, messageId, venueStillMatches ? "Chain updated." : "Chain updated. Choose the launchpad / DEX for this chain.")
     }
     if (action === "venue") {
@@ -2021,6 +2149,12 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       const selection = launchVenueSelection(extra)
       if (!selection) return sendMessage(token, chatId, "⚠️ That launchpad / DEX is not available.")
       launchAction = await updateLaunchSetupAction(db, launchAction, selection)
+      if (launchAction.guidedWizard) {
+        return showLaunchSetupPicker(token, chatId, messageId, `Choose the quote token for ${String(launchAction.payload?.name || "this launch")}:`, [
+          ...launchQuoteButtons(id, launchAction.payload?.chain),
+          [{ text: "Back to review", callback_data: `launchsetup:review:${id}` }],
+        ])
+      }
       return showLaunchSetupReview(token, chatId, launchAction, messageId, "Launchpad, chain, quote token, and standard fees updated.")
     }
     if (action === "quote") {
@@ -2042,6 +2176,12 @@ async function handleCallback(token: string, chatId: number | string, telegramId
         launchFeeUsd: Number(launchAction.payload?.launchFeeUsd || 1000),
         feeConfigurationConfirmed: Boolean(launchAction.payload?.chain),
       })
+      if (launchAction.guidedWizard) {
+        return showLaunchSetupPicker(token, chatId, messageId, `Choose the launch method for ${String(launchAction.payload?.name || "this launch")}:`, [
+          ...launchMethodButtons(id),
+          [{ text: "Back to review", callback_data: `launchsetup:review:${id}` }],
+        ])
+      }
       return showLaunchSetupReview(token, chatId, launchAction, messageId, "Quote token updated.")
     }
     if (action === "customquote") {
@@ -2060,14 +2200,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       return showLaunchSetupReview(token, chatId, launchAction, messageId, "No referrer confirmed.")
     }
     if (action === "referrer") {
-      const accounts = (await db.collection("accounts").find({}).sort({ name: 1 }).toArray())
-        .filter((account: any) => String(account.type || "").toUpperCase() === "REFERRER" && String(account.status || "active").toLowerCase() !== "inactive")
-        .slice(0, 10)
-      const buttons: InlineButton[][] = accounts.map((account: any, index: number) => [{ text: String(account.name || `Referrer ${index + 1}`).slice(0, 48), callback_data: `launchsetup:setref:${id}:${index}` }])
-      buttons.push([{ text: "✏️ Enter manually", callback_data: `launchsetup:manualref:${id}` }])
-      buttons.push([{ text: "No referrer", callback_data: `launchsetup:noref:${id}` }])
-      buttons.push([{ text: "⬅️ Back to review", callback_data: `launchsetup:review:${id}` }])
-      return showLaunchSetupPicker(token, chatId, messageId, "👤 <b>Choose the referrer</b>", buttons)
+      return showLaunchSetupPicker(token, chatId, messageId, "<b>Choose the referrer</b>", await guidedReferrerButtons(db, id))
     }
     if (action === "setref") {
       const accounts = (await db.collection("accounts").find({}).sort({ name: 1 }).toArray())
@@ -2649,9 +2782,22 @@ async function routeText(token: string, chatId: number | string, telegramId: num
     }
     return sendMessage(token, chatId, `✅ Your timezone is now ${saved.timeZone} (${teamZoneLabel(saved.timeZone)}).`)
   }
+  const addLaunchCommand = commandText.match(/^\/addlaunch(?:@\w+)?$/i)
   const scheduleLaunchCommand = commandText.match(/^\/schedulelaunch(?:@\w+)?(?:\s+([\s\S]+))?$/i)
   const organicSetupCommand = commandText.match(/^\/organicsetup(?:@\w+)?(?:\s+([\s\S]+))?$/i)
   const aiCommand = aiCommandText(commandText)
+  if (addLaunchCommand) {
+    if (!(await requireCapability(token, context, "launch"))) return
+    await clearState(telegramId)
+    await beginTextWorkflow({
+      token,
+      chatId,
+      telegramId,
+      state: { action: "add_launch_wizard_name", startedAt: messageDateMs || Date.now() },
+      text: "What is the exact project name?\n\nExample: Pathelous\nSend /cancel to stop.",
+    })
+    return
+  }
   if (scheduleLaunchCommand) {
     if (!(await requireCapability(token, context, "launch"))) return
     const request = String(scheduleLaunchCommand[1] || "").trim()
@@ -2686,7 +2832,7 @@ async function routeText(token: string, chatId: number | string, telegramId: num
     return sendMessage(token, chatId, "🧠 Send your AI question now.\n\nI will answer only the next message sent after this command.\n\nSend /cancel to stop.")
   }
 
-  const navigationCommands = new Set(["calendar", "menu", "help", "commands", "projects", "profit", "payroll", "fees", "report", "reminders", "notes", "launchcalc", "setreminder"])
+  const navigationCommands = new Set(["calendar", "menu", "help", "commands", "projects", "profit", "payroll", "fees", "report", "reminders", "notes", "launchcalc", "addlaunch", "setreminder"])
   const navigationInput = navigationCommands.has(botCommandName(text)) || isGroupMenuButton(text)
   if (navigationInput) await clearState(telegramId)
   else if (await processState(token, chatId, telegramId, text, messageDateMs, message, context)) return
