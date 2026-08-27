@@ -201,6 +201,33 @@ try {
   const confirmedTentativeProject = await lookupTestProject(tentativeProjectName)
   if (confirmedTentativeProject.launchTimingStatus !== "confirmed" || !confirmedTentativeProject.launchAt || confirmedTentativeProject.tentativeLaunchDate) throw new Error(`Tentative launch was not converted cleanly to confirmed timing: ${JSON.stringify(confirmedTentativeProject)}`)
 
+  const confirmedCalendar = await sendBotLabUpdate(config, { text: "/calendar" })
+  const confirmedPicker = await sendBotLabUpdate(config, { callbackData: callbackStartingWith(confirmedCalendar, "calendar:edit:"), messageId: confirmedCalendar.messages?.[0]?.messageId })
+  const confirmedLaunch = await sendBotLabUpdate(config, { callbackData: callbackStartingWith(confirmedPicker, `calendar:launch:${tentativeProject._id}:`), messageId: confirmedPicker.messages?.[0]?.messageId })
+  const changeTimingCallback = callbackStartingWith(confirmedLaunch, `lifecycle:delay:${tentativeProject._id}:`)
+  const changeTimingPrompt = await sendBotLabUpdate(config, { callbackData: changeTimingCallback, messageId: confirmedLaunch.messages?.[0]?.messageId })
+  const makeTbdCallback = callbackStartingWith(changeTimingPrompt, `lifecycle:maketbd:${tentativeProject._id}:`)
+  if (!makeTbdCallback || !responseText(changeTimingPrompt).includes("· TBD")) throw new Error(`Change-timing flow did not offer Set time to TBD. Response: ${responseText(changeTimingPrompt)}`)
+  const madeTbd = await sendBotLabUpdate(config, { callbackData: makeTbdCallback, messageId: changeTimingPrompt.messages?.[0]?.messageId })
+  if (!responseText(madeTbd).includes("is tentative") || !responseText(madeTbd).includes("Time TBD")) throw new Error(`Set time to TBD button did not update the launch. Response: ${responseText(madeTbd)}`)
+  const buttonTbdProject = await lookupTestProject(tentativeProjectName)
+  if (buttonTbdProject.launchAt || buttonTbdProject.launchTimingStatus !== "tentative" || buttonTbdProject.tentativeLaunchDate !== tentativeProject.tentativeLaunchDate) throw new Error(`Set time to TBD did not preserve the launch day: ${JSON.stringify(buttonTbdProject)}`)
+
+  const tbdCalendar = await sendBotLabUpdate(config, { text: "/calendar" })
+  const tbdPicker = await sendBotLabUpdate(config, { callbackData: callbackStartingWith(tbdCalendar, "calendar:edit:"), messageId: tbdCalendar.messages?.[0]?.messageId })
+  const tbdLaunch = await sendBotLabUpdate(config, { callbackData: callbackStartingWith(tbdPicker, `calendar:launch:${tentativeProject._id}:`), messageId: tbdPicker.messages?.[0]?.messageId })
+  const restoreTimePrompt = await sendBotLabUpdate(config, { callbackData: callbackStartingWith(tbdLaunch, `lifecycle:settime:${tentativeProject._id}:`), messageId: tbdLaunch.messages?.[0]?.messageId })
+  const restoredTime = await sendBotLabUpdate(config, { text: "6:25 PM ET" })
+  if (!responseText(restoredTime).includes("rescheduled")) throw new Error(`Could not restore an exact time before testing natural-language TBD. Response: ${responseText(restoredTime)}`)
+  const restoredCalendar = await sendBotLabUpdate(config, { text: "/calendar" })
+  const restoredPicker = await sendBotLabUpdate(config, { callbackData: callbackStartingWith(restoredCalendar, "calendar:edit:"), messageId: restoredCalendar.messages?.[0]?.messageId })
+  const restoredLaunch = await sendBotLabUpdate(config, { callbackData: callbackStartingWith(restoredPicker, `calendar:launch:${tentativeProject._id}:`), messageId: restoredPicker.messages?.[0]?.messageId })
+  const naturalTbdPrompt = await sendBotLabUpdate(config, { callbackData: callbackStartingWith(restoredLaunch, `lifecycle:delay:${tentativeProject._id}:`), messageId: restoredLaunch.messages?.[0]?.messageId })
+  const naturalTbd = await sendBotLabUpdate(config, { text: "time TBD" })
+  if (!responseText(naturalTbd).includes("is tentative") || !responseText(naturalTbd).includes("Time TBD")) throw new Error(`Natural-language TBD did not update the launch. Response: ${responseText(naturalTbd)}`)
+  const naturalTbdProject = await lookupTestProject(tentativeProjectName)
+  if (naturalTbdProject.launchAt || naturalTbdProject.launchTimingStatus !== "tentative" || naturalTbdProject.tentativeLaunchDate !== tentativeProject.tentativeLaunchDate) throw new Error(`Natural-language TBD did not preserve the launch day: ${JSON.stringify(naturalTbdProject)}`)
+
   const notesCalendar = await sendBotLabUpdate(config, { text: "/calendar" })
   const notesPicker = await sendBotLabUpdate(config, { callbackData: callbackStartingWith(notesCalendar, "calendar:edit:"), messageId: notesCalendar.messages?.[0]?.messageId })
   const notesLaunch = await sendBotLabUpdate(config, { callbackData: callbackStartingWith(notesPicker, `calendar:launch:${tentativeProject._id}:`), messageId: notesPicker.messages?.[0]?.messageId })
@@ -300,7 +327,7 @@ try {
 
   console.log(text)
   console.log(tentativeCreatedText)
-  console.log("\nPASS: launch setup handles the /addlaunch wizard, clean natural-language names, time-only edits, command escape from pending prompts, Time TBD launches, notes, custom contract quote tokens, Uniswap V4, venue edits, and the compact /calendar flow.")
+  console.log("\nPASS: launch setup handles the /addlaunch wizard, clean natural-language names, time-only and TBD edits, command escape from pending prompts, tentative launches, notes, custom contract quote tokens, Uniswap V4, venue edits, and the compact /calendar flow.")
 } finally {
   const deleted = await cleanup().catch((error) => {
     console.error(`Cleanup warning: ${error instanceof Error ? error.message : String(error)}`)

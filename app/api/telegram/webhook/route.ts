@@ -570,8 +570,9 @@ async function beginTextWorkflow(params: {
   state: Record<string, any>
   text: string
   reviewMessageId?: number | null
+  buttons?: InlineButton[][]
 }) {
-  const messageId = await editOrSendWorkflowMessage(params.token, params.chatId, params.reviewMessageId, params.text)
+  const messageId = await editOrSendWorkflowMessage(params.token, params.chatId, params.reviewMessageId, params.text, params.buttons)
   await setState(params.telegramId, {
     ...params.state,
     reviewMessageId: params.reviewMessageId || null,
@@ -1412,8 +1413,18 @@ async function processState(token: string, chatId: number | string, telegramId: 
       return true
     }
     if (state.action === "launch_setup_exact_time") {
+      const timeZone = detectExplicitTimeZone(text) || String(state.timeZone || action.payload?.launchTimeZone || TEAM_TIME_ZONE)
+      if (/\b(?:tbd|time\s+(?:unknown|tentative|not\s+set)|no\s+exact\s+time)\b/i.test(text)) {
+        const tentativeLaunchDate = parseNaturalTeamDate(text, timeZone, now)
+          || String(state.defaultLaunchDate || state.tentativeLaunchDate || projectLaunchDateKey(action.payload, timeZone) || dateKeyInTimeZone(now, timeZone))
+        action = await updateLaunchSetupAction(db, action, { launchAt: null, launchDate: null, tentativeLaunchDate, launchTimingStatus: "tentative", launchTimeZone: timeZone, status: "scheduled" })
+        const reviewMessageId = Number(state.reviewMessageId || 0) || null
+        await finishState(token, chatId, telegramId, state, message, reviewMessageId ? [reviewMessageId] : [])
+        await showLaunchSetupReview(token, chatId, action, reviewMessageId, "Launch time changed to TBD. The launch day was kept.")
+        return true
+      }
       const parsed = parseContextualTeamDateTime(text, {
-        timeZone: String(state.timeZone || action.payload?.launchTimeZone || TEAM_TIME_ZONE),
+        timeZone,
         now,
         defaultDate: state.defaultLaunchDate || state.tentativeLaunchDate || action.payload?.tentativeLaunchDate || action.payload?.launchAt,
         defaultTime: state.defaultLaunchAt || action.payload?.launchAt,
@@ -1497,8 +1508,23 @@ async function processState(token: string, chatId: number | string, telegramId: 
   }
 
   if (state.action === "reschedule_launch") {
+    const timeZone = detectExplicitTimeZone(text) || String(state.timeZone || await getMemberTimeZone(telegramId) || TEAM_TIME_ZONE)
+    if (/\b(?:tbd|time\s+(?:unknown|tentative|not\s+set)|no\s+exact\s+time)\b/i.test(text)) {
+      const tentativeLaunchDate = parseNaturalTeamDate(text, timeZone, now)
+        || String(state.defaultLaunchDate || dateKeyInTimeZone(now, timeZone))
+      const result = await setTentativeProjectLaunchDate({ projectId: String(state.projectId), tentativeLaunchDate, telegramId, chatId, timeZone, expectedScheduleVersion: Number(state.scheduleVersion) })
+      if (!result.ok) {
+        await sendMessage(token, chatId, `⚠️ ${result.error}`)
+        return true
+      }
+      const resolvedText = `✅ ${(result.project as any).name} is tentative\n${tentativeLaunchDate} · Time TBD`
+      const reviewMessageId = Number(state.reviewMessageId || state.promptMessageId || 0) || null
+      await editOrSendWorkflowMessage(token, chatId, reviewMessageId, resolvedText)
+      await finishState(token, chatId, telegramId, state, message, reviewMessageId ? [reviewMessageId] : [])
+      return true
+    }
     const parsed = parseContextualTeamDateTime(text, {
-      timeZone: String(state.timeZone || await getMemberTimeZone(telegramId) || TEAM_TIME_ZONE),
+      timeZone,
       now,
       defaultDate: state.defaultLaunchDate,
       defaultTime: state.defaultLaunchAt,
@@ -2085,10 +2111,17 @@ async function handleCallback(token: string, chatId: number | string, telegramId
         "",
         `A time by itself keeps ${calendarDayLabel(defaultLaunchDate)}.`,
         defaultLaunchAt ? `A day by itself keeps ${calendarTimeLabel(new Date(defaultLaunchAt))}.` : "If you send only a day, I’ll ask for the time next.",
-        "Examples: 12:30 PM ET · tomorrow at 2 PM · Thursday this time · next Thursday at noon",
+        "Examples: 12:30 PM ET · tomorrow at 2 PM · Thursday this time · next Thursday at noon · TBD",
         "Send /cancel to stop.",
-      ].join("\n") })
+      ].join("\n"), buttons: [[{ text: "Set time to TBD", callback_data: `launchsetup:maketbd:${id}` }]] })
       return
+    }
+    if (action === "maketbd") {
+      const timeZone = launchAction.payload?.launchTimeZone || TEAM_TIME_ZONE
+      const tentativeLaunchDate = projectLaunchDateKey(launchAction.payload, timeZone) || dateKeyInTimeZone(new Date(), timeZone)
+      launchAction = await updateLaunchSetupAction(db, launchAction, { launchAt: null, launchDate: null, tentativeLaunchDate, launchTimingStatus: "tentative", launchTimeZone: timeZone, status: "scheduled" })
+      await clearState(telegramId)
+      return showLaunchSetupReview(token, chatId, launchAction, messageId, "Launch time changed to TBD. The launch day was kept.")
     }
     if (action === "tentativeday") {
       await beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: messageId, state: { action: "launch_setup_tentative_day", actionId: id, timeZone: launchAction.payload?.launchTimeZone || TEAM_TIME_ZONE }, text: "Send the tentative launch day.\n\nExamples: today, tomorrow, August 25, or 2026-08-25\nSend /cancel to stop." })
@@ -2276,10 +2309,19 @@ async function handleCallback(token: string, chatId: number | string, telegramId
         `Send the launch timing for ${project.name}.`,
         "",
         `A time by itself applies to ${calendarDayLabel(defaultLaunchDate)}.`,
-        "Examples: 12:30 PM ET · tomorrow at 2 PM · Thursday at noon · next Thursday at 3 PM",
+        "Examples: 12:30 PM ET · tomorrow at 2 PM · Thursday at noon · next Thursday at 3 PM · TBD",
         "Send /cancel to stop.",
-      ].join("\n") })
+      ].join("\n"), buttons: [[{ text: "Set time to TBD", callback_data: `lifecycle:maketbd:${id}:${scheduleVersion}` }]] })
       return
+    }
+    if (action === "maketbd") {
+      const project = await db.collection("opsProjects").findOne({ _id: id })
+      if (!project || !["scheduled", "in_progress"].includes(String(project.status || "")) || Number(project.scheduleVersion || 0) !== scheduleVersion) return editOrSendWorkflowMessage(token, chatId, messageId, "This launch was already updated. Open /calendar for the latest schedule.")
+      const timeZone = project.launchTimeZone || TEAM_TIME_ZONE
+      const tentativeLaunchDate = projectLaunchDateKey(project, timeZone) || dateKeyInTimeZone(new Date(), timeZone)
+      const result = await setTentativeProjectLaunchDate({ projectId: id, tentativeLaunchDate, telegramId, chatId, timeZone, expectedScheduleVersion: scheduleVersion })
+      await clearState(telegramId)
+      return editOrSendWorkflowMessage(token, chatId, messageId, result.ok ? `✅ ${(result.project as any).name} is tentative\n${tentativeLaunchDate} · Time TBD` : `⚠️ ${result.error}`)
     }
     if (action === "tentativeday") {
       const project = await db.collection("opsProjects").findOne({ _id: id })
@@ -2310,9 +2352,9 @@ async function handleCallback(token: string, chatId: number | string, telegramId
         "",
         `A time by itself keeps ${calendarDayLabel(defaultLaunchDate)}.`,
         defaultLaunchAt ? `A day by itself keeps ${calendarTimeLabel(new Date(defaultLaunchAt))}.` : "If you send only a day, I’ll ask for the time next.",
-        "Examples: 12:30 PM ET · tomorrow at 2 PM · Thursday this time · same time tomorrow",
+        "Examples: 12:30 PM ET · tomorrow at 2 PM · Thursday this time · same time tomorrow · TBD",
         "Send /cancel to stop.",
-      ].join("\n") })
+      ].join("\n"), buttons: [[{ text: "Set time to TBD", callback_data: `lifecycle:maketbd:${id}:${scheduleVersion}` }]] })
       return
     }
     if (action === "cancel") {
