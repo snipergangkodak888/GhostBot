@@ -14,6 +14,7 @@
     "bot:test:launch": "node ./scripts/test-launch-method.mjs && node ./scripts/test-launch-workflow.mjs",
     "bot:test:reminders": "node ./scripts/test-reminder-parser.mjs && node ./scripts/test-reminder-workflow.mjs",
     "bot:test:project-review": "node ./scripts/test-launch-lifecycle-cron.mjs && node ./scripts/test-daily-project-review-workflow.mjs",
+    "bot:test:fee-flow": "node ./scripts/test-telegram-workflow-cleanliness.mjs && node ./scripts/test-fee-inbox-workflow.mjs",
     "bot:test:organic": "node ./scripts/test-organic-channel-setup.mjs",
     "bot:test:organic-automation": "node ./scripts/test-organic-channel-automation.mjs && node ./scripts/test-organic-channel-policy.mjs",
     "telegram:user:authorize": "node ./scripts/authorize-telegram-user.mjs",

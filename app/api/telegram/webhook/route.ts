@@ -95,6 +95,7 @@ async function editOrSendWorkflowMessage(
       replyMarkup: { inline_keyboard: buttons },
     })
     if (edited) return messageId
+    await deleteWorkflowMessages(token, chatId, [messageId])
   }
   return sendMessage(token, chatId, text, buttons.length ? buttons : undefined)
 }
@@ -118,7 +119,21 @@ async function sendAsyncResponse(
   chatId: number | string,
   work: () => Promise<{ text: string; inline?: InlineButton[][] }>,
   loadingText = "⏳ One moment…",
+  workflowMessageId?: number | null,
 ) {
+  if (workflowMessageId) {
+    void sendChatAction(token, chatId)
+    const activeMessageId = await editOrSendWorkflowMessage(token, chatId, workflowMessageId, loadingText)
+    try {
+      const result = await work()
+      await editOrSendWorkflowMessage(token, chatId, activeMessageId, result.text, result.inline || [])
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Something went wrong."
+      console.error("[telegram] async workflow response failed:", error)
+      await editOrSendWorkflowMessage(token, chatId, activeMessageId, `⚠️ ${message}`)
+    }
+    return
+  }
   await withTelegramLoading(token, chatId, {
     loadingText,
     work: async () => {
@@ -601,64 +616,80 @@ async function beginTextWorkflow(params: {
   return messageId
 }
 
-async function startOrganicChannelSetup(token: string, chatId: number | string, telegramId: number, tickerInput: unknown) {
+async function startOrganicChannelSetup(
+  token: string,
+  chatId: number | string,
+  telegramId: number,
+  tickerInput: unknown,
+  reviewMessageId?: number | null,
+) {
   const inputParts = String(tickerInput || "").trim().split(/\s+/).filter(Boolean)
   const ticker = normalizeOrganicTicker(inputParts[0] || "")
   const suppliedProfileId = String(inputParts[1] || "").trim()
   if (!validOrganicTicker(ticker)) {
-    await setState(telegramId, { action: "organic_setup_ticker" }, chatId)
-    await sendMessage(token, chatId, "Send the token ticker only, without spaces.\n\nExample: SUMO\nSend /cancel to stop.")
+    await beginTextWorkflow({
+      token,
+      chatId,
+      telegramId,
+      reviewMessageId,
+      state: { action: "organic_setup_ticker" },
+      text: "Send the token ticker only, without spaces.\n\nExample: SUMO\nSend /cancel to stop.",
+    })
     return
   }
 
   if (telegramUserAutomationConfigured()) {
     if (validSumoProfileId(suppliedProfileId)) {
-      await queueOrganicSetup(token, chatId, telegramId, ticker, suppliedProfileId)
+      await queueOrganicSetup(token, chatId, telegramId, ticker, suppliedProfileId, reviewMessageId)
       return
     }
-    await setState(telegramId, {
-      action: "organic_auto_profile_id",
-      ticker,
-      startedAt: Date.now(),
-    }, chatId)
-    await sendMessage(token, chatId, [
-      `📣 <b>Automated setup for $${ticker}</b>`,
-      "",
-      "Send the Sumo trading profile ID.",
-      "Example: <code>67f9d846-8d06-47ed-b6e0-63380ed7d1d3</code>",
-      "",
-      "GhostBot will create the channel, apply the Sumo logo, add Sumo Bot as admin, create the invite, and return the ready-to-copy Sumo subscription command. It will not send the command automatically.",
-    ].join("\n"))
+    await beginTextWorkflow({
+      token,
+      chatId,
+      telegramId,
+      reviewMessageId,
+      state: { action: "organic_auto_profile_id", ticker, startedAt: Date.now() },
+      text: [
+        `📣 <b>Automated setup for $${ticker}</b>`,
+        "",
+        "Send the Sumo trading profile ID.",
+        "Example: <code>67f9d846-8d06-47ed-b6e0-63380ed7d1d3</code>",
+        "",
+        "GhostBot will create the channel, apply the Sumo logo, add Sumo Bot as admin, create the invite, and return the ready-to-copy Sumo subscription command. It will not send the command automatically.",
+      ].join("\n"),
+    })
     return
   }
 
   const botUsername = await getTelegramBotUsername()
   if (!botUsername) {
-    await sendMessage(token, chatId, "⚠️ GhostBot's Telegram username is not configured, so I cannot build the channel setup link yet.")
+    await editOrSendWorkflowMessage(token, chatId, reviewMessageId, "⚠️ GhostBot's Telegram username is not configured, so I cannot build the channel setup link yet.")
     return
   }
 
-  await setState(telegramId, {
-    action: "organic_setup_awaiting_channel",
-    ticker,
-    startedAt: Date.now(),
-  }, chatId)
-
   const title = organicChannelTitle(ticker)
-  await sendMessage(token, chatId, [
-    `📣 <b>Organic notifications setup for $${ticker}</b>`,
-    "",
-    "1. Create a new Telegram channel. A temporary name is fine.",
-    "2. Tap <b>Add GhostBot</b> below and choose that channel.",
-    "3. Tap <b>Add Sumo Bot</b> and choose the same channel.",
-    "",
-    `When GhostBot is added, I will rename it to <b>${title}</b>, capture the <code>-100…</code> channel ID, create the invite link, and ask you for the Sumo profile ID.`,
-    "",
-    "Set the channel photo to the black Sumo logo while Telegram is open. The logo image is not currently stored in GhostBot.",
-  ].join("\n"), [[
-    { text: "1 · Add GhostBot", url: ghostBotOrganicChannelUrl(botUsername) },
-    { text: "2 · Add Sumo Bot", url: sumoBotChannelUrl() },
-  ]])
+  await beginTextWorkflow({
+    token,
+    chatId,
+    telegramId,
+    reviewMessageId,
+    state: { action: "organic_setup_awaiting_channel", ticker, startedAt: Date.now() },
+    text: [
+      `📣 <b>Organic notifications setup for $${ticker}</b>`,
+      "",
+      "1. Create a new Telegram channel. A temporary name is fine.",
+      "2. Tap <b>Add GhostBot</b> below and choose that channel.",
+      "3. Tap <b>Add Sumo Bot</b> and choose the same channel.",
+      "",
+      `When GhostBot is added, I will rename it to <b>${title}</b>, capture the <code>-100…</code> channel ID, create the invite link, and ask you for the Sumo profile ID.`,
+      "",
+      "Set the channel photo to the black Sumo logo while Telegram is open. The logo image is not currently stored in GhostBot.",
+    ].join("\n"),
+    buttons: [[
+      { text: "1 · Add GhostBot", url: ghostBotOrganicChannelUrl(botUsername) },
+      { text: "2 · Add Sumo Bot", url: sumoBotChannelUrl() },
+    ]],
+  })
 }
 
 async function queueOrganicSetup(
@@ -667,6 +698,7 @@ async function queueOrganicSetup(
   telegramId: number,
   ticker: string,
   profileId: string,
+  workflowMessageId?: number | null,
 ) {
   const queued = await queueOrganicChannelJob({
     ticker,
@@ -676,18 +708,18 @@ async function queueOrganicSetup(
   })
   await clearState(telegramId)
   if (queued.alreadyComplete) {
-    await sendMessage(token, sourceChatId, organicChannelCompletionMessage(queued.job.inviteLink, queued.job.subscribeCommand))
+    await editOrSendWorkflowMessage(token, sourceChatId, workflowMessageId, organicChannelCompletionMessage(queued.job.inviteLink, queued.job.subscribeCommand))
     return
   }
   if (queued.requiresReview) {
-    await sendMessage(token, sourceChatId, [
+    await editOrSendWorkflowMessage(token, sourceChatId, workflowMessageId, [
       `⚠️ <b>$${ticker} already has a partially created channel.</b>`,
       queued.job.channelBotApiId ? `Channel ID: <code>${queued.job.channelBotApiId}</code>` : "",
       "No new channel was created. An operator must review the existing channel before this setup can continue.",
     ].filter(Boolean).join("\n"))
     return
   }
-  await sendMessage(token, sourceChatId, [
+  await editOrSendWorkflowMessage(token, sourceChatId, workflowMessageId, [
     queued.alreadyQueued ? "ℹ️ This setup is already queued." : `🚀 <b>$${ticker} setup queued</b>`,
     "",
     "The worker checks the queue every 10 seconds. Rolling safety limits may schedule it for later instead of creating channels in a burst.",
@@ -746,9 +778,11 @@ async function handleOrganicChannelMembershipUpdate(token: string, update: any) 
     channelTitle: title,
     inviteLink,
     startedAt: state.startedAt || Date.now(),
+    reviewMessageId: Number(state.reviewMessageId || 0) || null,
+    promptMessageId: Number(state.promptMessageId || 0) || null,
   }, sourceChatId)
 
-  await sendMessage(token, sourceChatId, [
+  await editOrSendWorkflowMessage(token, sourceChatId, Number(state.promptMessageId || state.reviewMessageId || 0) || null, [
     `✅ <b>Channel detected for $${ticker}</b>`,
     "",
     `Channel ID: <code>${channelId}</code>`,
@@ -790,28 +824,28 @@ function launchTargetPrompt(metric: LaunchTargetMetric, venueName: string) {
     : `🎯 Enter the desired launch market cap for ${venueName} in USD.\n\nExamples: $81.4K or 81400\n\nSend /cancel to stop.`
 }
 
-async function sendLaunchCalculatorStart(token: string, chatId: number | string, telegramId: number) {
+async function sendLaunchCalculatorStart(token: string, chatId: number | string, telegramId: number, messageId?: number | null) {
   await clearState(telegramId)
-  return sendMessage(token, chatId, "🚀 Launch capital calculator\n\nChoose the blockchain for this launch:", [
+  return editOrSendWorkflowMessage(token, chatId, messageId, "🚀 Launch capital calculator\n\nChoose the blockchain for this launch:", [
     ...LAUNCH_CHAINS.map((chain) => [{ text: chain.name, callback_data: `launch:chain:${chain.id}` }]),
     [{ text: "⬅️ Back", callback_data: "main:menu" }],
   ])
 }
 
-async function sendLaunchVenuePicker(token: string, chatId: number | string, chainId: LaunchChainId) {
+async function sendLaunchVenuePicker(token: string, chatId: number | string, chainId: LaunchChainId, messageId?: number | null) {
   const chain = LAUNCH_CHAINS.find((item) => item.id === chainId)
   const pads = padsForChain(chainId)
-  if (!chain || !pads.length) return sendMessage(token, chatId, "No launch venues are configured for that chain yet.")
-  return sendMessage(token, chatId, `Choose the ${chain.name} launchpad or DEX:`, [
+  if (!chain || !pads.length) return editOrSendWorkflowMessage(token, chatId, messageId, "No launch venues are configured for that chain yet.")
+  return editOrSendWorkflowMessage(token, chatId, messageId, `Choose the ${chain.name} launchpad or DEX:`, [
     ...pads.map((pad) => [{ text: pad.name, callback_data: `launch:venue:${pad.id}` }]),
     [{ text: "⬅️ Chains", callback_data: "launch:start" }],
   ])
 }
 
-async function sendLaunchMetricPicker(token: string, chatId: number | string, venueId: string) {
+async function sendLaunchMetricPicker(token: string, chatId: number | string, venueId: string, messageId?: number | null) {
   const pad = launchPad(venueId)
-  if (!pad) return sendMessage(token, chatId, "That launch venue is not supported.")
-  return sendMessage(token, chatId, `${pad.name}\n\nWhat should the calculator solve for?`, [
+  if (!pad) return editOrSendWorkflowMessage(token, chatId, messageId, "That launch venue is not supported.")
+  return editOrSendWorkflowMessage(token, chatId, messageId, `${pad.name}\n\nWhat should the calculator solve for?`, [
     [{ text: "🎯 Desired supply control", callback_data: `launch:metric:supply:${pad.id}` }],
     [{ text: "💵 Desired launch MC", callback_data: `launch:metric:market_cap:${pad.id}` }],
     [{ text: "⬅️ Venues", callback_data: `launch:chain:${pad.chainId}` }],
@@ -824,6 +858,7 @@ async function sendCalculatedLaunchQuote(
   telegramId: number,
   state: Record<string, any>,
   overrides: { target?: number; mmLiquidity?: number } = {},
+  messageId?: number | null,
 ) {
   const pad = launchPad(String(state.launchVenueId || ""))
   if (!pad) throw new Error("That launch venue is not supported.")
@@ -848,31 +883,31 @@ async function sendCalculatedLaunchQuote(
     ...(pad.type === "amm" ? { launchInitialLp: quote.initialLp } : {}),
     launchMmLiquidity: quote.lines.find((line) => line.key === "mm")?.amount ?? defaultMmLiquidity(pad.id),
   }, chatId)
-  return sendMessage(token, chatId, formatLaunchQuote(quote), [
+  return editOrSendWorkflowMessage(token, chatId, messageId, formatLaunchQuote(quote), [
     [{ text: "🎯 Change target", callback_data: "launch:adjust:target" }, { text: "💧 Change MM reserve", callback_data: "launch:adjust:mm" }],
     [{ text: "🆕 New launch quote", callback_data: "launch:start" }],
   ])
 }
 
-async function sendProjects(token: string, chatId: number | string) {
+async function sendProjects(token: string, chatId: number | string, messageId?: number | null, notice = "") {
   const db = await getDb()
   const projects = await db.collection("opsProjects").find({}).sort({ status: 1, updatedAt: -1 }).limit(8).toArray()
   const lines = projects.length
     ? projects.map((p: any, i: number) => `${i + 1}. ${p.name} - ${p.status || "active"}${projectLaunchAt(p) ? ` - ${dateLabel(projectLaunchAt(p)!.toISOString())}` : ""}\nID: <code>${p._id}</code>`).join("\n\n")
     : "No projects yet."
-  await sendMessage(token, chatId, `📁 Projects\n\n${lines}`, [
+  await editOrSendWorkflowMessage(token, chatId, messageId, `${notice ? `${notice}\n\n` : ""}📁 Projects\n\n${lines}`, [
     [{ text: "➕ Add Project", callback_data: "project:add" }, { text: "📝 Notes", callback_data: "notes:project:all" }],
     ...projects.map((p: any) => [{ text: `Open ${p.name}`.slice(0, 60), callback_data: `project:view:${p._id}` }]),
     [{ text: "⬅️ Back", callback_data: "main:menu" }],
   ])
 }
 
-async function sendProjectDetail(token: string, chatId: number | string, id: string) {
+async function sendProjectDetail(token: string, chatId: number | string, id: string, messageId?: number | null) {
   const db = await getDb()
   const project = await db.collection("opsProjects").findOne({ _id: id })
-  if (!project) return sendProjects(token, chatId)
+  if (!project) return sendProjects(token, chatId, messageId)
   const sheets = await db.collection("opsSheets").find({ projectId: String(project._id) }).toArray()
-  await sendMessage(token, chatId, formatOpsProjectDetails(project, sheets), [
+  await editOrSendWorkflowMessage(token, chatId, messageId, formatOpsProjectDetails(project, sheets), [
     [{ text: "✏️ Edit", callback_data: `project:edit:${id}` }, { text: project.status === "active" ? "⏸ Deactivate" : project.status === "scheduled" || project.status === "in_progress" ? "🕒 Await Launch" : "▶️ Activate", callback_data: `project:toggle:${id}` }],
     [{ text: "📝 Notes", callback_data: `notes:project:${id}` }, { text: "🗑 Remove", callback_data: `project:delete:${id}` }],
     [{ text: "⬅️ Projects", callback_data: "projects:list" }],
@@ -896,33 +931,33 @@ async function sendProjectNotes(token: string, chatId: number | string, projectI
   ])
 }
 
-async function sendDataProjects(token: string, chatId: number | string) {
+async function sendDataProjects(token: string, chatId: number | string, messageId?: number | null, notice = "") {
   const db = await getDb()
   const projects = await db.collection("opsProjects").find({}).sort({ updatedAt: -1 }).limit(10).toArray()
-  await sendMessage(token, chatId, "📄 Choose a project to manage files.", [
+  await editOrSendWorkflowMessage(token, chatId, messageId, `${notice ? `${notice}\n\n` : ""}📄 Choose a project to manage files.`, [
     ...projects.map((p: any) => [{ text: p.name.slice(0, 60), callback_data: `data:project:${p._id}` }]),
     [{ text: "⬅️ Back", callback_data: "main:menu" }],
   ])
 }
 
-async function sendProjectSheets(token: string, chatId: number | string, projectId: string) {
+async function sendProjectSheets(token: string, chatId: number | string, projectId: string, messageId?: number | null, notice = "") {
   const db = await getDb()
   const project = await db.collection("opsProjects").findOne({ _id: projectId })
   const sheets = await db.collection("opsSheets").find({ projectId }).sort({ updatedAt: -1 }).toArray()
-  await sendMessage(token, chatId, `📄 Files${project?.name ? ` for ${project.name}` : ""}\n\n${sheets.length ? sheets.map((s: any) => `• ${s.title} (${s.sheetType || "custom"})`).join("\n") : "No files yet."}`, [
+  await editOrSendWorkflowMessage(token, chatId, messageId, `${notice ? `${notice}\n\n` : ""}📄 Files${project?.name ? ` for ${project.name}` : ""}\n\n${sheets.length ? sheets.map((s: any) => `• ${s.title} (${s.sheetType || "custom"})`).join("\n") : "No files yet."}`, [
     [{ text: "➕ Add File", callback_data: `sheet:add:${projectId}` }],
     ...sheets.slice(0, 8).map((s: any) => [{ text: `Open ${s.title}`.slice(0, 60), callback_data: `sheet:view:${s._id}` }]),
     [{ text: "⬅️ Projects", callback_data: "data:list" }],
   ])
 }
 
-async function sendSheetDetail(token: string, chatId: number | string, sheetId: string) {
+async function sendSheetDetail(token: string, chatId: number | string, sheetId: string, messageId?: number | null, notice = "") {
   const db = await getDb()
   const sheet = await db.collection("opsSheets").findOne({ _id: sheetId })
-  if (!sheet) return sendDataProjects(token, chatId)
+  if (!sheet) return sendDataProjects(token, chatId, messageId)
   const values = Array.isArray(sheet.values) ? sheet.values : []
   const preview = values.slice(1, 6).map((row: string[]) => `• ${row.filter(Boolean).slice(0, 3).join(" | ")}`).join("\n")
-  await sendMessage(token, chatId, `📄 ${sheet.title}\n\nType: ${sheet.sheetType || "custom"}\nProject: ${sheet.projectName || "No project"}\nRows: ${Math.max(0, values.length - 1)}\n\n${preview || "No rows yet."}`, [
+  await editOrSendWorkflowMessage(token, chatId, messageId, `${notice ? `${notice}\n\n` : ""}📄 ${sheet.title}\n\nType: ${sheet.sheetType || "custom"}\nProject: ${sheet.projectName || "No project"}\nRows: ${Math.max(0, values.length - 1)}\n\n${preview || "No rows yet."}`, [
     [{ text: "➕ Add Row", callback_data: `sheet:addrow:${sheetId}` }, { text: "🗑 Remove File", callback_data: `sheet:delete:${sheetId}` }],
     [{ text: "⬅️ Files", callback_data: `data:project:${sheet.projectId || ""}` }],
   ])
@@ -1076,11 +1111,7 @@ async function sendCalendar(token: string, chatId: number | string, requestedDat
     : []
   const header = targetDate === today ? `Today’s Launches — ${calendarDayLabel(targetDate)}` : `Launches — ${calendarDayLabel(targetDate)}`
   const text = `${header}\n\n${launchLines.length ? launchLines.join("\n") : "No launches scheduled."}`
-  if (messageId) {
-    const edited = await editTelegramMessage(token, chatId, messageId, text, { replyMarkup: { inline_keyboard: buttons } })
-    if (edited) return
-  }
-  await sendMessage(token, chatId, text, buttons.length ? buttons : undefined)
+  return editOrSendWorkflowMessage(token, chatId, messageId, text, buttons)
 }
 
 async function showCalendarLaunchEditor(token: string, chatId: number | string, project: any, messageId?: number | null, notice = "") {
@@ -1141,17 +1172,13 @@ async function acknowledgeTentativeLaunches(token: string, chatId: number | stri
     ? `Still TBD confirmed for today: ${names.join(", ")}.\n\nUse Edit launches if a time, day, or venue changes.`
     : "There are no longer any TBD launches scheduled for this day."
   const buttons: InlineButton[][] = names.length ? [[{ text: "Edit launches", callback_data: `calendar:edit:${dateKey}` }]] : []
-  if (messageId) {
-    const edited = await editTelegramMessage(token, chatId, messageId, text, { replyMarkup: { inline_keyboard: buttons } })
-    if (edited) return
-  }
-  return sendMessage(token, chatId, text, buttons.length ? buttons : undefined)
+  return editOrSendWorkflowMessage(token, chatId, messageId, text, buttons)
 }
 
-async function sendPayroll(token: string, chatId: number | string) {
+async function sendPayroll(token: string, chatId: number | string, messageId?: number | null, notice = "") {
   const db = await getDb()
   const rows = await db.collection("opsPayroll").find({ status: { $ne: "paid" } }).sort({ date: -1 }).limit(8).toArray()
-  await sendMessage(token, chatId, `💸 Payroll\n\n${rows.length ? rows.map((r: any) => `• ${r.member}: ${money(r.amount)} ${r.project ? `- ${r.project}` : ""} (${r.status || "pending"})`).join("\n") : "No pending payroll rows."}`, [
+  await editOrSendWorkflowMessage(token, chatId, messageId, `${notice ? `${notice}\n\n` : ""}💸 Payroll\n\n${rows.length ? rows.map((r: any) => `• ${r.member}: ${money(r.amount)} ${r.project ? `- ${r.project}` : ""} (${r.status || "pending"})`).join("\n") : "No pending payroll rows."}`, [
     [{ text: "➕ Add Payroll Row", callback_data: "payroll:add" }],
     ...rows.map((r: any) => [{ text: `Mark paid: ${r.member}`.slice(0, 60), callback_data: `payroll:paid:${r._id}` }]),
     [{ text: "⬅️ Back", callback_data: "main:menu" }],
@@ -1286,7 +1313,7 @@ async function maybeProposeAction(text: string, telegramId: number, aiOptions: O
   }
 }
 
-async function sendAiResponse(token: string, chatId: number | string, telegramId: number, text: string, message?: any, permissionContext?: BotPermissionContext) {
+async function sendAiResponse(token: string, chatId: number | string, telegramId: number, text: string, message?: any, permissionContext?: BotPermissionContext, workflowMessageId?: number | null) {
   const context = permissionContext || await botPermissions(telegramId, chatId)
   const policy = aiPermissionPolicy(context)
   if (!(await requireCapability(token, context, policy.capability))) return
@@ -1306,7 +1333,7 @@ async function sendAiResponse(token: string, chatId: number | string, telegramId
     if (policy.dataScope === "trade") return { text: "I can update project operations, add project notes, and create one-time or recurring reminders for this Trade Floor. Financial and revenue questions are unavailable here." }
     if (context.profile === "fee") return { text: "Use receipt and fee messages in this chat to classify revenue, match expectations, or review consolidations." }
     return { text: await answerOpsAi(text, telegramId, aiOptions) }
-  }, "🧠 Working on it…")
+  }, "🧠 Working on it…", workflowMessageId)
 }
 
 function aiCommandText(text: string) {
@@ -1417,10 +1444,12 @@ async function processState(token: string, chatId: number | string, telegramId: 
     const ticker = normalizeOrganicTicker(inputParts[0] || "")
     if (!validOrganicTicker(ticker)) {
       await setState(telegramId, state, chatId)
-      await sendMessage(token, chatId, "Send a ticker using up to 20 letters, numbers, dots, dashes, or underscores.\n\nExample: SUMO\nSend /cancel to stop.")
+      await editOrSendWorkflowMessage(token, chatId, Number(state.promptMessageId || 0) || null, "Send a ticker using up to 20 letters, numbers, dots, dashes, or underscores.\n\nExample: SUMO\nSend /cancel to stop.")
+      await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
       return true
     }
-    await startOrganicChannelSetup(token, chatId, telegramId, inputParts.join(" "))
+    await startOrganicChannelSetup(token, chatId, telegramId, inputParts.join(" "), Number(state.promptMessageId || 0) || null)
+    await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
     return true
   }
 
@@ -1428,16 +1457,19 @@ async function processState(token: string, chatId: number | string, telegramId: 
     const profileId = String(text || "").trim()
     if (!validSumoProfileId(profileId)) {
       await setState(telegramId, state, chatId)
-      await sendMessage(token, chatId, "That does not look like a Sumo profile ID. Send the full UUID, for example:\n<code>67f9d846-8d06-47ed-b6e0-63380ed7d1d3</code>\n\nSend /cancel to stop.")
+      await editOrSendWorkflowMessage(token, chatId, Number(state.promptMessageId || 0) || null, "That does not look like a Sumo profile ID. Send the full UUID, for example:\n<code>67f9d846-8d06-47ed-b6e0-63380ed7d1d3</code>\n\nSend /cancel to stop.")
+      await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
       return true
     }
-    await queueOrganicSetup(token, chatId, telegramId, normalizeOrganicTicker(state.ticker), profileId)
+    await queueOrganicSetup(token, chatId, telegramId, normalizeOrganicTicker(state.ticker), profileId, Number(state.promptMessageId || 0) || null)
+    await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
     return true
   }
 
   if (state.action === "organic_setup_awaiting_channel") {
     await setState(telegramId, state, chatId)
-    await sendMessage(token, chatId, "I am waiting for you to add GhostBot as an administrator to the new channel. Use the <b>Add GhostBot</b> button from the setup message, or send /cancel to stop.")
+    await editOrSendWorkflowMessage(token, chatId, Number(state.promptMessageId || 0) || null, "I am waiting for you to add GhostBot as an administrator to the new channel. Use the <b>Add GhostBot</b> button from this setup card, or send /cancel to stop.")
+    await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
     return true
   }
 
@@ -1445,7 +1477,8 @@ async function processState(token: string, chatId: number | string, telegramId: 
     const profileId = String(text || "").trim()
     if (!validSumoProfileId(profileId)) {
       await setState(telegramId, state, chatId)
-      await sendMessage(token, chatId, "That does not look like a Sumo profile ID. Send the full UUID, for example:\n<code>67f9d846-8d06-47ed-b6e0-63380ed7d1d3</code>\n\nSend /cancel to stop.")
+      await editOrSendWorkflowMessage(token, chatId, Number(state.promptMessageId || 0) || null, "That does not look like a Sumo profile ID. Send the full UUID, for example:\n<code>67f9d846-8d06-47ed-b6e0-63380ed7d1d3</code>\n\nSend /cancel to stop.")
+      await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
       return true
     }
 
@@ -1477,20 +1510,23 @@ async function processState(token: string, chatId: number | string, telegramId: 
     )
     await clearState(telegramId)
     const completion = organicChannelCompletionMessage(inviteLink || "Create an invite link in the notification channel manually.", command)
-    await sendMessage(token, chatId, [completion, ...(
+    const workflowMessageId = Number(state.promptMessageId || state.reviewMessageId || 0) || null
+    await editOrSendWorkflowMessage(token, chatId, workflowMessageId, [completion, ...(
       sumoIsAdmin ? [] : ["", "⚠️ I could not verify Sumo Bot as an administrator. Add it before sending the command."]
     )].join("\n"), [
       [{ text: "Open Sumo Bot", url: `https://t.me/${SUMO_TRADE_BOT_USERNAME}` }, { text: "Add / verify Sumo admin", url: sumoBotChannelUrl() }],
       ...(inviteLink ? [[{ text: "Open notification channel", url: inviteLink }]] : []),
     ])
+    await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
     return true
   }
 
   if (["launch_setup_name", "launch_setup_referrer", "launch_setup_refpct", "launch_setup_exact_time", "launch_setup_tentative_day", "launch_setup_custom_quote"].includes(String(state.action || ""))) {
     const draft = await getLaunchSetupAction(db, String(state.actionId || ""), telegramId, chatId)
     if (!draft.ok) {
-      await finishState(token, chatId, telegramId, state, message)
-      await sendMessage(token, chatId, `⚠️ ${draft.error}`)
+      const workflowMessageId = Number(state.promptMessageId || state.reviewMessageId || 0) || null
+      await editOrSendWorkflowMessage(token, chatId, workflowMessageId, `⚠️ ${draft.error}`)
+      await finishState(token, chatId, telegramId, state, message, workflowMessageId ? [workflowMessageId] : [])
       return true
     }
     let action = draft.action
@@ -1624,7 +1660,9 @@ async function processState(token: string, chatId: number | string, telegramId: 
         || String(state.defaultLaunchDate || dateKeyInTimeZone(now, timeZone))
       const result = await setTentativeProjectLaunchDate({ projectId: String(state.projectId), tentativeLaunchDate, telegramId, chatId, timeZone, expectedScheduleVersion: Number(state.scheduleVersion) })
       if (!result.ok) {
-        await sendMessage(token, chatId, `⚠️ ${result.error}`)
+        const workflowMessageId = Number(state.promptMessageId || state.reviewMessageId || 0) || null
+        await editOrSendWorkflowMessage(token, chatId, workflowMessageId, `⚠️ ${result.error}`)
+        await finishState(token, chatId, telegramId, state, message, workflowMessageId ? [workflowMessageId] : [])
         return true
       }
       const resolvedText = `✅ ${(result.project as any).name} is tentative\n${tentativeLaunchDate} · Time TBD`
@@ -1655,7 +1693,9 @@ async function processState(token: string, chatId: number | string, telegramId: 
     }
     const result = await rescheduleProject({ projectId: String(state.projectId), launchAt: parsed.date, telegramId, chatId, timeZone: parsed.timeZone, expectedScheduleVersion: Number(state.scheduleVersion) })
     if (!result.ok) {
-      await sendMessage(token, chatId, `⚠️ ${result.error}`)
+      const workflowMessageId = Number(state.promptMessageId || state.reviewMessageId || 0) || null
+      await editOrSendWorkflowMessage(token, chatId, workflowMessageId, `⚠️ ${result.error}`)
+      await finishState(token, chatId, telegramId, state, message, workflowMessageId ? [workflowMessageId] : [])
       return true
     }
     const resolvedText = `✅ ${(result.project as any).name} rescheduled\n${formatTeamDateTime(parsed.date, parsed.timeZone)}`
@@ -1676,7 +1716,9 @@ async function processState(token: string, chatId: number | string, telegramId: 
     }
     const result = await setTentativeProjectLaunchDate({ projectId: String(state.projectId), tentativeLaunchDate, telegramId, chatId, timeZone, expectedScheduleVersion: Number(state.scheduleVersion) })
     if (!result.ok) {
-      await sendMessage(token, chatId, `⚠️ ${result.error}`)
+      const workflowMessageId = Number(state.promptMessageId || state.reviewMessageId || 0) || null
+      await editOrSendWorkflowMessage(token, chatId, workflowMessageId, `⚠️ ${result.error}`)
+      await finishState(token, chatId, telegramId, state, message, workflowMessageId ? [workflowMessageId] : [])
       return true
     }
     const resolvedText = `✅ ${(result.project as any).name} is tentative\n${tentativeLaunchDate} · Time TBD`
@@ -1717,17 +1759,18 @@ async function processState(token: string, chatId: number | string, telegramId: 
   }
 
   if (state.action === "add_project" || state.action === "edit_project") {
+    const workflowMessageId = Number(state.reviewMessageId || state.promptMessageId || 0) || null
     const [name = "", owner = "", launchDate = "", status = "active"] = text.split("|").map((part) => part.trim())
     if (!name) {
-      await sendMessage(token, chatId, "Send: Project Name | Owner | YYYY-MM-DD | active")
+      await editOrSendWorkflowMessage(token, chatId, workflowMessageId, "Send: Project Name | Owner | YYYY-MM-DD | active")
+      await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
       return true
     }
     const payload = { name, owner, launchDate, status: status || "active", updatedAt: now }
     if (state.action === "edit_project") await db.collection("opsProjects").updateOne({ _id: state.projectId }, { $set: payload })
     else await db.collection("opsProjects").insertOne({ ...payload, revenueToday: 0, profitThisWeek: 0, createdAt: now })
-    await clearState(telegramId)
-    await sendMessage(token, chatId, state.action === "edit_project" ? "✅ Project updated." : "✅ Project created.")
-    await sendProjects(token, chatId)
+    await sendProjects(token, chatId, workflowMessageId, state.action === "edit_project" ? "✅ Project updated." : "✅ Project created.")
+    await finishState(token, chatId, telegramId, state, message, workflowMessageId ? [workflowMessageId] : [])
     return true
   }
 
@@ -1808,6 +1851,7 @@ async function processState(token: string, chatId: number | string, telegramId: 
   }
 
   if (state.action === "fee_project_search") {
+    const workflowMessageId = Number(state.reviewMessageId || state.promptMessageId || 0) || null
     const term = text.trim().toLowerCase()
     const [fee, projects] = await Promise.all([
       db.collection("revenueFeeEvents").findOne({ _id: state.feeId }),
@@ -1819,32 +1863,35 @@ async function processState(token: string, chatId: number | string, telegramId: 
       return config.chain && String(project.name || "").toLowerCase().includes(term) && (!explicitAsset || explicitAsset === "USD" || config.quoteAssets.includes(explicitAsset))
     }).slice(0, 10)
     if (!matches.length) {
-      await sendMessage(token, chatId, "No configured active project matched that name. Try another search or /cancel.")
+      await editOrSendWorkflowMessage(token, chatId, workflowMessageId, "No configured active project matched that name. Try another search or /cancel.")
+      await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
       return true
     }
-    await clearState(telegramId)
-    await sendMessage(token, chatId, "Choose the existing project for this fee:", matches.map((project: any) => [{ text: project.name, callback_data: `fee:project:${state.feeId}:${project._id}` }]))
+    await editOrSendWorkflowMessage(token, chatId, workflowMessageId, "Choose the existing project for this fee:", matches.map((project: any) => [{ text: project.name, callback_data: `fee:project:${state.feeId}:${project._id}` }]))
+    await finishState(token, chatId, telegramId, state, message, workflowMessageId ? [workflowMessageId] : [])
     return true
   }
 
   if (state.action === "add_payroll") {
+    const workflowMessageId = Number(state.reviewMessageId || state.promptMessageId || 0) || null
     const [member = "", amount = "0", project = "", date = new Date().toISOString().slice(0, 10)] = text.split("|").map((part) => part.trim())
     if (!member) {
-      await sendMessage(token, chatId, "Send: Member | Amount | Project | YYYY-MM-DD")
+      await editOrSendWorkflowMessage(token, chatId, workflowMessageId, "Send: Member | Amount | Project | YYYY-MM-DD")
+      await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
       return true
     }
     await db.collection("opsPayroll").insertOne({ member, amount: Number(amount || 0), project, date, currency: "USD", status: "pending", createdFrom: "bot", telegramId, createdAt: now, updatedAt: now })
-    await clearState(telegramId)
-    await sendMessage(token, chatId, "✅ Payroll row added.")
-    await sendPayroll(token, chatId)
+    await sendPayroll(token, chatId, workflowMessageId, "✅ Payroll row added.")
+    await finishState(token, chatId, telegramId, state, message, workflowMessageId ? [workflowMessageId] : [])
     return true
   }
 
   if (state.action === "add_sheet_row") {
+    const workflowMessageId = Number(state.reviewMessageId || state.promptMessageId || 0) || null
     const sheet = await db.collection("opsSheets").findOne({ _id: state.sheetId })
     if (!sheet) {
-      await clearState(telegramId)
-      await sendMessage(token, chatId, "Data file was not found.")
+      await editOrSendWorkflowMessage(token, chatId, workflowMessageId, "Data file was not found.")
+      await finishState(token, chatId, telegramId, state, message, workflowMessageId ? [workflowMessageId] : [])
       return true
     }
     const kind = (sheet.sheetType || "custom") as SheetKind
@@ -1853,55 +1900,64 @@ async function processState(token: string, chatId: number | string, telegramId: 
     const row = text.split("|").map((part) => part.trim())
     const normalized = headers.map((_, index) => row[index] || "")
     await db.collection("opsSheets").updateOne({ _id: state.sheetId }, { $set: { values: [headers, ...values.slice(1), normalized], updatedAt: now } })
-    await clearState(telegramId)
-    await sendMessage(token, chatId, "✅ Data row added.")
-    await sendSheetDetail(token, chatId, state.sheetId)
+    await sendSheetDetail(token, chatId, state.sheetId, workflowMessageId, "✅ Data row added.")
+    await finishState(token, chatId, telegramId, state, message, workflowMessageId ? [workflowMessageId] : [])
     return true
   }
 
   if (state.action === "launch_calc_lp") {
+    const workflowMessageId = Number(state.reviewMessageId || state.promptMessageId || 0) || null
     const initialLp = parseLaunchNumber(text)
     if (!(Number(initialLp) > 0)) {
-      await sendMessage(token, chatId, "Enter an initial LP greater than zero, such as 0.5. Send /cancel to stop.")
+      await editOrSendWorkflowMessage(token, chatId, workflowMessageId, "Enter an initial LP greater than zero, such as 0.5. Send /cancel to stop.")
+      await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
       return true
     }
     const pad = launchPad(String(state.launchVenueId || ""))
     if (!pad) {
       await clearState(telegramId)
-      await sendMessage(token, chatId, "That launch venue is no longer available.")
+      await editOrSendWorkflowMessage(token, chatId, workflowMessageId, "That launch venue is no longer available.")
+      await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
       return true
     }
     await setState(telegramId, { action: "launch_calc_value", launchInitialLp: initialLp }, chatId)
-    await sendMessage(token, chatId, launchTargetPrompt(state.launchMetric as LaunchTargetMetric, pad.name))
+    await editOrSendWorkflowMessage(token, chatId, workflowMessageId, launchTargetPrompt(state.launchMetric as LaunchTargetMetric, pad.name))
+    await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
     return true
   }
 
   if (state.action === "launch_calc_value") {
+    const workflowMessageId = Number(state.reviewMessageId || state.promptMessageId || 0) || null
     const target = parseLaunchNumber(text)
     if (!(Number(target) > 0)) {
       const metric = state.launchMetric as LaunchTargetMetric
-      await sendMessage(token, chatId, metric === "supply" ? "Enter a valid percentage, such as 67.37%." : "Enter a valid USD market cap, such as $81.4K.")
+      await editOrSendWorkflowMessage(token, chatId, workflowMessageId, metric === "supply" ? "Enter a valid percentage, such as 67.37%." : "Enter a valid USD market cap, such as $81.4K.")
+      await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
       return true
     }
     try {
-      await sendCalculatedLaunchQuote(token, chatId, telegramId, state, { target: Number(target) })
+      await sendCalculatedLaunchQuote(token, chatId, telegramId, state, { target: Number(target) }, workflowMessageId)
     } catch (error) {
-      await sendMessage(token, chatId, `⚠️ ${error instanceof Error ? error.message : "I could not calculate that launch."}\n\nTry another target or send /cancel.`)
+      await editOrSendWorkflowMessage(token, chatId, workflowMessageId, `⚠️ ${error instanceof Error ? error.message : "I could not calculate that launch."}\n\nTry another target or send /cancel.`)
     }
+    await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
     return true
   }
 
   if (state.action === "launch_calc_mm") {
+    const workflowMessageId = Number(state.reviewMessageId || state.promptMessageId || 0) || null
     const mmLiquidity = parseLaunchNumber(text)
     if (mmLiquidity == null || mmLiquidity < 0) {
-      await sendMessage(token, chatId, "Enter the MM reserve in the native asset, such as 5 or 30. Send /cancel to stop.")
+      await editOrSendWorkflowMessage(token, chatId, workflowMessageId, "Enter the MM reserve in the native asset, such as 5 or 30. Send /cancel to stop.")
+      await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
       return true
     }
     try {
-      await sendCalculatedLaunchQuote(token, chatId, telegramId, state, { mmLiquidity })
+      await sendCalculatedLaunchQuote(token, chatId, telegramId, state, { mmLiquidity }, workflowMessageId)
     } catch (error) {
-      await sendMessage(token, chatId, `⚠️ ${error instanceof Error ? error.message : "I could not recalculate that launch."}`)
+      await editOrSendWorkflowMessage(token, chatId, workflowMessageId, `⚠️ ${error instanceof Error ? error.message : "I could not recalculate that launch."}`)
     }
+    await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
     return true
   }
 
@@ -1958,25 +2014,25 @@ async function compatibleReceiptProjects(receipt: any, feeType: FeeType) {
   return compatible
 }
 
-async function sendReceiptProjectPicker(token: string, chatId: number | string, telegramId: number, receiptId: string, feeType: FeeType) {
+async function sendReceiptProjectPicker(token: string, chatId: number | string, telegramId: number, receiptId: string, feeType: FeeType, messageId?: number | null) {
   const receipt = await getRevenueReceipt(receiptId)
-  if (!receipt || receipt.direction !== "incoming" || receipt.status !== "unclassified") return sendMessage(token, chatId, "This receipt is no longer available for revenue classification.")
+  if (!receipt || receipt.direction !== "incoming" || receipt.status !== "unclassified") return editOrSendWorkflowMessage(token, chatId, messageId, "This receipt is no longer available for revenue classification.")
   const projects = await compatibleReceiptProjects(receipt, feeType)
   await setState(telegramId, { action: "receipt_classification", receiptId, feeType }, chatId)
-  if (!projects.length) return sendMessage(token, chatId, `No eligible ${feeTypeLabel(feeType)} project accepts ${receipt.asset} on ${revenueChainLabel(receipt.chain)}. Configure or review it in Revenue Inbox.`)
-  return sendMessage(token, chatId, `${receiptSummary(receipt)}\n\nChoose the project:`, projects.slice(0, 12).map((project: any) => [{ text: `${project.name} · ${revenueChainLabel(project.chain)}`.slice(0, 60), callback_data: `receipt:project:${project._id}` }]))
+  if (!projects.length) return editOrSendWorkflowMessage(token, chatId, messageId, `No eligible ${feeTypeLabel(feeType)} project accepts ${receipt.asset} on ${revenueChainLabel(receipt.chain)}. Configure or review it in Revenue Inbox.`)
+  return editOrSendWorkflowMessage(token, chatId, messageId, `${receiptSummary(receipt)}\n\nChoose the project:`, projects.slice(0, 12).map((project: any) => [{ text: `${project.name} · ${revenueChainLabel(project.chain)}`.slice(0, 60), callback_data: `receipt:project:${project._id}` }]))
 }
 
-async function sendReceiptConfirmation(token: string, chatId: number | string, telegramId: number, projectId?: string | null) {
+async function sendReceiptConfirmation(token: string, chatId: number | string, telegramId: number, projectId?: string | null, messageId?: number | null) {
   const state = await takeState(telegramId, chatId)
-  if (state?.action !== "receipt_classification" || !state.receiptId || !DIRECT_RECEIPT_FEE_TYPES.includes(state.feeType)) return sendMessage(token, chatId, "This classification menu expired. Start again from the receipt message.")
+  if (state?.action !== "receipt_classification" || !state.receiptId || !DIRECT_RECEIPT_FEE_TYPES.includes(state.feeType)) return editOrSendWorkflowMessage(token, chatId, messageId, "This classification menu expired. Start again from the receipt message.")
   const db = await getDb()
   const [receipt, project] = await Promise.all([
     getRevenueReceipt(String(state.receiptId)),
     projectId ? db.collection("opsProjects").findOne({ _id: projectId }) : Promise.resolve(null),
   ])
-  if (!receipt || receipt.status !== "unclassified") return sendMessage(token, chatId, "This receipt was already classified.")
-  if (!isGlobalRevenueFeeType(state.feeType) && !project) return sendMessage(token, chatId, "Choose an existing project first.")
+  if (!receipt || receipt.status !== "unclassified") return editOrSendWorkflowMessage(token, chatId, messageId, "This receipt was already classified.")
+  if (!isGlobalRevenueFeeType(state.feeType) && !project) return editOrSendWorkflowMessage(token, chatId, messageId, "Choose an existing project first.")
   const available = receiptAvailableAmount(receipt)
   const availableUsd = receiptAvailableUsd(receipt)
   const expectedUsd = state.feeType === "daily_trading" ? Number(projectFeeConfig(project).dailyTradingFeeUsd || 500) : Number(availableUsd || 0)
@@ -1993,12 +2049,12 @@ async function sendReceiptConfirmation(token: string, chatId: number | string, t
     "",
     "This records accounting only; no funds are moved.",
   ].filter(Boolean).join("\n")
-  return sendMessage(token, chatId, text, [[{ text: "✅ Confirm", callback_data: `receipt:confirm:${receipt._id}` }, { text: "⬅️ Back", callback_data: `receipt:classify:${receipt._id}` }]])
+  return editOrSendWorkflowMessage(token, chatId, messageId, text, [[{ text: "✅ Confirm", callback_data: `receipt:confirm:${receipt._id}` }, { text: "⬅️ Back", callback_data: `receipt:classify:${receipt._id}` }]])
 }
 
-async function sendExistingExpectationPicker(token: string, chatId: number | string, telegramId: number, receiptId: string) {
+async function sendExistingExpectationPicker(token: string, chatId: number | string, telegramId: number, receiptId: string, messageId?: number | null) {
   const receipt = await getRevenueReceipt(receiptId)
-  if (!receipt || receipt.direction !== "incoming" || receipt.status !== "unclassified") return sendMessage(token, chatId, "This receipt is no longer available.")
+  if (!receipt || receipt.direction !== "incoming" || receipt.status !== "unclassified") return editOrSendWorkflowMessage(token, chatId, messageId, "This receipt is no longer available.")
   const db = await getDb()
   const fees = await db.collection("revenueFeeEvents").find({
     date: receipt.date,
@@ -2008,8 +2064,8 @@ async function sendExistingExpectationPicker(token: string, chatId: number | str
   }).sort({ createdAt: -1 }).toArray()
   await setState(telegramId, { action: "receipt_expectation", receiptId }, chatId)
   const eligible = fees.filter((fee: any) => ["liquidation", "launch", "daily_trading"].includes(fee.feeType)).slice(0, 12)
-  if (!eligible.length) return sendMessage(token, chatId, "No compatible liquidation, launch, or daily expectation is waiting for this receipt. Forward the standardized cashout message first or use Revenue Inbox.")
-  return sendMessage(token, chatId, `${receiptSummary(receipt)}\n\nChoose the existing expectation:`, eligible.map((fee: any) => [{ text: `${fee.projectName || "Project"} · ${feeTypeLabel(fee.feeType)} · ${fee.expectedUsd == null ? `${fee.expectedAssetAmount} ${fee.quoteAsset}` : `$${Number(fee.expectedUsd).toFixed(2)}`}`.slice(0, 60), callback_data: `receipt:expect:${fee._id}` }]))
+  if (!eligible.length) return editOrSendWorkflowMessage(token, chatId, messageId, "No compatible liquidation, launch, or daily expectation is waiting for this receipt. Forward the standardized cashout message first or use Revenue Inbox.")
+  return editOrSendWorkflowMessage(token, chatId, messageId, `${receiptSummary(receipt)}\n\nChoose the existing expectation:`, eligible.map((fee: any) => [{ text: `${fee.projectName || "Project"} · ${feeTypeLabel(fee.feeType)} · ${fee.expectedUsd == null ? `${fee.expectedAssetAmount} ${fee.quoteAsset}` : `$${Number(fee.expectedUsd).toFixed(2)}`}`.slice(0, 60), callback_data: `receipt:expect:${fee._id}` }]))
 }
 
 async function getLaunchSetupAction(db: any, actionId: string, telegramId: number, chatId: number | string) {
@@ -2030,19 +2086,11 @@ async function updateLaunchSetupAction(db: any, action: any, changes: Record<str
 async function showLaunchSetupReview(token: string, chatId: number | string, action: any, messageId?: number | null, notice = "") {
   const text = formatLaunchSetupReview(action, notice)
   const buttons = launchSetupButtons(action)
-  if (messageId) {
-    const edited = await editTelegramMessage(token, chatId, messageId, text, { parseMode: "HTML", replyMarkup: { inline_keyboard: buttons } })
-    if (edited) return
-  }
-  await sendMessage(token, chatId, text, buttons)
+  return editOrSendWorkflowMessage(token, chatId, messageId, text, buttons)
 }
 
 async function showLaunchSetupPicker(token: string, chatId: number | string, messageId: number | null | undefined, text: string, buttons: InlineButton[][]) {
-  if (messageId) {
-    const edited = await editTelegramMessage(token, chatId, messageId, text, { parseMode: hasTelegramHtml(text) ? "HTML" : undefined, replyMarkup: { inline_keyboard: buttons } })
-    if (edited) return
-  }
-  await sendMessage(token, chatId, text, buttons)
+  return editOrSendWorkflowMessage(token, chatId, messageId, text, buttons)
 }
 
 async function createGuidedLaunchDraft(db: any, params: {
@@ -2105,6 +2153,8 @@ async function guidedReferrerButtons(db: any, actionId: string): Promise<InlineB
 async function handleCallback(token: string, chatId: number | string, telegramId: number, data: string, req: NextRequest, callbackMessage?: any) {
   const db = await getDb()
   const [area, action, id, extra] = data.split(":")
+  const callbackMessageId = Number(callbackMessage?.message_id || 0) || null
+  const workflowReply = (text: string, buttons: InlineButton[][] = []) => editOrSendWorkflowMessage(token, chatId, callbackMessageId, text, buttons)
   const context = await botPermissions(telegramId, chatId)
   const callbackCapability: BotCapability | null = area === "launch" || area === "lifecycle" || area === "launchsetup" || area === "organic" || area === "calendar" || area === "tentative"
     ? "launch"
@@ -2202,12 +2252,12 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   if (area === "organic" && action === "start") {
     const launchAction = await db.collection("opsAiActions").findOne({ _id: id })
     const suggestedTicker = normalizeOrganicTicker(launchAction?.payload?.ticker || launchAction?.payload?.symbol || launchAction?.payload?.name || "")
-    return startOrganicChannelSetup(token, chatId, telegramId, validOrganicTicker(suggestedTicker) ? suggestedTicker : "")
+    return startOrganicChannelSetup(token, chatId, telegramId, validOrganicTicker(suggestedTicker) ? suggestedTicker : "", callbackMessageId)
   }
 
   if (area === "calendar") {
     const messageId = Number(callbackMessage?.message_id || 0) || null
-    if (context.profile !== "launch") return sendMessage(token, chatId, "⛔ Launch schedule editing must be handled in the configured Launch Chat.")
+    if (context.profile !== "launch") return workflowReply("⛔ Launch schedule editing must be handled in the configured Launch Chat.")
 
     if (action === "day") return sendCalendar(token, chatId, id, messageId)
 
@@ -2261,7 +2311,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
         return editOrSendWorkflowMessage(token, chatId, messageId, "This launch was already updated. Open /calendar for the latest version.")
       }
       const chainId = launchChainIdForProject(project.chain || project.revenueChain)
-      if (!chainId) return sendMessage(token, chatId, "⚠️ Set the project chain before choosing its launch venue / DEX.")
+      if (!chainId) return workflowReply("⚠️ Set the project chain before choosing its launch venue / DEX.")
       const venueButtons: InlineButton[][] = operationalVenuesForChain(chainId).map((venue) => [{
         text: venue.name,
         callback_data: `calendar:setvenue:${id}:${venue.id}~${scheduleVersion}`,
@@ -2285,21 +2335,21 @@ async function handleCallback(token: string, chatId: number | string, telegramId
         { $set: { launchVenue: venue.id, launchVenueLabel: venue.name, launchFundingAsset: venue.symbol, launchVenueUpdatedAt: now, launchVenueUpdatedByTelegramId: telegramId, updatedAt: now } },
       )
       const updated = await db.collection("opsProjects").findOne({ _id: id })
-      if (!updated || updated.launchVenue !== venue.id) return sendMessage(token, chatId, "⚠️ I could not update that launch venue. Open /calendar and try again.")
+      if (!updated || updated.launchVenue !== venue.id) return workflowReply("⚠️ I could not update that launch venue. Open /calendar and try again.")
       return showCalendarLaunchEditor(token, chatId, updated, messageId, `Launch venue updated to ${venue.name}.`)
     }
   }
 
   if (area === "tentative" && action === "ack") {
     const messageId = Number(callbackMessage?.message_id || 0) || null
-    if (context.profile !== "launch") return sendMessage(token, chatId, "⛔ Tentative launch confirmations must be handled in the configured Launch Chat.")
+    if (context.profile !== "launch") return workflowReply("⛔ Tentative launch confirmations must be handled in the configured Launch Chat.")
     const dateKey = /^\d{4}-\d{2}-\d{2}$/.test(id) ? id : dateKeyInTimeZone(new Date(), TEAM_TIME_ZONE)
     return acknowledgeTentativeLaunches(token, chatId, telegramId, dateKey, messageId)
   }
 
   if (area === "launchsetup") {
     const draft = await getLaunchSetupAction(db, id, telegramId, chatId)
-    if (!draft.ok) return sendMessage(token, chatId, `⚠️ ${draft.error}`)
+    if (!draft.ok) return workflowReply(`⚠️ ${draft.error}`)
     let launchAction = draft.action
     const messageId = Number(callbackMessage?.message_id || 0) || null
 
@@ -2319,7 +2369,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     }
     if (action === "setmethod") {
       const launchMethod = normalizeLaunchMethod(extra)
-      if (!launchMethod) return sendMessage(token, chatId, "⚠️ That launch method is not available.")
+      if (!launchMethod) return workflowReply("⚠️ That launch method is not available.")
       launchAction = await updateLaunchSetupAction(db, launchAction, { launchMethod })
       if (launchAction.guidedWizard) {
         return showLaunchSetupPicker(token, chatId, messageId, `Does ${String(launchAction.payload?.name || "this launch")} have a referrer?`, await guidedReferrerButtons(db, id))
@@ -2362,7 +2412,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     }
     if (action === "setchain") {
       const chain = launchChainConfig(extra as LaunchChainId)
-      if (!chain?.chain) return sendMessage(token, chatId, "⚠️ That chain is not available.")
+      if (!chain?.chain) return workflowReply("⚠️ That chain is not available.")
       const currentVenue = operationalLaunchVenue(launchAction.payload?.launchVenue)
       const venueStillMatches = currentVenue?.chainId === chain.chainId
       launchAction = await updateLaunchSetupAction(db, launchAction, {
@@ -2403,7 +2453,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     }
     if (action === "setvenue") {
       const selection = launchVenueSelection(extra)
-      if (!selection) return sendMessage(token, chatId, "⚠️ That launchpad / DEX is not available.")
+      if (!selection) return workflowReply("⚠️ That launchpad / DEX is not available.")
       launchAction = await updateLaunchSetupAction(db, launchAction, selection)
       if (launchAction.guidedWizard) {
         return showLaunchSetupPicker(token, chatId, messageId, `Choose the quote token for ${String(launchAction.payload?.name || "this launch")}:`, [
@@ -2421,7 +2471,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     }
     if (action === "setquote") {
       const quoteToken = String(extra || "").trim().toUpperCase()
-      if (!launchQuoteButtons(id, launchAction.payload?.chain).some((row) => row.some((button) => button.text === quoteToken))) return sendMessage(token, chatId, "⚠️ That quote token is not available for the selected chain.")
+      if (!launchQuoteButtons(id, launchAction.payload?.chain).some((row) => row.some((button) => button.text === quoteToken))) return workflowReply("⚠️ That quote token is not available for the selected chain.")
       launchAction = await updateLaunchSetupAction(db, launchAction, {
         quoteToken,
         quoteAssets: [quoteToken],
@@ -2463,7 +2513,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
         .filter((account: any) => String(account.type || "").toUpperCase() === "REFERRER" && String(account.status || "active").toLowerCase() !== "inactive")
         .slice(0, 10)
       const account = accounts[Number(extra)]
-      if (!account) return sendMessage(token, chatId, "⚠️ That referrer is no longer available.")
+      if (!account) return workflowReply("⚠️ That referrer is no longer available.")
       const percentage = Number(account.referralPercentage || account.referrerPercentage || account.defaultPercentage || 0)
       launchAction = await updateLaunchSetupAction(db, launchAction, {
         referrer: String(account.name || "Referrer"),
@@ -2480,7 +2530,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     }
     if (action === "setpct") {
       const percentage = Number(extra)
-      if (!(percentage > 0 && percentage <= 100)) return sendMessage(token, chatId, "⚠️ Choose a referral percentage from 1 to 100.")
+      if (!(percentage > 0 && percentage <= 100)) return workflowReply("⚠️ Choose a referral percentage from 1 to 100.")
       launchAction = await updateLaunchSetupAction(db, launchAction, { referralPercentage: percentage, referrerStatus: "assigned" })
       return showLaunchSetupReview(token, chatId, launchAction, messageId, "Referral percentage updated.")
     }
@@ -2494,11 +2544,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     }
     if (action === "cancel") {
       const text = await rejectOpsAiAction(id, telegramId)
-      if (messageId) {
-        const edited = await editTelegramMessage(token, chatId, messageId, text, { replyMarkup: { inline_keyboard: [] } })
-        if (edited) return
-      }
-      return sendMessage(token, chatId, text)
+      return workflowReply(text)
     }
     if (action === "create") {
       if (!launchSetupReady(launchAction.payload)) return showLaunchSetupReview(token, chatId, launchAction, messageId, "Complete the remaining setup before creating this launch.")
@@ -2510,16 +2556,12 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       const organicButtons: InlineButton[][] = text.startsWith("✅")
         ? [[{ text: "📣 Set up organic notifications", callback_data: `organic:start:${id}` }]]
         : []
-      if (messageId) {
-        const edited = await editTelegramMessage(token, chatId, messageId, finalText, { parseMode: hasTelegramHtml(finalText) ? "HTML" : undefined, replyMarkup: { inline_keyboard: organicButtons } })
-        if (edited) return
-      }
-      return sendMessage(token, chatId, finalText, organicButtons.length ? organicButtons : undefined)
+      return workflowReply(finalText, organicButtons)
     }
   }
 
   if (area === "lifecycle") {
-    if (context.profile !== "launch") return sendMessage(token, chatId, "⛔ Launch activation confirmations must be handled in the configured Launch Chat.")
+    if (context.profile !== "launch") return workflowReply("⛔ Launch activation confirmations must be handled in the configured Launch Chat.")
     const messageId = Number(callbackMessage?.message_id || 0) || null
     const scheduleVersion = Number(extra || 0)
     if (action === "settime") {
@@ -2606,12 +2648,11 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     if (extra && Number(extra) !== telegramId) return
     const timeZone = timeZoneFromOption(id)
     const saved = await saveMemberTimeZone(telegramId, timeZone, "bot")
-    if (!saved.ok) return sendMessage(token, chatId, `⚠️ ${saved.error}`)
+    if (!saved.ok) return workflowReply(`⚠️ ${saved.error}`)
     const state = await takeState(telegramId, chatId)
     if (state?.action === "timezone_for_reminder" && state.pendingText) {
       await clearState(telegramId)
-      await sendMessage(token, chatId, `✅ Timezone saved as ${teamZoneLabel(saved.timeZone)}. Continuing your reminder…`)
-      return sendAiResponse(token, chatId, telegramId, String(state.pendingText), undefined, context)
+      return sendAiResponse(token, chatId, telegramId, String(state.pendingText), undefined, context, callbackMessageId)
     }
     if (state?.action === "timezone_for_manual_reminder") {
       return beginTextWorkflow({
@@ -2624,7 +2665,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       })
     }
     await clearState(telegramId)
-    return sendMessage(token, chatId, `✅ Your timezone is now ${saved.timeZone} (${teamZoneLabel(saved.timeZone)}).\nCurrent local time: ${formatTeamDateTime(new Date(), saved.timeZone)}`)
+    return workflowReply(`✅ Your timezone is now ${saved.timeZone} (${teamZoneLabel(saved.timeZone)}).\nCurrent local time: ${formatTeamDateTime(new Date(), saved.timeZone)}`)
   }
 
   if (data === "main:menu") {
@@ -2632,94 +2673,89 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     return editOrSendWorkflowMessage(token, chatId, workflowMessageId, helpMessage())
   }
 
-  if (area === "launch" && action === "start") return sendLaunchCalculatorStart(token, chatId, telegramId)
-  if (area === "launch" && action === "chain") return sendLaunchVenuePicker(token, chatId, id as LaunchChainId)
-  if (area === "launch" && action === "venue") return sendLaunchMetricPicker(token, chatId, id)
+  if (area === "launch" && action === "start") return sendLaunchCalculatorStart(token, chatId, telegramId, callbackMessageId)
+  if (area === "launch" && action === "chain") return sendLaunchVenuePicker(token, chatId, id as LaunchChainId, callbackMessageId)
+  if (area === "launch" && action === "venue") return sendLaunchMetricPicker(token, chatId, id, callbackMessageId)
   if (area === "launch" && action === "metric") {
     const pad = launchPad(extra)
     const metric = id as LaunchTargetMetric
-    if (!pad || !(["supply", "market_cap"] as string[]).includes(metric)) return sendLaunchCalculatorStart(token, chatId, telegramId)
+    if (!pad || !(["supply", "market_cap"] as string[]).includes(metric)) return sendLaunchCalculatorStart(token, chatId, telegramId, callbackMessageId)
     if (pad.type === "amm") {
-      await setState(telegramId, { action: "launch_calc_lp", launchVenueId: pad.id, launchMetric: metric }, chatId)
-      return sendMessage(token, chatId, `💧 What initial LP should ${pad.name} use?\n\nThis sets the opening price. Type another amount or use the suggested default.`, [
-        [{ text: `Use ${pad.defaultLp} ${pad.symbol}`, callback_data: `launch:lp:default:${pad.id}` }],
-        [{ text: "⬅️ Target type", callback_data: `launch:venue:${pad.id}` }],
-      ])
+      return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId, state: { action: "launch_calc_lp", launchVenueId: pad.id, launchMetric: metric }, text: `💧 What initial LP should ${pad.name} use?\n\nThis sets the opening price. Type another amount or use the suggested default.`, buttons: [
+          [{ text: `Use ${pad.defaultLp} ${pad.symbol}`, callback_data: `launch:lp:default:${pad.id}` }],
+          [{ text: "⬅️ Target type", callback_data: `launch:venue:${pad.id}` }],
+        ] })
     }
-    await setState(telegramId, { action: "launch_calc_value", launchVenueId: pad.id, launchMetric: metric }, chatId)
-    return sendMessage(token, chatId, launchTargetPrompt(metric, pad.name))
+    return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId, state: { action: "launch_calc_value", launchVenueId: pad.id, launchMetric: metric }, text: launchTargetPrompt(metric, pad.name) })
   }
   if (area === "launch" && action === "lp") {
     const pad = launchPad(extra)
     const state = await takeState(telegramId, chatId)
-    if (!pad || state?.launchVenueId !== pad.id || state?.action !== "launch_calc_lp") return sendLaunchCalculatorStart(token, chatId, telegramId)
+    if (!pad || state?.launchVenueId !== pad.id || state?.action !== "launch_calc_lp") return sendLaunchCalculatorStart(token, chatId, telegramId, callbackMessageId)
     if (id === "default") {
-      await setState(telegramId, { action: "launch_calc_value", launchInitialLp: pad.defaultLp }, chatId)
-      return sendMessage(token, chatId, launchTargetPrompt(state.launchMetric as LaunchTargetMetric, pad.name))
+      return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId, state: { ...state, action: "launch_calc_value", launchInitialLp: pad.defaultLp }, text: launchTargetPrompt(state.launchMetric as LaunchTargetMetric, pad.name) })
     }
   }
   if (area === "launch" && action === "adjust") {
     const state = await takeState(telegramId, chatId)
     const pad = launchPad(String(state?.launchVenueId || ""))
-    if (!pad || state?.action !== "launch_calc_result") return sendLaunchCalculatorStart(token, chatId, telegramId)
+    if (!pad || state?.action !== "launch_calc_result") return sendLaunchCalculatorStart(token, chatId, telegramId, callbackMessageId)
     if (id === "target") {
-      await setState(telegramId, { action: "launch_calc_value" }, chatId)
-      return sendMessage(token, chatId, launchTargetPrompt(state.launchMetric as LaunchTargetMetric, pad.name))
+      return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId, state: { ...state, action: "launch_calc_value" }, text: launchTargetPrompt(state.launchMetric as LaunchTargetMetric, pad.name) })
     }
     if (id === "mm") {
-      await setState(telegramId, { action: "launch_calc_mm" }, chatId)
-      return sendMessage(token, chatId, `💧 Enter the ${pad.symbol} amount to reserve for initial MM trading.\n\nCurrent reserve: ${state.launchMmLiquidity} ${pad.symbol}\n\nSend /cancel to stop.`)
+      return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId, state: { ...state, action: "launch_calc_mm" }, text: `💧 Enter the ${pad.symbol} amount to reserve for initial MM trading.\n\nCurrent reserve: ${state.launchMmLiquidity} ${pad.symbol}\n\nSend /cancel to stop.` })
     }
   }
 
   if (area === "receipt" && action === "classify") {
     const receipt = await getRevenueReceipt(id)
-    if (!receipt || receipt.direction !== "incoming" || receipt.status !== "unclassified") return sendMessage(token, chatId, "This receipt is no longer available for classification.")
+    if (!receipt || receipt.direction !== "incoming" || receipt.status !== "unclassified") return workflowReply("This receipt is no longer available for classification.")
     await clearState(telegramId)
-    return sendMessage(token, chatId, `${receiptSummary(receipt)}\n\nChoose the revenue type:`, receiptTypeButtons(id))
+    return workflowReply(`${receiptSummary(receipt)}\n\nChoose the revenue type:`, receiptTypeButtons(id))
   }
   if (area === "receipt" && action === "type") {
-    if (!DIRECT_RECEIPT_FEE_TYPES.includes(extra as any)) return sendMessage(token, chatId, "That receipt classification is unsupported.")
+    if (!DIRECT_RECEIPT_FEE_TYPES.includes(extra as any)) return workflowReply("That receipt classification is unsupported.")
     if (isGlobalRevenueFeeType(extra)) {
       await setState(telegramId, { action: "receipt_classification", receiptId: id, feeType: extra }, chatId)
-      return sendReceiptConfirmation(token, chatId, telegramId, null)
+      return sendReceiptConfirmation(token, chatId, telegramId, null, callbackMessageId)
     }
-    return sendReceiptProjectPicker(token, chatId, telegramId, id, extra as FeeType)
+    return sendReceiptProjectPicker(token, chatId, telegramId, id, extra as FeeType, callbackMessageId)
   }
-  if (area === "receipt" && action === "project") return sendReceiptConfirmation(token, chatId, telegramId, id)
+  if (area === "receipt" && action === "project") return sendReceiptConfirmation(token, chatId, telegramId, id, callbackMessageId)
   if (area === "receipt" && action === "confirm") {
     const state = await takeState(telegramId, chatId)
-    if (state?.action !== "receipt_classification" || String(state.receiptId) !== id || !DIRECT_RECEIPT_FEE_TYPES.includes(state.feeType)) return sendMessage(token, chatId, "This classification menu expired. Start again from the receipt message.")
+    if (state?.action !== "receipt_classification" || String(state.receiptId) !== id || !DIRECT_RECEIPT_FEE_TYPES.includes(state.feeType)) return workflowReply("This classification menu expired. Start again from the receipt message.")
     const confirmed = await classifyReceiptAsRevenue({ receiptId: id, feeType: state.feeType as FeeType, projectId: state.projectId || null }, telegramId)
     await clearState(telegramId)
-    return sendMessage(token, chatId, `✅ Revenue classified by Telegram. The admin app is already updated.\n\n${formatFeeExpectation(confirmed)}`)
+    return workflowReply(`✅ Revenue classified by Telegram. The admin app is already updated.\n\n${formatFeeExpectation(confirmed)}`)
   }
-  if (area === "receipt" && action === "existing") return sendExistingExpectationPicker(token, chatId, telegramId, id)
+  if (area === "receipt" && action === "existing") return sendExistingExpectationPicker(token, chatId, telegramId, id, callbackMessageId)
   if (area === "receipt" && action === "expect") {
     const state = await takeState(telegramId, chatId)
-    if (state?.action !== "receipt_expectation" || !state.receiptId) return sendMessage(token, chatId, "This expectation menu expired. Start again from the receipt message.")
+    if (state?.action !== "receipt_expectation" || !state.receiptId) return workflowReply("This expectation menu expired. Start again from the receipt message.")
     const confirmed = await acceptReceiptMatch(id, telegramId, [String(state.receiptId)])
     await clearState(telegramId)
-    return sendMessage(token, chatId, `✅ Receipt linked to the existing expectation.\n\n${formatFeeExpectation(confirmed)}`)
+    return workflowReply(`✅ Receipt linked to the existing expectation.\n\n${formatFeeExpectation(confirmed)}`)
   }
 
   if (area === "consol" && action === "view") {
     const batch = await getConsolidationCandidate(id)
-    if (!batch) return sendMessage(token, chatId, "Consolidation batch was not found.")
-    if (batch.status === "confirmed") return sendMessage(token, chatId, `✅ This batch is already confirmed internal.\n\n${formatConsolidationCandidate(batch)}`)
-    if (batch.status === "rejected") return sendMessage(token, chatId, "This batch was rejected and its receipts remain available for revenue review.")
-    return sendMessage(token, chatId, formatConsolidationCandidate(batch), [
+    if (!batch) return workflowReply("Consolidation batch was not found.")
+    if (batch.status === "confirmed") return workflowReply(`✅ This batch is already confirmed internal.\n\n${formatConsolidationCandidate(batch)}`)
+    if (batch.status === "rejected") return workflowReply("This batch was rejected and its receipts remain available for revenue review.")
+    return workflowReply(formatConsolidationCandidate(batch), [
       [{ text: "✅ Confirm all internal", callback_data: `consol:confirm:${id}` }],
       [{ text: "Not consolidation", callback_data: `consol:reject:${id}` }, { text: "Open detailed review", url: `${appBaseUrl(req)}/admin/revenue` }],
     ])
   }
   if (area === "consol" && action === "confirm") {
     const batch = await confirmConsolidationCandidate(id, telegramId)
-    return sendMessage(token, chatId, `✅ Consolidation confirmed. Every source and destination leg is now internal.\n\n${formatConsolidationCandidate(batch)}`)
+    return workflowReply(`✅ Consolidation confirmed. Every source and destination leg is now internal.\n\n${formatConsolidationCandidate(batch)}`)
   }
   if (area === "consol" && action === "reject") {
     const batch = await rejectConsolidationCandidate(id, telegramId)
-    await sendMessage(token, chatId, "Consolidation suggestion rejected. The destination receipts remain unclassified and can be handled below or in Revenue Inbox.")
+    await workflowReply("Consolidation suggestion rejected. The destination receipts remain unclassified and can be handled below or in Revenue Inbox.")
     for (const receipt of (batch?.receipts || []).filter((row: any) => (batch?.destinationReceiptIds || []).includes(String(row._id))).slice(0, 10)) {
       const transactionUrl = revenueTransactionUrl(receipt.chain, receipt.transactionHash)
       await sendMessage(token, chatId, receiptSummary(receipt), receiptClassificationButtons(String(receipt._id), transactionUrl))
@@ -2729,7 +2765,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
 
   if (area === "fee" && action === "type") {
     const fee = await setFeeType(id, extra as FeeType)
-    return sendMessage(token, chatId, `${formatFeeExpectation(fee)}\n\nNow choose the existing project:`, await feeProjectButtons(id))
+    return workflowReply(`${formatFeeExpectation(fee)}\n\nNow choose the existing project:`, await feeProjectButtons(id))
   }
   if (area === "fee" && action === "project") {
     const fee = await assignFeeProject(id, extra)
@@ -2737,44 +2773,43 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     if (fee.status === "awaiting_asset") {
       const project = await db.collection("opsProjects").findOne({ _id: fee.projectId })
       const assets = projectFeeConfig(project).quoteAssets
-      return sendMessage(token, chatId, `${formatFeeExpectation(fee)}\n\nWhich quote asset was cashed out?`, assets.map((asset) => [{ text: asset, callback_data: `fee:asset:${activeFeeId}:${asset}` }]))
+      return workflowReply(`${formatFeeExpectation(fee)}\n\nWhich quote asset was cashed out?`, assets.map((asset) => [{ text: asset, callback_data: `fee:asset:${activeFeeId}:${asset}` }]))
     }
-    return sendMessage(token, chatId, `${formatFeeExpectation(fee)}\n\nConfirm this expectation before matching wallet receipts.`, [[{ text: "✅ Confirm expectation", callback_data: `fee:confirm:${activeFeeId}` }]])
+    return workflowReply(`${formatFeeExpectation(fee)}\n\nConfirm this expectation before matching wallet receipts.`, [[{ text: "✅ Confirm expectation", callback_data: `fee:confirm:${activeFeeId}` }]])
   }
   if (area === "fee" && action === "asset") {
     const fee = await setFeeQuoteAsset(id, extra)
-    return sendMessage(token, chatId, `${formatFeeExpectation(fee)}\n\nConfirm this expectation before matching wallet receipts.`, [[{ text: "✅ Confirm expectation", callback_data: `fee:confirm:${id}` }]])
+    return workflowReply(`${formatFeeExpectation(fee)}\n\nConfirm this expectation before matching wallet receipts.`, [[{ text: "✅ Confirm expectation", callback_data: `fee:confirm:${id}` }]])
   }
   if (area === "fee" && action === "confirm") {
     const fee = await confirmFeeExpectation(id, telegramId)
-    if (!fee) return sendMessage(token, chatId, "Fee entry was not found.")
-    return sendMessage(token, chatId, fee.status === "match_proposed" ? `${formatFeeExpectation(fee)}\n\nI found ${fee.proposedReceiptIds.length} receipt(s) that add up to the expected fee.` : `${formatFeeExpectation(fee)}\n\nNo exact receipt combination is available yet. I’ll keep it waiting.`, fee.status === "match_proposed" ? [[{ text: "✅ Accept receipt match", callback_data: `fee:match:${id}` }]] : undefined)
+    if (!fee) return workflowReply("Fee entry was not found.")
+    return workflowReply(fee.status === "match_proposed" ? `${formatFeeExpectation(fee)}\n\nI found ${fee.proposedReceiptIds.length} receipt(s) that add up to the expected fee.` : `${formatFeeExpectation(fee)}\n\nNo exact receipt combination is available yet. I’ll keep it waiting.`, fee.status === "match_proposed" ? [[{ text: "✅ Accept receipt match", callback_data: `fee:match:${id}` }]] : [])
   }
   if (area === "fee" && action === "match") {
     const fee = await acceptReceiptMatch(id, telegramId)
-    return sendMessage(token, chatId, `✅ Fee verified and ready for payroll accounting.\n\n${formatFeeExpectation(fee)}`)
+    return workflowReply(`✅ Fee verified and ready for payroll accounting.\n\n${formatFeeExpectation(fee)}`)
   }
   if (area === "fee" && action === "search") {
-    await setState(telegramId, { action: "fee_project_search", feeId: id }, chatId)
-    return sendMessage(token, chatId, "Type part of the existing project name. Send /cancel to stop.")
+    return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId, state: { action: "fee_project_search", feeId: id }, text: "Type part of the existing project name. Send /cancel to stop." })
   }
   if (area === "fee" && action === "receipt") {
     const receipt = await getRevenueReceipt(id)
-    if (!receipt) return sendMessage(token, chatId, "Receipt was not found.")
+    if (!receipt) return workflowReply("Receipt was not found.")
     const transactionUrl = revenueTransactionUrl(receipt.chain, receipt.transactionHash)
-    return sendMessage(token, chatId, `Revenue receipt\n\n${receipt.amount} ${receipt.asset}\nChain: ${revenueChainLabel(receipt.chain)}\nStatus: ${receipt.status}\nTransaction: ${receipt.transactionHash}`, receiptClassificationButtons(id, transactionUrl))
+    return workflowReply(`Revenue receipt\n\n${receipt.amount} ${receipt.asset}\nChain: ${revenueChainLabel(receipt.chain)}\nStatus: ${receipt.status}\nTransaction: ${receipt.transactionHash}`, receiptClassificationButtons(id, transactionUrl))
   }
   if (area === "fee" && (action === "internal" || action === "ignore")) {
     const receipt = await getRevenueReceipt(id)
     if (action === "internal" && receipt?.consolidationBatchId) {
       const batch = await getConsolidationCandidate(String(receipt.consolidationBatchId))
-      if (batch && ["collecting", "suggested"].includes(batch.status)) return sendMessage(token, chatId, formatConsolidationCandidate(batch), [[{ text: "✅ Confirm entire batch internal", callback_data: `consol:confirm:${batch._id}` }, { text: "Review", callback_data: `consol:view:${batch._id}` }]])
+      if (batch && ["collecting", "suggested"].includes(batch.status)) return workflowReply(formatConsolidationCandidate(batch), [[{ text: "✅ Confirm entire batch internal", callback_data: `consol:confirm:${batch._id}` }, { text: "Review", callback_data: `consol:view:${batch._id}` }]])
     }
     await updateReceiptClassification(id, action === "internal" ? "internal" : "ignored")
-    return sendMessage(token, chatId, action === "internal" ? "✅ Marked as an internal movement; it will not count as new revenue." : "✅ Receipt ignored.")
+    return workflowReply(action === "internal" ? "✅ Marked as an internal movement; it will not count as new revenue." : "✅ Receipt ignored.")
   }
-  if (data === "projects:list") return sendProjects(token, chatId)
-  if (data === "data:list") return sendDataProjects(token, chatId)
+  if (data === "projects:list") return sendProjects(token, chatId, callbackMessageId)
+  if (data === "data:list") return sendDataProjects(token, chatId, callbackMessageId)
   if (area === "notes" && action === "project") return sendProjectNotes(token, chatId, id, Number(callbackMessage?.message_id || 0) || null)
 
   if (area === "ai" && action === "confirm") {
@@ -2795,12 +2830,12 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       if (!text.startsWith("✅") || !changedLaunch) return { text }
       const schedule = await formatLaunchDaySchedule(launchDate)
       return { text: `${text}\n\n${schedule}` }
-    }, "✅ Applying…")
+    }, "✅ Applying…", pendingLaunch?.actionType === "create_reminder" ? null : previewMessageId)
   }
   if (area === "ai" && action === "reject") {
     return sendAsyncResponse(token, chatId, async () => ({
       text: await rejectOpsAiAction(id, telegramId),
-    }))
+    }), "⏳ One moment…", callbackMessageId)
   }
   if (area === "ai" && (action === "newest" || action === "oldest")) {
     return sendAsyncResponse(token, chatId, async () => {
@@ -2811,37 +2846,34 @@ async function handleCallback(token: string, chatId: number | string, telegramId
           [{ text: "✅ Confirm", callback_data: `ai:confirm:${id}` }, { text: "❌ Refuse", callback_data: `ai:reject:${id}` }],
         ] : undefined,
       }
-    }, "🧠 Working on it…")
+    }, "🧠 Working on it…", callbackMessageId)
   }
 
   if (area === "project" && action === "add") {
-    await setState(telegramId, { action: "add_project" }, chatId)
-    return sendMessage(token, chatId, "➕ Send the new project like this:\n\nProject Name | Owner | YYYY-MM-DD | active\n\nSend /cancel to stop.")
+    return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId, state: { action: "add_project" }, text: "➕ Send the new project like this:\n\nProject Name | Owner | YYYY-MM-DD | active\n\nSend /cancel to stop." })
   }
-  if (area === "project" && action === "view") return sendProjectDetail(token, chatId, id)
+  if (area === "project" && action === "view") return sendProjectDetail(token, chatId, id, callbackMessageId)
   if (area === "project" && action === "edit") {
-    await setState(telegramId, { action: "edit_project", projectId: id }, chatId)
-    return sendMessage(token, chatId, "✏️ Send updated project:\n\nProject Name | Owner | YYYY-MM-DD | active\n\nSend /cancel to stop.")
+    return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId, state: { action: "edit_project", projectId: id }, text: "✏️ Send updated project:\n\nProject Name | Owner | YYYY-MM-DD | active\n\nSend /cancel to stop." })
   }
   if (area === "project" && action === "toggle") {
     const project = await db.collection("opsProjects").findOne({ _id: id })
-    if (!project) return sendMessage(token, chatId, "Project not found.")
-    if (["scheduled", "in_progress"].includes(String(project.status || ""))) return sendMessage(token, chatId, "🕒 This project is Scheduled. Confirm it from the Launch Chat prompt when the token launches, or update the launch time if it is delayed.")
+    if (!project) return workflowReply("Project not found.")
+    if (["scheduled", "in_progress"].includes(String(project.status || ""))) return workflowReply("🕒 This project is Scheduled. Confirm it from the Launch Chat prompt when the token launches, or update the launch time if it is delayed.")
     if (project.status === "active") {
       await deactivateActiveProject({ projectId: id, telegramId, source: "project_management", chatId })
     } else if (projectLaunchAt(project)) {
       const readiness = projectActivationReadiness(project)
-      if (!readiness.ready) return sendMessage(token, chatId, `⚠️ Complete ${readiness.missing.join(", ")} before activation.`)
+      if (!readiness.ready) return workflowReply(`⚠️ Complete ${readiness.missing.join(", ")} before activation.`)
       await db.collection("opsProjects").updateOne({ _id: id }, { $set: activationLifecycleFields(project, { actual: "now", telegramId, source: "manual_dashboard" }) })
     } else {
       await db.collection("opsProjects").updateOne({ _id: id }, { $set: { status: "active", activatedAt: new Date().toISOString(), activationSource: "project_management", updatedAt: new Date() } })
     }
-    return sendProjectDetail(token, chatId, id)
+    return sendProjectDetail(token, chatId, id, callbackMessageId)
   }
   if (area === "project" && action === "delete") {
     const result = await deleteProjectCascade(id)
-    await sendMessage(token, chatId, `🗑 Project and ${result.deleted} related records removed.`)
-    return sendProjects(token, chatId)
+    return sendProjects(token, chatId, callbackMessageId, `🗑 Project and ${result.deleted} related records removed.`)
   }
 
   if (area === "note" && action === "add") {
@@ -2857,9 +2889,9 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     return
   }
 
-  if (area === "data" && action === "project") return sendProjectSheets(token, chatId, id)
+  if (area === "data" && action === "project") return sendProjectSheets(token, chatId, id, callbackMessageId)
   if (area === "sheet" && action === "add") {
-    return sendMessage(token, chatId, "Choose data file type:", [
+    return workflowReply("Choose data file type:", [
       ...SHEET_KIND_ORDER.map((kind) => [{ text: `Create ${getSheetSchema(kind).title}`, callback_data: `sheet:create:${id}:${kind}` }]),
       [{ text: "⬅️ Back", callback_data: `data:project:${id}` }],
     ])
@@ -2870,21 +2902,18 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     const schema = getSheetSchema(kind)
     const sheet = { title: schema.title, tabName: schema.tabName, category: schema.category, sheetType: kind, description: `Created from bot.`, projectId: id, projectName: project?.name || "", values: [schema.headers], sourceType: "bot", createdAt: new Date(), updatedAt: new Date() }
     await db.collection("opsSheets").insertOne(sheet)
-    await sendMessage(token, chatId, "✅ Data file created.")
-    return sendProjectSheets(token, chatId, id)
+    return sendProjectSheets(token, chatId, id, callbackMessageId, "✅ Data file created.")
   }
-  if (area === "sheet" && action === "view") return sendSheetDetail(token, chatId, id)
+  if (area === "sheet" && action === "view") return sendSheetDetail(token, chatId, id, callbackMessageId)
   if (area === "sheet" && action === "addrow") {
     const sheet = await db.collection("opsSheets").findOne({ _id: id })
     const headers = getSheetSchema(sheet?.sheetType || "custom").headers
-    await setState(telegramId, { action: "add_sheet_row", sheetId: id }, chatId)
-    return sendMessage(token, chatId, `➕ Send row values separated by |:\n\n${headers.join(" | ")}\n\nSend /cancel to stop.`)
+    return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId, state: { action: "add_sheet_row", sheetId: id }, text: `➕ Send row values separated by |:\n\n${headers.join(" | ")}\n\nSend /cancel to stop.` })
   }
   if (area === "sheet" && action === "delete") {
     const sheet = await db.collection("opsSheets").findOne({ _id: id })
     await db.collection("opsSheets").deleteOne({ _id: id })
-    await sendMessage(token, chatId, "🗑 Data file removed.")
-    return sheet?.projectId ? sendProjectSheets(token, chatId, sheet.projectId) : sendDataProjects(token, chatId)
+    return sheet?.projectId ? sendProjectSheets(token, chatId, sheet.projectId, callbackMessageId, "🗑 Data file removed.") : sendDataProjects(token, chatId, callbackMessageId, "🗑 Data file removed.")
   }
 
   if (area === "reminderto") {
@@ -2979,15 +3008,14 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   if (data === "reminders:list") return sendReminders(token, chatId, Number(callbackMessage?.message_id || 0) || null)
 
   if (area === "payroll" && action === "add") {
-    await setState(telegramId, { action: "add_payroll" }, chatId)
-    return sendMessage(token, chatId, "➕ Send payroll row like this:\n\nMember | Amount | Project | YYYY-MM-DD\n\nSend /cancel to stop.")
+    return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId, state: { action: "add_payroll" }, text: "➕ Send payroll row like this:\n\nMember | Amount | Project | YYYY-MM-DD\n\nSend /cancel to stop." })
   }
   if (area === "payroll" && action === "paid") {
     await db.collection("opsPayroll").updateOne({ _id: id }, { $set: { status: "paid", updatedAt: new Date() } })
-    return sendPayroll(token, chatId)
+    return sendPayroll(token, chatId, callbackMessageId)
   }
 
-  return sendMessage(token, chatId, helpMessage())
+  return workflowReply(helpMessage())
 }
 
 async function routeText(token: string, chatId: number | string, telegramId: number, text: string, req: NextRequest, messageDateMs: number, message?: any) {
