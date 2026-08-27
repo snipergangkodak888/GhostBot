@@ -4,7 +4,9 @@ import { getMemberTimeZone, getTeamAccess, guardCodeFromText, redeemGuardInviteC
 import { getDb } from "@/lib/db"
 import { deleteProjectCascade } from "@/lib/platform-data"
 import { getSheetSchema, SHEET_KIND_ORDER, valuesForKind, type SheetKind } from "@/lib/sheet-schemas"
-import { dateKeyInTimeZone, detectExplicitTimeZone, formatTeamDateTime, parseContextualTeamDateTime, parseNaturalTeamDate, parseNaturalTeamDateTime, parseTeamDateTime, reminderRecurrenceFromText, teamZoneLabel, TIME_ZONE_OPTIONS, timeZoneFromOption, TEAM_TIME_ZONE } from "@/lib/team-timezone"
+import { dateKeyInTimeZone, detectExplicitTimeZone, formatTeamDateTime, parseContextualTeamDateTime, parseNaturalTeamDate, parseNaturalTeamDateTime, parseTeamDateTime, teamZoneLabel, TIME_ZONE_OPTIONS, timeZoneFromOption, TEAM_TIME_ZONE } from "@/lib/team-timezone"
+import { parseReminderRequest, reminderRequestError, type ParsedReminderRequest } from "@/lib/reminder-parser"
+import { listReminderEligibleMembers, reminderTargetForTelegramId, reminderTargetsLabel, resolveReminderTargetUsernames, type ReminderTarget } from "@/lib/reminder-targets"
 import { editTelegramMessage, getTelegramBotToken, getTelegramBotUsername, isTelegramCaptureActive, sendChatAction, sendTelegramDocument, sendTelegramMessage, sendTelegramPhoto, telegramApi, telegramApiJson, withTelegramLoading } from "@/lib/telegram-bot"
 import { savePayrollDay } from "@/lib/payroll-day"
 import { loadDailyPayrollReport, parseReportDateFromText } from "@/lib/payroll-daily-report"
@@ -21,10 +23,11 @@ import { isGlobalRevenueFeeType, type FeeType } from "@/lib/revenue-types"
 import { receiptAvailableAmount, receiptAvailableUsd } from "@/lib/revenue-allocations"
 import { LAUNCH_CHAINS, launchPad, padsForChain, type LaunchChainId } from "@/lib/launch-math"
 import { operationalLaunchVenue, operationalVenuesForChain } from "@/lib/launch-venues"
+import { dailyProjectReviewButtons, dailyProjectReviewId, dailyProjectReviewText, type DailyProjectReviewRecord } from "@/lib/daily-project-review"
 import { calculateLaunchQuote, defaultMmLiquidity, formatLaunchQuote, getLaunchAssetPrice, parseLaunchNumber, type LaunchTargetMetric } from "@/lib/launch-calculator"
 import { botPermissionDeniedMessage, canUseBotCapability, getBotPermissionContext, type BotCapability, type BotPermissionContext } from "@/lib/bot-permissions"
 import { createGuardEnrollmentLink, guardEnrollmentTokenFromText, guardEnrollmentUrl, handleGuardBotMembershipUpdate, handleGuardChatMemberUpdate, recordGuardChatMember, revokeGuardEnrollmentLinks, syncTelegramChatAdministrators, verifyAndRedeemGuardEnrollment } from "@/lib/guard-enrollment"
-import { activateScheduledProject, activationLifecycleFields, cancelScheduledProject, cleanLaunchProjectName, confirmNoProjectReferrer, confirmStandardProjectFees, projectActivationReadiness, projectLaunchAt, projectLaunchDateKey, projectLaunchTimingStatus, rescheduleProject, setTentativeProjectLaunchDate } from "@/lib/project-lifecycle"
+import { activateScheduledProject, activationLifecycleFields, cancelScheduledProject, cleanLaunchProjectName, confirmNoProjectReferrer, confirmStandardProjectFees, deactivateActiveProject, projectActivationReadiness, projectLaunchAt, projectLaunchDateKey, projectLaunchTimingStatus, rescheduleProject, setTentativeProjectLaunchDate } from "@/lib/project-lifecycle"
 import { formatLaunchSetupReview, launchChainButtons, launchChainConfig, launchChainIdForProject, launchMethodButtons, launchQuoteButtons, launchSetupButtons, launchSetupReady, launchVenueButtons, launchVenueSelection } from "@/lib/launch-setup"
 import { parseCustomQuoteTokenInput, resolveCustomQuoteToken } from "@/lib/custom-quote-token"
 import { launchMethodLabel, normalizeLaunchMethod } from "@/lib/launch-method"
@@ -144,6 +147,7 @@ async function setBotCommands(token: string) {
       { command: "organicsetup", description: "Set up organic trade notifications" },
       { command: "launchcalc", description: "Build a client launch-capital quote" },
       { command: "reminders", description: "Manage reminders" },
+      { command: "setreminder", description: "Set a reminder in natural language" },
       { command: "payroll", description: "Manage payroll" },
       { command: "fees", description: "Show today’s revenue inbox" },
       { command: "report", description: "Spreadsheet-style payroll breakdown image" },
@@ -186,6 +190,7 @@ function helpMessage() {
     "📣 /organicsetup TICKER - set up organic trade notifications",
     "🚀 /launchcalc - build a launch-capital quote",
     "🔔 /reminders",
+    "⏰ /setreminder WWR injection today at 8 PM ET",
     "💸 /payroll",
     "📊 /report [today|yesterday|YYYY-MM-DD]",
     "🧾 /log <project id> <trading|dev> <amount>",
@@ -210,8 +215,23 @@ function timeZonePrompt() {
   return "🌍 What timezone should I use for times you enter without a timezone?\n\nYou can also send /timezone Europe/London or another IANA timezone."
 }
 
+function reminderInputPrompt(savedTimeZone?: string) {
+  return [
+    ...(savedTimeZone ? [`✅ Timezone saved as ${teamZoneLabel(savedTimeZone)}.`, ""] : []),
+    "🔔 What should I remind this chat about, and when?",
+    "",
+    "Write it naturally:",
+    "• WWR injection today at 8 PM ET",
+    "• Remind @alex tomorrow at 9 AM PT to check WWR",
+    "• Every day at 10 AM ET post the risk check",
+    "",
+    "The reminder stays in this chat. “Remind me” tags you; @mentions tag selected traders.",
+    "Send /cancel to stop.",
+  ].join("\n")
+}
+
 function isRelativeDurationReminder(text: string) {
-  return /\bin\s+\d+\s*(?:minutes?|hours?|days?|weeks?)\b/i.test(text)
+  return /\bin\s+(?:(?:\d+|half|an?)\s*(?:m(?:in(?:ute)?s?)?|h(?:ou)?rs?|hours?|days?|weeks?))\b/i.test(text)
 }
 
 async function maybeRequestReminderTimeZone(
@@ -908,15 +928,105 @@ async function sendSheetDetail(token: string, chatId: number | string, sheetId: 
   ])
 }
 
-async function sendReminders(token: string, chatId: number | string) {
+async function sendReminders(token: string, chatId: number | string, messageId?: number | null) {
   const db = await getDb()
   const rows = await db.collection("opsReminders").find({ status: { $ne: "done" } }).sort({ dueAt: 1 }).toArray()
   const reminders = rows.filter((reminder: any) => reminder.deliveryScope === "chat" && String(reminder.telegramChatId || "") === String(chatId)).slice(0, 8)
-  await sendMessage(token, chatId, `🔔 Reminders\n\n${reminders.length ? reminders.map((r: any, i: number) => `${i + 1}. ${r.title || r.message} - ${dateLabel(r.dueAt, String(r.timeZone || TEAM_TIME_ZONE))}${r.recurrence && r.recurrence !== "none" ? ` · ${r.recurrence}` : ""}${r.targetChatTitle ? ` → ${r.targetChatTitle}` : ""}`).join("\n") : "No reminders yet."}`, [
+  await editOrSendWorkflowMessage(token, chatId, messageId, `🔔 Reminders\n\n${reminders.length ? reminders.map((r: any, i: number) => `${i + 1}. ${r.title || r.message} - ${dateLabel(r.dueAt, String(r.timeZone || TEAM_TIME_ZONE))}${r.recurrence && r.recurrence !== "none" ? ` · ${r.recurrence}` : ""} · ${reminderTargetsLabel(r.targetMode, r.targetMembers)}${r.targetChatTitle ? ` → ${r.targetChatTitle}` : ""}`).join("\n") : "No reminders yet."}`, [
     [{ text: "➕ Add Reminder", callback_data: "reminder:add" }],
     ...reminders.map((r: any) => [{ text: `Open ${r.title || r.message}`.slice(0, 60), callback_data: `reminder:view:${r._id}` }]),
     [{ text: "⬅️ Back", callback_data: "main:menu" }],
   ])
+}
+
+type ReminderDraft = Extract<ParsedReminderRequest, { ok: true }>
+
+function reminderAudienceButtons(members: ReminderTarget[], selectedTargetIds: number[]) {
+  const selected = new Set(selectedTargetIds)
+  const memberButtons: InlineButton[][] = []
+  for (let index = 0; index < members.length; index += 2) {
+    memberButtons.push(members.slice(index, index + 2).map((member) => ({
+      text: `${selected.has(member.telegramId) ? "✅" : "▫️"} ${member.displayName}`.slice(0, 32),
+      callback_data: `reminderto:toggle:${member.telegramId}`,
+    })))
+  }
+  return [
+    [{ text: "Everyone", callback_data: "reminderto:everyone" }, { text: "Just me", callback_data: "reminderto:me" }],
+    ...memberButtons.slice(0, 6),
+    ...(selected.size ? [[{ text: `Save ${selected.size} selected`, callback_data: "reminderto:save" }]] : []),
+    [{ text: "Cancel", callback_data: "reminderto:cancel" }],
+  ]
+}
+
+async function showReminderAudiencePicker(
+  token: string,
+  chatId: number | string,
+  messageId: number | null,
+  selectedTargetIds: number[] = [],
+  warning = "",
+) {
+  const members = await listReminderEligibleMembers(chatId)
+  const selectedTargets = members.filter((member) => selectedTargetIds.includes(member.telegramId))
+  const text = [
+    warning ? `⚠️ ${warning}` : "👥 Who should be notified?",
+    "",
+    "The reminder will stay in this chat. Selected traders will be tagged when it fires.",
+    ...(selectedTargets.length ? ["", `Selected: ${reminderTargetsLabel("specific", selectedTargets)}`] : []),
+  ].join("\n")
+  return editOrSendWorkflowMessage(token, chatId, messageId, text, reminderAudienceButtons(members, selectedTargetIds))
+}
+
+async function completeManualReminder(params: {
+  token: string
+  chatId: number | string
+  telegramId: number
+  draft: ReminderDraft
+  targetMode: "everyone" | "creator" | "specific"
+  targetMembers: ReminderTarget[]
+  targetChatTitle: string
+  workflowMessageId?: number | null
+  state?: any
+  inboundMessage?: any
+}) {
+  const db = await getDb()
+  const now = new Date()
+  const result = await db.collection("opsReminders").insertOne({
+    title: params.draft.title,
+    message: params.draft.message,
+    dueAt: params.draft.dueAt,
+    timeZone: params.draft.timeZone,
+    recurrence: params.draft.recurrence,
+    audience: "team",
+    deliveryScope: "chat",
+    telegramChatId: String(params.chatId),
+    targetChatTitle: params.targetChatTitle,
+    targetMode: params.targetMode,
+    targetMembers: params.targetMembers,
+    status: "scheduled",
+    createdFrom: "bot",
+    telegramId: params.telegramId,
+    createdAt: now,
+    updatedAt: now,
+  })
+  const confirmation = [
+    "✅ Reminder set",
+    "",
+    `🔔 ${params.draft.title}`,
+    `⏰ ${formatTeamDateTime(params.draft.dueAt, params.draft.timeZone)}`,
+    ...(params.draft.recurrence !== "none" ? [`🔁 Repeats: ${params.draft.recurrence}`] : []),
+    `👥 Notify: ${reminderTargetsLabel(params.targetMode, params.targetMembers)}`,
+    `💬 Deliver to: ${params.targetChatTitle}`,
+  ].join("\n")
+  const confirmationMessageId = await editOrSendWorkflowMessage(params.token, params.chatId, params.workflowMessageId, confirmation, [
+    [{ text: "Open reminder", callback_data: `reminder:view:${result.insertedId}` }],
+    [{ text: "➕ Add another", callback_data: "reminder:add" }, { text: "⬅️ Reminders", callback_data: "reminders:list" }],
+  ])
+  if (params.state) {
+    await finishState(params.token, params.chatId, params.telegramId, params.state, params.inboundMessage, confirmationMessageId ? [confirmationMessageId] : [])
+  } else {
+    await clearState(params.telegramId)
+  }
+  return result
 }
 
 function calendarDayLabel(dateKey: string) {
@@ -1230,7 +1340,7 @@ async function processState(token: string, chatId: number | string, telegramId: 
 
   const stateCapability: BotCapability = String(state.action || "").startsWith("launch_calc") || String(state.action || "").startsWith("launch_setup") || String(state.action || "").startsWith("add_launch_wizard") || String(state.action || "").startsWith("organic_setup") || state.action === "schedule_launch_request" || state.action === "reschedule_launch" || state.action === "tentative_launch_day" || state.action === "add_launch_note"
     ? "launch"
-    : ["add_project", "edit_project", "add_reminder", "timezone_for_manual_reminder", "timezone_for_reminder"].includes(String(state.action || ""))
+    : ["add_project", "edit_project", "add_reminder", "reminder_audience", "timezone_for_manual_reminder", "timezone_for_reminder"].includes(String(state.action || ""))
       ? (context.profile === "launch" ? "launch" : "trade")
       : ["add_project_note", "add_sheet_row"].includes(String(state.action || ""))
         ? "trade"
@@ -1622,23 +1732,56 @@ async function processState(token: string, chatId: number | string, telegramId: 
   }
 
   if (state.action === "add_reminder") {
-    const [title = "", dueAt = "", reminderMessage = "", repeat = ""] = text.split("|").map((part) => part.trim())
-    if (!title) {
-      await sendMessage(token, chatId, "Send: Reminder title | YYYY-MM-DD HH:mm | message | optional repeat")
-      return true
-    }
-    const timeZone = await getMemberTimeZone(telegramId) || TEAM_TIME_ZONE
-    const parsedDueAt = dueAt ? parseTeamDateTime(dueAt, timeZone) : new Date(Date.now() + 60 * 60 * 1000)
-    if (!parsedDueAt) {
-      await sendMessage(token, chatId, "I could not read that due time. Send it as YYYY-MM-DD HH:mm in ET.")
+    const defaultTimeZone = await getMemberTimeZone(telegramId) || TEAM_TIME_ZONE
+    const parsed = parseReminderRequest(text, {
+      timeZone: defaultTimeZone,
+      now: messageDateMs > 0 ? new Date(messageDateMs) : now,
+    })
+    const workflowMessageId = Number(state.reviewMessageId || state.promptMessageId || 0) || null
+    if (!parsed.ok) {
+      await editOrSendWorkflowMessage(token, chatId, workflowMessageId, [
+        `⚠️ ${reminderRequestError(parsed)}`,
+        "",
+        reminderInputPrompt(),
+      ].join("\n"))
+      await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
       return true
     }
     const targetChatTitle = chatTitle(message, chatId)
-    const recurrence = reminderRecurrenceFromText(repeat, repeat)
-    await db.collection("opsReminders").insertOne({ title, message: reminderMessage || title, dueAt: parsedDueAt.toISOString(), timeZone, recurrence, audience: "team", deliveryScope: "chat", telegramChatId: String(chatId), targetChatTitle, status: "scheduled", createdFrom: "bot", telegramId, createdAt: now, updatedAt: now })
-    await clearState(telegramId)
-    await sendMessage(token, chatId, `✅ Reminder added.\n📅 Due: ${formatTeamDateTime(parsedDueAt, timeZone)}${recurrence !== "none" ? `\n🔁 Repeats: ${recurrence}` : ""}\n💬 Deliver to: ${targetChatTitle}`)
-    await sendReminders(token, chatId)
+    if (parsed.targetMode === "unspecified") {
+      await setState(telegramId, {
+        action: "reminder_audience",
+        reminderDraft: parsed,
+        targetChatTitle,
+        selectedTargetIds: [],
+        reviewMessageId: workflowMessageId,
+        promptMessageId: workflowMessageId,
+      }, chatId)
+      await showReminderAudiencePicker(token, chatId, workflowMessageId)
+      await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
+      return true
+    }
+    let targetMode: "everyone" | "creator" | "specific" = parsed.targetMode
+    let targetMembers: ReminderTarget[] = []
+    if (targetMode === "creator") {
+      const creator = await reminderTargetForTelegramId(telegramId)
+      if (!creator) {
+        await editOrSendWorkflowMessage(token, chatId, workflowMessageId, "⚠️ I couldn’t identify your enrolled Telegram account. Try choosing Everyone or another trader.")
+        await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
+        return true
+      }
+      targetMembers = [creator]
+    } else if (targetMode === "specific") {
+      const resolved = await resolveReminderTargetUsernames(parsed.targetUsernames, chatId)
+      if (resolved.unresolved.length || !resolved.targets.length) {
+        const missing = resolved.unresolved.map((username) => `@${username}`).join(", ")
+        await editOrSendWorkflowMessage(token, chatId, workflowMessageId, `⚠️ I couldn’t find ${missing || "those traders"} among the enrolled members of this chat. Send the reminder again or choose people from the reminder picker.`)
+        await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
+        return true
+      }
+      targetMembers = resolved.targets
+    }
+    await completeManualReminder({ token, chatId, telegramId, draft: parsed, targetMode, targetMembers, targetChatTitle, workflowMessageId, state, inboundMessage: message })
     return true
   }
 
@@ -1965,7 +2108,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   const context = await botPermissions(telegramId, chatId)
   const callbackCapability: BotCapability | null = area === "launch" || area === "lifecycle" || area === "launchsetup" || area === "organic" || area === "calendar" || area === "tentative"
     ? "launch"
-    : ["reminder", "reminders"].includes(area)
+    : ["reminder", "reminders", "reminderto", "eod"].includes(area)
       ? (context.profile === "launch" ? "launch" : "trade")
     : ["project", "projects", "notes", "note", "data", "sheet"].includes(area)
       ? "trade"
@@ -1975,6 +2118,86 @@ async function handleCallback(token: string, chatId: number | string, telegramId
           ? aiPermissionPolicy(context).capability
           : null
   if (callbackCapability && !(await requireCapability(token, context, callbackCapability))) return
+
+  if (area === "eod") {
+    const workflowMessageId = Number(callbackMessage?.message_id || 0) || null
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(id || "")) {
+      return editOrSendWorkflowMessage(token, chatId, workflowMessageId, "This project check is no longer available.")
+    }
+    const reviewId = dailyProjectReviewId(chatId, id)
+    const stored = await db.collection("opsDailyProjectReviews").findOne({ _id: reviewId, chatId: String(chatId), dateKey: id }) as DailyProjectReviewRecord | null
+    if (!stored) return editOrSendWorkflowMessage(token, chatId, workflowMessageId, "This project check is no longer available.")
+
+    const activeRows = await db.collection("opsProjects").find({ status: "active" }).toArray()
+    const activeIds = new Set(activeRows.map((project: any) => String(project._id)))
+    const availableProjects = (stored.projects || []).filter((project) => activeIds.has(project.projectId))
+    const availableIds = new Set(availableProjects.map((project) => project.projectId))
+    const selectedProjectIds = (stored.selectedProjectIds || []).filter((projectId) => availableIds.has(projectId))
+    let review: DailyProjectReviewRecord = { ...stored, projects: availableProjects, selectedProjectIds }
+
+    if (stored.status === "completed") {
+      return editOrSendWorkflowMessage(token, chatId, workflowMessageId, dailyProjectReviewText({ review: stored, stage: "complete", currentActiveProjects: availableProjects }))
+    }
+
+    if (action === "pick") {
+      const index = Number(extra)
+      const chosen = Number.isInteger(index) && index >= 0 ? stored.projects?.[index] : null
+      if (chosen && activeIds.has(chosen.projectId)) {
+        const selected = new Set(selectedProjectIds)
+        if (selected.has(chosen.projectId)) selected.delete(chosen.projectId)
+        else selected.add(chosen.projectId)
+        review = { ...review, selectedProjectIds: Array.from(selected), status: "pending" }
+      }
+      await db.collection("opsDailyProjectReviews").updateOne(
+        { _id: reviewId },
+        { $set: { projects: review.projects, selectedProjectIds: review.selectedProjectIds, status: "pending", updatedAt: new Date() } },
+      )
+      return editOrSendWorkflowMessage(token, chatId, workflowMessageId, dailyProjectReviewText({ review }), dailyProjectReviewButtons(review))
+    }
+
+    if (action === "review") {
+      if (!selectedProjectIds.length) return editOrSendWorkflowMessage(token, chatId, workflowMessageId, dailyProjectReviewText({ review }), dailyProjectReviewButtons(review))
+      await db.collection("opsDailyProjectReviews").updateOne({ _id: reviewId }, { $set: { status: "confirming", updatedAt: new Date() } })
+      return editOrSendWorkflowMessage(token, chatId, workflowMessageId, dailyProjectReviewText({ review, stage: "confirm" }), dailyProjectReviewButtons(review, "confirm"))
+    }
+
+    if (action === "back") {
+      await db.collection("opsDailyProjectReviews").updateOne({ _id: reviewId }, { $set: { status: "pending", updatedAt: new Date() } })
+      return editOrSendWorkflowMessage(token, chatId, workflowMessageId, dailyProjectReviewText({ review }), dailyProjectReviewButtons(review))
+    }
+
+    const member = await db.collection("guardMembers").findOne({ telegramId })
+    const reviewerName = [member?.firstName, member?.lastName].filter(Boolean).join(" ") || member?.username || callbackMessage?.from?.first_name || "Trade Floor member"
+    const completedAt = new Date()
+
+    if (action === "keep") {
+      review = { ...review, status: "completed", completedAction: "kept_active", completedByTelegramId: telegramId, completedByName: reviewerName, deactivatedProjectIds: [] }
+      await db.collection("opsDailyProjectReviews").updateOne(
+        { _id: reviewId },
+        { $set: { projects: review.projects, selectedProjectIds: [], status: "completed", completedAction: "kept_active", completedByTelegramId: telegramId, completedByName: reviewerName, deactivatedProjectIds: [], completedAt, updatedAt: completedAt } },
+      )
+      return editOrSendWorkflowMessage(token, chatId, workflowMessageId, dailyProjectReviewText({ review, stage: "complete", currentActiveProjects: availableProjects }))
+    }
+
+    if (action === "confirm") {
+      if (!selectedProjectIds.length) return editOrSendWorkflowMessage(token, chatId, workflowMessageId, dailyProjectReviewText({ review }), dailyProjectReviewButtons(review))
+      const deactivatedProjectIds: string[] = []
+      for (const projectId of selectedProjectIds) {
+        const result = await deactivateActiveProject({ projectId, telegramId, source: "daily_trade_review", chatId, reviewDate: id, now: completedAt })
+        if (result.ok && "deactivated" in result && result.deactivated) deactivatedProjectIds.push(projectId)
+      }
+      const deactivatedIds = new Set(deactivatedProjectIds)
+      const stillActive = availableProjects.filter((project) => !deactivatedIds.has(project.projectId) && activeIds.has(project.projectId))
+      review = { ...review, status: "completed", completedAction: "deactivated", completedByTelegramId: telegramId, completedByName: reviewerName, deactivatedProjectIds }
+      await db.collection("opsDailyProjectReviews").updateOne(
+        { _id: reviewId },
+        { $set: { selectedProjectIds: [], status: "completed", completedAction: "deactivated", completedByTelegramId: telegramId, completedByName: reviewerName, deactivatedProjectIds, completedAt, updatedAt: completedAt } },
+      )
+      return editOrSendWorkflowMessage(token, chatId, workflowMessageId, dailyProjectReviewText({ review, stage: "complete", currentActiveProjects: stillActive }))
+    }
+
+    return editOrSendWorkflowMessage(token, chatId, workflowMessageId, dailyProjectReviewText({ review }), dailyProjectReviewButtons(review))
+  }
 
   if (area === "organic" && action === "start") {
     const launchAction = await db.collection("opsAiActions").findOne({ _id: id })
@@ -2391,14 +2614,23 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       return sendAiResponse(token, chatId, telegramId, String(state.pendingText), undefined, context)
     }
     if (state?.action === "timezone_for_manual_reminder") {
-      await setState(telegramId, { action: "add_reminder" }, chatId)
-      return sendMessage(token, chatId, `✅ Timezone saved as ${teamZoneLabel(saved.timeZone)}.\n\n➕ Send reminder like this:\n\nReminder title | YYYY-MM-DD HH:mm | message | optional repeat\n\nRepeat can be hourly, daily, or weekly. Send /cancel to stop.`)
+      return beginTextWorkflow({
+        token,
+        chatId,
+        telegramId,
+        reviewMessageId: Number(state.reviewMessageId || state.promptMessageId || 0) || null,
+        state: { action: "add_reminder" },
+        text: reminderInputPrompt(saved.timeZone),
+      })
     }
     await clearState(telegramId)
     return sendMessage(token, chatId, `✅ Your timezone is now ${saved.timeZone} (${teamZoneLabel(saved.timeZone)}).\nCurrent local time: ${formatTeamDateTime(new Date(), saved.timeZone)}`)
   }
 
-  if (data === "main:menu") return sendMessage(token, chatId, helpMessage())
+  if (data === "main:menu") {
+    const workflowMessageId = Number(callbackMessage?.message_id || 0) || null
+    return editOrSendWorkflowMessage(token, chatId, workflowMessageId, helpMessage())
+  }
 
   if (area === "launch" && action === "start") return sendLaunchCalculatorStart(token, chatId, telegramId)
   if (area === "launch" && action === "chain") return sendLaunchVenuePicker(token, chatId, id as LaunchChainId)
@@ -2550,10 +2782,14 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     if (pendingLaunch?.status === "pending" && pendingLaunch.actionType === "create_project" && (pendingLaunch.payload?.launchAt || pendingLaunch.payload?.launchDate || pendingLaunch.payload?.tentativeLaunchDate) && aiPermissionPolicy(context).dataScope === "launch") {
       return showLaunchSetupReview(token, chatId, pendingLaunch, Number(callbackMessage?.message_id || 0) || null, "Review every launch detail before creating it.")
     }
+    const previewMessageId = Number(callbackMessage?.message_id || 0) || null
     return sendAsyncResponse(token, chatId, async () => {
       const pending = await db.collection("opsAiActions").findOne({ _id: id })
       const policy = aiPermissionPolicy(context)
       const text = await executeOpsAiAction(id, telegramId, { allowedActionTypes: policy.allowedActionTypes, currentChatId: chatId, dataScope: policy.dataScope })
+      if (text.startsWith("✅") && pending?.actionType === "create_reminder" && previewMessageId) {
+        await deleteWorkflowMessages(token, chatId, [previewMessageId])
+      }
       const launchDate = pending?.payload?.launchDate || pending?.payload?.startDate
       const changedLaunch = ["create_project", "update_project"].includes(String(pending?.actionType || "")) && launchDate
       if (!text.startsWith("✅") || !changedLaunch) return { text }
@@ -2592,7 +2828,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     if (!project) return sendMessage(token, chatId, "Project not found.")
     if (["scheduled", "in_progress"].includes(String(project.status || ""))) return sendMessage(token, chatId, "🕒 This project is Scheduled. Confirm it from the Launch Chat prompt when the token launches, or update the launch time if it is delayed.")
     if (project.status === "active") {
-      await db.collection("opsProjects").updateOne({ _id: id }, { $set: { status: "inactive", inactivatedAt: new Date().toISOString(), inactivationSource: "project_management", updatedAt: new Date() } })
+      await deactivateActiveProject({ projectId: id, telegramId, source: "project_management", chatId })
     } else if (projectLaunchAt(project)) {
       const readiness = projectActivationReadiness(project)
       if (!readiness.ready) return sendMessage(token, chatId, `⚠️ Complete ${readiness.missing.join(", ")} before activation.`)
@@ -2651,31 +2887,96 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     return sheet?.projectId ? sendProjectSheets(token, chatId, sheet.projectId) : sendDataProjects(token, chatId)
   }
 
-  if (area === "reminder" && action === "add") {
-    if (!(await getMemberTimeZone(telegramId))) {
-      await setState(telegramId, { action: "timezone_for_manual_reminder" }, chatId)
-      return sendMessage(token, chatId, timeZonePrompt(), timeZoneButtons(telegramId))
+  if (area === "reminderto") {
+    const state = await takeState(telegramId, chatId)
+    const messageId = Number(callbackMessage?.message_id || state?.promptMessageId || 0) || null
+    if (state?.action !== "reminder_audience" || !state.reminderDraft?.ok) {
+      return editOrSendWorkflowMessage(token, chatId, messageId, "This reminder picker expired. Open /reminders and try again.")
     }
-    await setState(telegramId, { action: "add_reminder" }, chatId)
-    return sendMessage(token, chatId, "➕ Send reminder like this:\n\nReminder title | YYYY-MM-DD HH:mm | message | optional repeat\n\nRepeat can be hourly, daily, or weekly. Send /cancel to stop.")
+    if (action === "cancel") {
+      await clearState(telegramId)
+      return editOrSendWorkflowMessage(token, chatId, messageId, "Cancelled.")
+    }
+    const members = await listReminderEligibleMembers(chatId)
+    const selectedTargetIds = Array.isArray(state.selectedTargetIds) ? state.selectedTargetIds.map(Number).filter(Number.isFinite) : []
+    if (action === "toggle") {
+      const targetId = Number(id)
+      if (!members.some((member) => member.telegramId === targetId)) {
+        return showReminderAudiencePicker(token, chatId, messageId, selectedTargetIds, "That trader is no longer available in this chat.")
+      }
+      const nextSelected = selectedTargetIds.includes(targetId)
+        ? selectedTargetIds.filter((telegramIdValue: number) => telegramIdValue !== targetId)
+        : [...selectedTargetIds, targetId]
+      await setState(telegramId, {
+        action: "reminder_audience",
+        reminderDraft: state.reminderDraft,
+        targetChatTitle: state.targetChatTitle,
+        selectedTargetIds: nextSelected,
+        reviewMessageId: state.reviewMessageId || messageId,
+        promptMessageId: messageId,
+      }, chatId)
+      return showReminderAudiencePicker(token, chatId, messageId, nextSelected)
+    }
+    let targetMode: "everyone" | "creator" | "specific" = "everyone"
+    let targetMembers: ReminderTarget[] = []
+    if (action === "me") {
+      const creator = await reminderTargetForTelegramId(telegramId)
+      if (!creator) return showReminderAudiencePicker(token, chatId, messageId, selectedTargetIds, "I couldn’t identify your enrolled Telegram account.")
+      targetMode = "creator"
+      targetMembers = [creator]
+    } else if (action === "save") {
+      targetMembers = members.filter((member) => selectedTargetIds.includes(member.telegramId))
+      if (!targetMembers.length) return showReminderAudiencePicker(token, chatId, messageId, selectedTargetIds, "Choose at least one trader, or use Everyone.")
+      targetMode = "specific"
+    } else if (action !== "everyone") {
+      return showReminderAudiencePicker(token, chatId, messageId, selectedTargetIds)
+    }
+    await completeManualReminder({
+      token,
+      chatId,
+      telegramId,
+      draft: state.reminderDraft,
+      targetMode,
+      targetMembers,
+      targetChatTitle: String(state.targetChatTitle || callbackMessage?.chat?.title || chatId),
+      workflowMessageId: messageId,
+    })
+    return
+  }
+
+  if (area === "reminder" && action === "add") {
+    const reviewMessageId = Number(callbackMessage?.message_id || 0) || null
+    if (!(await getMemberTimeZone(telegramId))) {
+      await setState(telegramId, { action: "timezone_for_manual_reminder", reviewMessageId, promptMessageId: reviewMessageId }, chatId)
+      return editOrSendWorkflowMessage(token, chatId, reviewMessageId, timeZonePrompt(), timeZoneButtons(telegramId))
+    }
+    return beginTextWorkflow({
+      token,
+      chatId,
+      telegramId,
+      reviewMessageId,
+      state: { action: "add_reminder" },
+      text: reminderInputPrompt(),
+    })
   }
   if (area === "reminder" && action === "view") {
+    const workflowMessageId = Number(callbackMessage?.message_id || 0) || null
     const reminder = await db.collection("opsReminders").findOne({ _id: id, deliveryScope: "chat", telegramChatId: String(chatId) })
-    if (!reminder) return sendReminders(token, chatId)
-    return sendMessage(token, chatId, `🔔 ${reminder.title}\n\nDue: ${dateLabel(reminder.dueAt, String(reminder.timeZone || TEAM_TIME_ZONE))}\nRepeat: ${reminder.recurrence || "none"}\nStatus: ${reminder.status || "scheduled"}\n\n${reminder.message || ""}`, [
+    if (!reminder) return sendReminders(token, chatId, workflowMessageId)
+    return editOrSendWorkflowMessage(token, chatId, workflowMessageId, `🔔 ${reminder.title}\n\nDue: ${dateLabel(reminder.dueAt, String(reminder.timeZone || TEAM_TIME_ZONE))}\nRepeat: ${reminder.recurrence || "none"}\nNotify: ${reminderTargetsLabel(reminder.targetMode, reminder.targetMembers)}\nStatus: ${reminder.status || "scheduled"}\n\n${reminder.message || ""}`, [
       [{ text: "✅ Mark Done", callback_data: `reminder:done:${id}` }, { text: "🗑 Remove", callback_data: `reminder:delete:${id}` }],
       [{ text: "⬅️ Reminders", callback_data: "reminders:list" }],
     ])
   }
   if (area === "reminder" && action === "done") {
     await db.collection("opsReminders").updateOne({ _id: id, deliveryScope: "chat", telegramChatId: String(chatId) }, { $set: { status: "done", updatedAt: new Date() } })
-    return sendReminders(token, chatId)
+    return sendReminders(token, chatId, Number(callbackMessage?.message_id || 0) || null)
   }
   if (area === "reminder" && action === "delete") {
     await db.collection("opsReminders").deleteOne({ _id: id, deliveryScope: "chat", telegramChatId: String(chatId) })
-    return sendReminders(token, chatId)
+    return sendReminders(token, chatId, Number(callbackMessage?.message_id || 0) || null)
   }
-  if (data === "reminders:list") return sendReminders(token, chatId)
+  if (data === "reminders:list") return sendReminders(token, chatId, Number(callbackMessage?.message_id || 0) || null)
 
   if (area === "payroll" && action === "add") {
     await setState(telegramId, { action: "add_payroll" }, chatId)
@@ -2819,8 +3120,14 @@ async function routeText(token: string, chatId: number | string, telegramId: num
       return sendAiResponse(token, chatId, telegramId, String(state.pendingText), message, context)
     }
     if (state?.action === "timezone_for_manual_reminder") {
-      await setState(telegramId, { action: "add_reminder" }, chatId)
-      return sendMessage(token, chatId, `✅ Timezone saved as ${teamZoneLabel(saved.timeZone)}.\n\n➕ Send reminder like this:\n\nReminder title | YYYY-MM-DD HH:mm | message | optional repeat\n\nRepeat can be hourly, daily, or weekly. Send /cancel to stop.`)
+      return beginTextWorkflow({
+        token,
+        chatId,
+        telegramId,
+        reviewMessageId: Number(state.reviewMessageId || state.promptMessageId || 0) || null,
+        state: { action: "add_reminder" },
+        text: reminderInputPrompt(saved.timeZone),
+      })
     }
     return sendMessage(token, chatId, `✅ Your timezone is now ${saved.timeZone} (${teamZoneLabel(saved.timeZone)}).`)
   }

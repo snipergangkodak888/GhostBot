@@ -1,12 +1,13 @@
 import { getDb } from "@/lib/db"
 import { getTelegramBotToken, sendTelegramMessage, sendTelegramText } from "@/lib/telegram-bot"
 import { formatTeamDateTime, nextRecurringDueAt, TEAM_TIME_ZONE } from "@/lib/team-timezone"
-import { getSubscribedChats } from "@/lib/chat-subscriptions"
+import { getProfileChats, getSubscribedChats } from "@/lib/chat-subscriptions"
 import { formatLaunchDaySchedule, getLaunchesForDay, launchDateKey, LAUNCH_TIME_ZONE } from "@/lib/launch-calendar"
 import { ensureDailyTradingFeeExpectations, valuePendingRevenueReceipts } from "@/lib/revenue-service"
 import { activateScheduledProject, projectActivationReadiness, projectLaunchAt, projectLaunchDateKey, projectLaunchTimingStatus } from "@/lib/project-lifecycle"
 import { launchMethodLabel, normalizeLaunchMethod } from "@/lib/launch-method"
 import { operationalLaunchVenue } from "@/lib/launch-venues"
+import { activeProjectReviewStart, DAILY_PROJECT_REVIEW_HOUR_ET, dailyProjectReviewButtons, dailyProjectReviewDateKey, dailyProjectReviewId, dailyProjectReviewText, type DailyProjectReviewRecord } from "@/lib/daily-project-review"
 
 const EST_TIME_ZONE = LAUNCH_TIME_ZONE
 
@@ -39,6 +40,18 @@ function telegramLocalDateTime(value: string | Date, timeZone: string) {
   if (Number.isNaN(date.getTime())) return escapeHtml(formatTeamDateTime(value, timeZone))
   const fallback = escapeHtml(formatTeamDateTime(date, timeZone))
   return `<a href="tg://time?unix=${Math.floor(date.getTime() / 1000)}&amp;format=wDt">${fallback}</a>`
+}
+
+function reminderTargetMentions(reminder: any) {
+  if (!["creator", "specific"].includes(String(reminder?.targetMode || ""))) return ""
+  const targets = Array.isArray(reminder?.targetMembers) ? reminder.targetMembers : []
+  return targets.map((target: any) => {
+    const username = String(target?.username || "").trim().replace(/^@/, "")
+    if (username) return `@${escapeHtml(username)}`
+    const telegramId = Number(target?.telegramId)
+    const label = escapeHtml(target?.displayName || "Trader")
+    return Number.isFinite(telegramId) ? `<a href="tg://user?id=${telegramId}">${label}</a>` : label
+  }).filter(Boolean).join(" ")
 }
 
 async function claimDelivery(key: string, type: string) {
@@ -108,11 +121,13 @@ export async function processDueReminders(token: string, now: Date) {
       continue
     }
     const reminderTimeZone = String(reminder.timeZone || TEAM_TIME_ZONE)
+    const targetMentions = reminderTargetMentions(reminder)
     const text = [
       "🔔 <b>Team Reminder</b>",
       "",
       `<b>${escapeHtml(reminder.title || "Reminder")}</b>`,
       reminder.message ? escapeHtml(reminder.message) : "",
+      targetMentions ? `👥 ${targetMentions}` : "",
       "",
       `⏰ ${telegramLocalDateTime(dueAt, reminderTimeZone)}`,
     ].filter(Boolean).join("\n")
@@ -183,6 +198,71 @@ async function processLaunchMorningDigest(token: string, now: Date) {
   }
 
   return { events: launches.length, recipients: recipients.length, sent, failed, skipped, waiting: false, hourEt: digestHour }
+}
+
+export async function processDailyActiveProjectReview(token: string, now: Date) {
+  const configuredHour = Number(process.env.ACTIVE_PROJECT_REVIEW_HOUR_ET || DAILY_PROJECT_REVIEW_HOUR_ET)
+  const reviewHour = Number.isInteger(configuredHour) && configuredHour >= 0 && configuredHour <= 23 ? configuredHour : DAILY_PROJECT_REVIEW_HOUR_ET
+  if (hourInTimeZone(now, EST_TIME_ZONE) !== reviewHour) {
+    return { projects: 0, recipients: 0, sent: 0, failed: 0, skipped: 0, waiting: true, hourEt: reviewHour }
+  }
+
+  const db = await getDb()
+  const dateKey = dailyProjectReviewDateKey(now)
+  const activeProjects = (await db.collection("opsProjects").find({ status: "active" }).toArray())
+    .sort((a: any, b: any) => {
+      const aTime = new Date(activeProjectReviewStart(a) || now).getTime()
+      const bTime = new Date(activeProjectReviewStart(b) || now).getTime()
+      return aTime - bTime || String(a.name || "").localeCompare(String(b.name || ""))
+    })
+  if (!activeProjects.length) {
+    return { projects: 0, recipients: 0, sent: 0, failed: 0, skipped: 0, waiting: false, hourEt: reviewHour }
+  }
+
+  const recipients = await getProfileChats("trade")
+  const snapshots = activeProjects.map((project: any) => ({
+    projectId: String(project._id),
+    name: String(project.name || "Unnamed project"),
+    activeSince: activeProjectReviewStart(project),
+  }))
+  let sent = 0
+  let failed = 0
+  let skipped = 0
+
+  for (const recipient of recipients) {
+    const key = `daily-project-review:${dateKey}:${recipient.chatId}`
+    if (!(await claimDelivery(key, "daily-project-review"))) {
+      skipped += 1
+      continue
+    }
+    const review: DailyProjectReviewRecord = {
+      _id: dailyProjectReviewId(recipient.chatId, dateKey),
+      chatId: String(recipient.chatId),
+      chatTitle: recipient.label,
+      dateKey,
+      projects: snapshots,
+      selectedProjectIds: [],
+      status: "pending",
+    }
+    const createdAt = new Date()
+    await db.collection("opsDailyProjectReviews").insertOne({ ...review, createdAt, updatedAt: createdAt })
+    const messageId = await sendTelegramMessage(token, recipient.chatId, dailyProjectReviewText({ review, now }), {
+      parseMode: "HTML",
+      replyMarkup: { inline_keyboard: dailyProjectReviewButtons(review) },
+    })
+    if (messageId) {
+      sent += 1
+      await db.collection("opsDailyProjectReviews").updateOne(
+        { _id: review._id },
+        { $set: { messageId, sentAt: createdAt, updatedAt: createdAt } },
+      )
+    } else {
+      failed += 1
+      await releaseDelivery(key)
+    }
+  }
+
+  return { projects: activeProjects.length, recipients: recipients.length, sent, failed, skipped, waiting: false, hourEt: reviewHour }
 }
 
 export async function processTentativeLaunchTimingFollowups(token: string, now: Date) {
@@ -423,12 +503,14 @@ export async function runLaunchScheduleCron(now = new Date()) {
   const confirmations = await processDueLaunchConfirmations(token, now)
   const calendar = await processLaunchMorningDigest(token, now)
   const tentativeTiming = await processTentativeLaunchTimingFollowups(token, now)
+  const activeProjectReview = await processDailyActiveProjectReview(token, now)
   return {
     ok: true,
     timezone: EST_TIME_ZONE,
     estDate: estDateKey(now),
     calendar,
     tentativeTiming,
+    activeProjectReview,
     confirmations,
     readiness,
     runAt: now.toISOString(),
@@ -452,6 +534,7 @@ export async function runOpsSuperCron(now = new Date()) {
   const confirmations = await processDueLaunchConfirmations(token, startedAt)
   const calendar = await processLaunchMorningDigest(token, startedAt)
   const tentativeTiming = await processTentativeLaunchTimingFollowups(token, startedAt)
+  const activeProjectReview = await processDailyActiveProjectReview(token, startedAt)
   const finishedAt = new Date()
   const result = {
     ok: true,
@@ -460,6 +543,7 @@ export async function runOpsSuperCron(now = new Date()) {
     reminders,
     calendar,
     tentativeTiming,
+    activeProjectReview,
     confirmations,
     readiness,
     revenueDailyFees,

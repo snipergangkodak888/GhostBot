@@ -368,6 +368,52 @@ export async function cancelScheduledProject(projectId: string, telegramId: numb
   return { ok: true as const, project: { ...project, ...update } }
 }
 
+export async function deactivateActiveProject(params: {
+  projectId: string
+  telegramId?: number | null
+  source: "project_management" | "manual_dashboard" | "daily_trade_review"
+  chatId?: number | string | null
+  reviewDate?: string | null
+  now?: Date
+}) {
+  return withProjectLifecycleLock(params.projectId, async () => {
+    const db = await getDb()
+    const project = await db.collection("opsProjects").findOne({ _id: params.projectId })
+    if (!project) return { ok: false as const, error: "Project not found" }
+    if (project.status === "inactive") return { ok: true as const, alreadyInactive: true as const, project }
+    if (project.status !== "active") return { ok: false as const, error: "Only active projects can be deactivated" }
+    const now = params.now || new Date()
+    const update = {
+      status: "inactive" as const,
+      inactivatedAt: now.toISOString(),
+      inactivationSource: params.source,
+      inactivatedByTelegramId: params.telegramId || null,
+      nextActivationPromptAt: null,
+      activationOverdue: false,
+      pendingActivationIntent: null,
+      pendingActivationRequestedAt: null,
+      pendingActivationRequestedByTelegramId: null,
+      updatedAt: now,
+    }
+    const result = await db.collection("opsProjects").updateOne(
+      { _id: project._id, status: "active" },
+      { $set: update },
+    )
+    if (!result.modifiedCount) return { ok: false as const, error: "The project changed before it could be deactivated. Refresh and try again." }
+    await db.collection("opsProjectLifecycleEvents").insertOne({
+      projectId: String(project._id),
+      projectName: project.name,
+      action: "deactivated",
+      source: params.source,
+      telegramId: params.telegramId || null,
+      chatId: params.chatId == null ? null : String(params.chatId),
+      reviewDate: params.reviewDate || null,
+      createdAt: now,
+    })
+    return { ok: true as const, project: { ...project, ...update }, deactivated: true as const }
+  })
+}
+
 export async function completeProjectReadinessStep(params: {
   projectId: string
   telegramId: number

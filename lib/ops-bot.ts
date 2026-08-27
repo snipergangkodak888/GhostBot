@@ -31,6 +31,8 @@ import {
   TEAM_TIME_ZONE,
 } from "@/lib/team-timezone"
 import { getSheetSchema, normalizeSheetKind, valuesForKind, type SheetKind } from "@/lib/sheet-schemas"
+import { isReminderRequest, parseReminderRequest, reminderRequestError } from "@/lib/reminder-parser"
+import { reminderTargetForTelegramId, reminderTargetsLabel, resolveReminderTargetUsernames } from "@/lib/reminder-targets"
 import { cleanLaunchProjectName, cleanLaunchProjectNameFromRequest, inferLaunchConfiguration, normalizeProjectStatus, projectActivationReadiness, projectLaunchAt, scheduledLifecycleFields, tentativeLifecycleFields } from "@/lib/project-lifecycle"
 import { formatLaunchSetupReview, launchSetupButtons, launchSetupReady } from "@/lib/launch-setup"
 import { inferLaunchMethod, normalizeLaunchMethod } from "@/lib/launch-method"
@@ -258,7 +260,7 @@ export type OpsAiOptions = {
 function scopedActionPayload(actionType: string, payload: Record<string, any>, scope: OpsAiOptions["dataScope"]) {
   if (!scope || scope === "full") return payload
   const allowed = actionType === "create_reminder"
-    ? ["title", "message", "dueAt", "timeZone", "recurrence", "deliveryScope", "telegramChatId", "targetChatTitle"]
+    ? ["title", "message", "dueAt", "timeZone", "recurrence", "deliveryScope", "telegramChatId", "targetChatTitle", "targetMode", "targetUsernames", "targetMembers"]
     : actionType === "create_project_note"
       ? ["projectName", "text", "note", "message", "_projectId"]
     : scope === "launch"
@@ -1045,6 +1047,7 @@ async function resolveActionPreview(actionType: string, payload: any, context: {
       preview.push(`📅 Due: ${parsed ? formatTeamDateTime(parsed, timeZone) : String(nextPayload.dueAt)}`)
     }
     if (actionType === "create_reminder" && nextPayload.targetChatTitle) preview.push(`💬 Deliver to: ${nextPayload.targetChatTitle}`)
+    if (actionType === "create_reminder") preview.push(`👥 Notify: ${reminderTargetsLabel(nextPayload.targetMode, nextPayload.targetMembers)}`)
     if (actionType === "create_reminder" && nextPayload.recurrence && nextPayload.recurrence !== "none") preview.push(`🔁 Repeats: ${nextPayload.recurrence}`)
     if (actionType === "create_payroll" && nextPayload.member) preview.push(`💸 Payroll member: ${nextPayload.member}`)
   }
@@ -1093,6 +1096,13 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
   const memberTimeZone = options.requestTimeZone || await getMemberTimeZone(telegramId)
   const requestTimeZone = explicitTimeZone || options.requestTimeZone || memberTimeZone || TEAM_TIME_ZONE
   const requestNow = referenceDate(options)
+  if (/\bremind(?:er|ers)?\b/i.test(text) && /\bon[-\s]?shift\b/i.test(text)) {
+    return {
+      actionId: "",
+      message: "👥 Shift targeting isn’t available yet because no trader shift roster is configured. Tag specific traders with @username, use “remind me,” or choose people from the reminder picker.",
+      needsChoice: false,
+    }
+  }
   const conflict = temporalDateConflict(text, requestTimeZone, requestNow)
   if (conflict) {
     return {
@@ -1106,10 +1116,22 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
       needsChoice: false,
     }
   }
-  const [projectRows, sheetRows] = await Promise.all([
-    db.collection("opsProjects").find({}).toArray(),
-    db.collection("opsSheets").find({}).toArray(),
-  ])
+  const deterministicReminder = isReminderRequest(text)
+    ? parseReminderRequest(text, { timeZone: requestTimeZone, now: requestNow })
+    : null
+  if (deterministicReminder && !deterministicReminder.ok) {
+    return {
+      actionId: "",
+      message: `⚠️ ${reminderRequestError(deterministicReminder)}`,
+      needsChoice: false,
+    }
+  }
+  const [projectRows, sheetRows] = deterministicReminder?.ok
+    ? [[], []]
+    : await Promise.all([
+      db.collection("opsProjects").find({}).toArray(),
+      db.collection("opsSheets").find({}).toArray(),
+    ])
   const projects = options.dataScope === "launch"
     ? projectRows.map((project: any) => ({ _id: project._id, name: project.name, owner: project.owner, referrer: project.referrer, referrerAccountId: project.referrerAccountId, referrerStatus: project.referrerStatus, status: project.status, service: project.service, startDate: project.startDate, launchAt: project.launchAt, launchDate: project.launchDate, tentativeLaunchDate: project.tentativeLaunchDate, launchTimingStatus: project.launchTimingStatus, launchTimeZone: project.launchTimeZone, launchVenue: project.launchVenue, launchVenueLabel: project.launchVenueLabel, launchFundingAsset: project.launchFundingAsset, launchMethod: project.launchMethod, chain: project.chain, quoteToken: project.quoteToken, quoteTokenAddress: project.quoteTokenAddress, quoteTokenDecimals: project.quoteTokenDecimals, dailyTradingFeeEnabled: project.dailyTradingFeeEnabled, dailyTradingFeeUsd: project.dailyTradingFeeUsd, launchFeeUsd: project.launchFeeUsd, feeConfigurationConfirmed: project.feeConfigurationConfirmed, endDate: project.endDate, notes: project.notes, tags: project.tags, createdAt: project.createdAt, updatedAt: project.updatedAt }))
     : options.dataScope === "trade"
@@ -1124,7 +1146,22 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
     headers: valuesForKind(sheet.sheetType || "custom", sheet.values || [])[0] || getSheetSchema(sheet.sheetType || "custom").headers,
   }))
 
-  let plan: any = inferCapabilityAction(text, projects, requestTimeZone, requestNow)
+  let plan: any = deterministicReminder?.ok
+    ? {
+      actionType: "create_reminder",
+      summary: `Remind this chat about ${deterministicReminder.title}`,
+      payload: {
+        title: deterministicReminder.title,
+        message: deterministicReminder.message,
+        dueAt: deterministicReminder.dueAt,
+        timeZone: deterministicReminder.timeZone,
+        recurrence: deterministicReminder.recurrence,
+        targetMode: deterministicReminder.targetMode,
+        targetUsernames: deterministicReminder.targetUsernames,
+      },
+      warnings: [],
+    }
+    : inferCapabilityAction(text, projects, requestTimeZone, requestNow)
   if (plan && options.allowedActionTypes?.length && !options.allowedActionTypes.includes(String(plan.actionType || ""))) {
     return { actionId: "", message: "⛔ That action is outside this chat's permitted functions.", needsChoice: false }
   }
@@ -1234,6 +1271,23 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
     payload.dueAt = normalized.dueAt
     payload.timeZone = normalized.timeZone
     payload.recurrence = reminderRecurrenceFromText(text, payload.recurrence)
+    payload.targetMode = ["everyone", "creator", "specific"].includes(String(payload.targetMode)) ? payload.targetMode : "everyone"
+    if (payload.targetMode === "creator") {
+      const creator = telegramId ? await reminderTargetForTelegramId(telegramId) : null
+      if (!creator) return { actionId: "", message: "⚠️ I couldn’t identify your enrolled Telegram account for this reminder.", needsChoice: false }
+      payload.targetMembers = [creator]
+    } else if (payload.targetMode === "specific") {
+      const resolvedTargets = await resolveReminderTargetUsernames(payload.targetUsernames, options.chatId)
+      if (resolvedTargets.unresolved.length) {
+        return { actionId: "", message: `⚠️ I couldn’t find ${resolvedTargets.unresolved.map((username) => `@${username}`).join(", ")} among the enrolled traders in this chat.`, needsChoice: false }
+      }
+      if (!resolvedTargets.targets.length) return { actionId: "", message: "⚠️ Who should I tag for this reminder?", needsChoice: false }
+      payload.targetMembers = resolvedTargets.targets
+    } else {
+      payload.targetMode = "everyone"
+      payload.targetMembers = []
+    }
+    delete payload.targetUsernames
     if (options.chatId !== undefined && options.chatId !== null) {
       payload.deliveryScope = "chat"
       payload.telegramChatId = String(options.chatId)
@@ -1511,6 +1565,8 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
       deliveryScope: payload.deliveryScope === "chat" && payload.telegramChatId ? "chat" : "team",
       telegramChatId: payload.telegramChatId ? String(payload.telegramChatId) : "",
       targetChatTitle: String(payload.targetChatTitle || "").trim(),
+      targetMode: ["creator", "specific"].includes(String(payload.targetMode)) ? payload.targetMode : "everyone",
+      targetMembers: Array.isArray(payload.targetMembers) ? payload.targetMembers : [],
       status: "scheduled",
       createdFrom: "ai",
       telegramId: telegramId || null,
@@ -1519,7 +1575,7 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
     })
     const reminderTimeZone = normalized.timeZone
     const recurrence = reminderRecurrenceFromText(action.request, payload.recurrence)
-    done = `✅ Reminder created: ${title}\n📅 Due: ${formatTeamDateTime(dueAt, reminderTimeZone)}${recurrence !== "none" ? `\n🔁 Repeats: ${recurrence}` : ""}${payload.targetChatTitle ? `\n💬 Deliver to: ${payload.targetChatTitle}` : ""}`
+    done = `✅ Reminder created: ${title}\n📅 Due: ${formatTeamDateTime(dueAt, reminderTimeZone)}${recurrence !== "none" ? `\n🔁 Repeats: ${recurrence}` : ""}\n👥 Notify: ${reminderTargetsLabel(payload.targetMode, payload.targetMembers)}${payload.targetChatTitle ? `\n💬 Deliver to: ${payload.targetChatTitle}` : ""}`
   }
 
   if (action.actionType === "create_payroll") {
@@ -1814,25 +1870,48 @@ export async function answerOpsBot(textInput: string, telegramId?: number | null
       }
     }
   } else if (text.startsWith("/setreminder ")) {
-    const message = text.replace("/setreminder ", "").trim()
-    const dueAt = new Date(Date.now() + 60 * 60 * 1000).toISOString()
-    await db.collection("opsReminders").insertOne({
-      title: message.slice(0, 80),
-      message,
-      dueAt,
-      timeZone: TEAM_TIME_ZONE,
-      recurrence: "none",
-      audience: "team",
-      deliveryScope: options.chatId !== undefined && options.chatId !== null ? "chat" : "team",
-      telegramChatId: options.chatId !== undefined && options.chatId !== null ? String(options.chatId) : "",
-      targetChatTitle: String(options.chatTitle || options.chatId || "").trim(),
-      status: "scheduled",
-      createdFrom: "bot",
-      telegramId,
-      createdAt: new Date(),
-      updatedAt: new Date(),
+    const parsed = parseReminderRequest(text, {
+      timeZone: options.requestTimeZone || await getMemberTimeZone(telegramId) || TEAM_TIME_ZONE,
+      now: referenceDate(options),
     })
-    answer = `🔔 Reminder created.\n📅 Due: ${formatTeamDateTime(dueAt)}${options.chatTitle ? `\n💬 Deliver to: ${options.chatTitle}` : ""}`
+    if (!parsed.ok) {
+      answer = `⚠️ ${reminderRequestError(parsed)}`
+    } else {
+      let targetMode: "everyone" | "creator" | "specific" = parsed.targetMode === "unspecified" ? "everyone" : parsed.targetMode
+      let targetMembers: any[] = []
+      if (targetMode === "creator") {
+        const creator = telegramId ? await reminderTargetForTelegramId(telegramId) : null
+        if (creator) targetMembers = [creator]
+        else targetMode = "everyone"
+      } else if (targetMode === "specific") {
+        const resolved = await resolveReminderTargetUsernames(parsed.targetUsernames, options.chatId)
+        if (resolved.unresolved.length || !resolved.targets.length) {
+          answer = `⚠️ I couldn’t identify ${resolved.unresolved.map((username) => `@${username}`).join(", ") || "those traders"}. I did not create the reminder.`
+          await logBotExchange({ text, answer, telegramId, chatId: options.chatId })
+          return formatBotText(answer, { allowEmoji: true })
+        }
+        targetMembers = resolved.targets
+      }
+      await db.collection("opsReminders").insertOne({
+        title: parsed.title,
+        message: parsed.message,
+        dueAt: parsed.dueAt,
+        timeZone: parsed.timeZone,
+        recurrence: parsed.recurrence,
+        audience: "team",
+        deliveryScope: options.chatId !== undefined && options.chatId !== null ? "chat" : "team",
+        telegramChatId: options.chatId !== undefined && options.chatId !== null ? String(options.chatId) : "",
+        targetChatTitle: String(options.chatTitle || options.chatId || "").trim(),
+        targetMode,
+        targetMembers,
+        status: "scheduled",
+        createdFrom: "bot",
+        telegramId,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      answer = `🔔 Reminder created.\n📅 Due: ${formatTeamDateTime(parsed.dueAt, parsed.timeZone)}\n👥 Notify: ${reminderTargetsLabel(targetMode, targetMembers)}${options.chatTitle ? `\n💬 Deliver to: ${options.chatTitle}` : ""}`
+    }
   } else if (text) {
     const docs = await db.collection("opsDocs").find({}).toArray()
     const lower = text.toLowerCase()

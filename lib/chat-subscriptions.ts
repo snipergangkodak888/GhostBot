@@ -185,3 +185,18 @@ export async function getSubscribedChats(purpose: ChatPurpose) {
   }
   return Array.from(unique.values())
 }
+
+export async function getProfileChats(profile: ChatProfile) {
+  const db = await getDb()
+  const rows = await db.collection("opsChatProfiles").find({ profile, status: "active" }).toArray()
+  const unique = new Map<string, { chatId: number | string; kind: "direct" | "group"; label: string }>()
+  for (const row of rows) {
+    if (!row.chatId) continue
+    unique.set(String(row.chatId), {
+      chatId: row.chatId,
+      kind: String(row.chatType || "").includes("group") || String(row.chatId).startsWith("-") ? "group" : "direct",
+      label: String(row.title || chatProfileLabel(profile)),
+    })
+  }
+  return Array.from(unique.values())
+}
