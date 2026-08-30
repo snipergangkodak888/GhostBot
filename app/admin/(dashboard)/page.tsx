@@ -14,7 +14,7 @@ type Summary = {
     revenueToday?: number
     profitThisWeek?: number
   }
-  upcomingReminders?: Array<{ _id: string; title: string; dueAt?: string }>
+  upcomingReminders?: Array<{ _id: string; text?: string; title?: string; message?: string; dueAt?: string }>
   pendingPayroll?: Array<{ _id: string; member: string; amount: number; currency: string; status: string }>
   projects?: Array<{ _id: string; name: string; status: string; owner?: string; launchDate?: string; notes?: string }>
 }
@@ -64,7 +64,7 @@ export default function AdminHomePage() {
         id: `reminder-${reminder._id}`,
         date: reminder.dueAt || "",
         type: "Reminder",
-        title: reminder.title,
+        title: reminder.text || reminder.title || reminder.message || "Reminder",
         detail: "Team reminder",
       }))
     return [...launches, ...reminders]
@@ -113,7 +113,7 @@ export default function AdminHomePage() {
             <div className="space-y-2">
               {(summary.upcomingReminders || []).slice(0, 5).map((reminder) => (
                 <div key={reminder._id} className="rounded-xl bg-white/[0.04] p-3">
-                  <p className="text-sm font-semibold text-white">{reminder.title}</p>
+                  <p className="text-sm font-semibold text-white">{reminder.text || reminder.title || reminder.message}</p>
                   <p className="mt-1 text-xs text-white/40">{reminder.dueAt ? new Date(reminder.dueAt).toLocaleString() : "No date"}</p>
                 </div>
               ))}

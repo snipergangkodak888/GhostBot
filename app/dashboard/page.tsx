@@ -18,7 +18,7 @@ type Summary = {
     expenseThisMonth?: number
   }
   crypto?: Record<string, number | null>
-  upcomingReminders?: Array<{ _id: string; title: string; dueAt?: string }>
+  upcomingReminders?: Array<{ _id: string; text?: string; title?: string; message?: string; dueAt?: string }>
   projects?: Array<{ _id: string; name: string; status: string; owner?: string; launchDate?: string; notes?: string }>
 }
 
@@ -173,7 +173,7 @@ export default function Dashboard() {
         </div>
         {nextReminder ? (
           <div className="rounded-xl bg-black/30 p-4">
-            <p className="font-semibold text-white">{nextReminder.title}</p>
+            <p className="font-semibold text-white">{nextReminder.text || nextReminder.title || nextReminder.message}</p>
             <p className="mt-1 text-sm text-white/45">{dateLabel(nextReminder.dueAt)}</p>
           </div>
         ) : (

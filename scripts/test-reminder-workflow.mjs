@@ -165,10 +165,11 @@ try {
 
   const rows = await documents(["opsReminders"])
   const reminders = rows.map((row) => row.data).filter((row) => String(row.telegramChatId || "") === telegramChatId)
-  assert.deepEqual(reminders.map((row) => row.title).sort(), ["WWR injection", "WWR injection AI test", "WWR injection command test"])
+  assert.deepEqual(reminders.map((row) => row.text).sort(), ["WWR injection", "WWR injection AI test", "WWR injection command test"])
+  assert.ok(reminders.every((row) => !("title" in row) && !("message" in row)), "New reminders must persist one canonical text field.")
   assert.ok(reminders.every((row) => new Date(row.dueAt).getTime() > Date.now()), "Every saved reminder must have a future due time.")
-  assert.equal(reminders.find((row) => row.title === "WWR injection")?.targetMembers?.[0]?.username, "alex_lab")
-  assert.deepEqual(reminders.find((row) => row.title === "WWR injection AI test")?.targetMembers?.map((member) => member.username), ["alex_lab", "sam_lab"])
+  assert.equal(reminders.find((row) => row.text === "WWR injection")?.targetMembers?.[0]?.username, "alex_lab")
+  assert.deepEqual(reminders.find((row) => row.text === "WWR injection AI test")?.targetMembers?.map((member) => member.username), ["alex_lab", "sam_lab"])
 
   const navigationList = await sendBotLabUpdate(config, { text: "/reminders" })
   const navigationMessageId = navigationList.messages?.[0]?.messageId

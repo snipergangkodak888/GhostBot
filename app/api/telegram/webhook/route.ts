@@ -6,6 +6,7 @@ import { deleteProjectCascade } from "@/lib/platform-data"
 import { getSheetSchema, SHEET_KIND_ORDER, valuesForKind, type SheetKind } from "@/lib/sheet-schemas"
 import { dateKeyInTimeZone, detectExplicitTimeZone, formatTeamDateTime, parseContextualTeamDateTime, parseNaturalTeamDate, parseNaturalTeamDateTime, parseTeamDateTime, teamZoneLabel, TIME_ZONE_OPTIONS, timeZoneFromOption, TEAM_TIME_ZONE } from "@/lib/team-timezone"
 import { parseReminderRequest, reminderRequestError, type ParsedReminderRequest } from "@/lib/reminder-parser"
+import { reminderText } from "@/lib/reminder-text"
 import { listReminderEligibleMembers, reminderTargetForTelegramId, reminderTargetsLabel, resolveReminderTargetUsernames, type ReminderTarget } from "@/lib/reminder-targets"
 import { editTelegramMessage, getTelegramBotToken, getTelegramBotUsername, isTelegramCaptureActive, sendChatAction, sendTelegramDocument, sendTelegramMessage, sendTelegramPhoto, telegramApi, telegramApiJson, withTelegramLoading } from "@/lib/telegram-bot"
 import { savePayrollDay } from "@/lib/payroll-day"
@@ -967,9 +968,9 @@ async function sendReminders(token: string, chatId: number | string, messageId?:
   const db = await getDb()
   const rows = await db.collection("opsReminders").find({ status: { $ne: "done" } }).sort({ dueAt: 1 }).toArray()
   const reminders = rows.filter((reminder: any) => reminder.deliveryScope === "chat" && String(reminder.telegramChatId || "") === String(chatId)).slice(0, 8)
-  await editOrSendWorkflowMessage(token, chatId, messageId, `🔔 Reminders\n\n${reminders.length ? reminders.map((r: any, i: number) => `${i + 1}. ${r.title || r.message} - ${dateLabel(r.dueAt, String(r.timeZone || TEAM_TIME_ZONE))}${r.recurrence && r.recurrence !== "none" ? ` · ${r.recurrence}` : ""} · ${reminderTargetsLabel(r.targetMode, r.targetMembers)}${r.targetChatTitle ? ` → ${r.targetChatTitle}` : ""}`).join("\n") : "No reminders yet."}`, [
+  await editOrSendWorkflowMessage(token, chatId, messageId, `🔔 Reminders\n\n${reminders.length ? reminders.map((r: any, i: number) => `${i + 1}. ${reminderText(r)} - ${dateLabel(r.dueAt, String(r.timeZone || TEAM_TIME_ZONE))}${r.recurrence && r.recurrence !== "none" ? ` · ${r.recurrence}` : ""} · ${reminderTargetsLabel(r.targetMode, r.targetMembers)}${r.targetChatTitle ? ` → ${r.targetChatTitle}` : ""}`).join("\n") : "No reminders yet."}`, [
     [{ text: "➕ Add Reminder", callback_data: "reminder:add" }],
-    ...reminders.map((r: any) => [{ text: `Open ${r.title || r.message}`.slice(0, 60), callback_data: `reminder:view:${r._id}` }]),
+    ...reminders.map((r: any) => [{ text: `Open ${reminderText(r)}`.slice(0, 60), callback_data: `reminder:view:${r._id}` }]),
     [{ text: "⬅️ Back", callback_data: "main:menu" }],
   ])
 }
@@ -1026,8 +1027,7 @@ async function completeManualReminder(params: {
   const db = await getDb()
   const now = new Date()
   const result = await db.collection("opsReminders").insertOne({
-    title: params.draft.title,
-    message: params.draft.message,
+    text: params.draft.text,
     dueAt: params.draft.dueAt,
     timeZone: params.draft.timeZone,
     recurrence: params.draft.recurrence,
@@ -1046,7 +1046,7 @@ async function completeManualReminder(params: {
   const confirmation = [
     "✅ Reminder set",
     "",
-    `🔔 ${params.draft.title}`,
+    `🔔 ${params.draft.text}`,
     `⏰ ${formatTeamDateTime(params.draft.dueAt, params.draft.timeZone)}`,
     ...(params.draft.recurrence !== "none" ? [`🔁 Repeats: ${params.draft.recurrence}`] : []),
     `👥 Notify: ${reminderTargetsLabel(params.targetMode, params.targetMembers)}`,
@@ -2992,7 +2992,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     const workflowMessageId = Number(callbackMessage?.message_id || 0) || null
     const reminder = await db.collection("opsReminders").findOne({ _id: id, deliveryScope: "chat", telegramChatId: String(chatId) })
     if (!reminder) return sendReminders(token, chatId, workflowMessageId)
-    return editOrSendWorkflowMessage(token, chatId, workflowMessageId, `🔔 ${reminder.title}\n\nDue: ${dateLabel(reminder.dueAt, String(reminder.timeZone || TEAM_TIME_ZONE))}\nRepeat: ${reminder.recurrence || "none"}\nNotify: ${reminderTargetsLabel(reminder.targetMode, reminder.targetMembers)}\nStatus: ${reminder.status || "scheduled"}\n\n${reminder.message || ""}`, [
+    return editOrSendWorkflowMessage(token, chatId, workflowMessageId, `🔔 ${reminderText(reminder)}\n\nDue: ${dateLabel(reminder.dueAt, String(reminder.timeZone || TEAM_TIME_ZONE))}\nRepeat: ${reminder.recurrence || "none"}\nNotify: ${reminderTargetsLabel(reminder.targetMode, reminder.targetMembers)}\nStatus: ${reminder.status || "scheduled"}`, [
       [{ text: "✅ Mark Done", callback_data: `reminder:done:${id}` }, { text: "🗑 Remove", callback_data: `reminder:delete:${id}` }],
       [{ text: "⬅️ Reminders", callback_data: "reminders:list" }],
     ])

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
 import { ObjectId } from '@/lib/object-id'
 import { normalizeReminderDueAt, TEAM_TIME_ZONE } from '@/lib/team-timezone'
+import { reminderWriteText } from '@/lib/reminder-text'
 
 export const dynamic = 'force-dynamic'
 
@@ -12,7 +13,8 @@ function idFilter(id: string) {
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   const body = await req.json().catch(() => ({}))
   const update: Record<string, any> = { updatedAt: new Date() }
-  for (const key of ['title', 'message', 'telegramChatId', 'targetChatTitle']) {
+  if (['text', 'title', 'message'].some((key) => typeof body[key] === 'string')) update.text = reminderWriteText(body)
+  for (const key of ['telegramChatId', 'targetChatTitle']) {
     if (typeof body[key] === 'string') update[key] = body[key].trim()
   }
   if (body.projectId !== undefined) update.projectId = body.projectId ? String(body.projectId) : null

@@ -3,9 +3,10 @@
 import { useEffect, useMemo, useState } from "react"
 import { CalendarDays, Plus, Save, X } from "lucide-react"
 import { toast } from "sonner"
+import { reminderText } from "@/lib/reminder-text"
 
 type Project = { _id: string; name: string; status: string; owner?: string; launchDate?: string; launchAt?: string; tentativeLaunchDate?: string; launchTimingStatus?: "tentative" | "confirmed"; launchMethod?: "sumo" | "senzu_plugin" | "other_mm_plugin" }
-type Reminder = { _id: string; title: string; dueAt?: string; status?: string }
+type Reminder = { _id: string; text?: string; title?: string; message?: string; dueAt?: string; status?: string }
 type HostedGroup = { chatId: string; title: string }
 
 function localDateTimeInput(date = new Date()) {
@@ -22,8 +23,7 @@ export default function CalendarPage() {
   const [groups, setGroups] = useState<HostedGroup[]>([])
   const [formOpen, setFormOpen] = useState(false)
   const [form, setForm] = useState({
-    title: "",
-    message: "",
+    text: "",
     dueAt: localDateTimeInput(),
     projectId: "",
     telegramChatId: "",
@@ -48,8 +48,8 @@ export default function CalendarPage() {
   }, [])
 
   const saveReminder = async () => {
-    if (!form.title.trim() && !form.message.trim()) {
-      toast.error("Reminder title or message is required")
+    if (!form.text.trim()) {
+      toast.error("Reminder text is required")
       return
     }
     if (!form.telegramChatId) {
@@ -70,7 +70,7 @@ export default function CalendarPage() {
     }
     toast.success("Reminder added")
     setFormOpen(false)
-    setForm({ title: "", message: "", dueAt: localDateTimeInput(), projectId: "", telegramChatId: "" })
+    setForm({ text: "", dueAt: localDateTimeInput(), projectId: "", telegramChatId: "" })
     load()
   }
 
@@ -86,7 +86,7 @@ export default function CalendarPage() {
       ...reminders.filter((reminder) => reminder.dueAt).map((reminder) => ({
         id: `reminder-${reminder._id}`,
         date: reminder.dueAt || "",
-        title: reminder.title,
+        title: reminderText(reminder),
         meta: reminder.status || "scheduled",
         type: "Reminder",
       })),
@@ -113,7 +113,7 @@ export default function CalendarPage() {
             <button onClick={() => setFormOpen(false)} className="grid h-8 w-8 place-items-center rounded-lg border border-white/[0.08] bg-white/[0.04] text-white/65"><X className="h-4 w-4" /></button>
           </div>
           <div className="grid gap-2 sm:grid-cols-2">
-            <input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} placeholder="Reminder title" className="h-10 rounded-lg border border-white/[0.08] bg-black/35 px-3 text-sm text-white outline-none focus:border-[#ff8a3d]/60" />
+            <input value={form.text} onChange={(event) => setForm({ ...form, text: event.target.value })} placeholder="What do you want to remember?" className="h-10 rounded-lg border border-white/[0.08] bg-black/35 px-3 text-sm text-white outline-none focus:border-[#ff8a3d]/60 sm:col-span-2" />
             <label className="space-y-1"><input type="datetime-local" value={form.dueAt} onChange={(event) => setForm({ ...form, dueAt: event.target.value })} className="h-10 w-full rounded-lg border border-white/[0.08] bg-black/35 px-3 text-sm text-white outline-none focus:border-[#ff8a3d]/60" /><span className="block text-[11px] text-white/40">Your timezone: {browserTimeZone() || "Unknown"}</span></label>
             <select value={form.projectId} onChange={(event) => setForm({ ...form, projectId: event.target.value })} className="h-10 rounded-lg border border-white/[0.08] bg-black px-3 text-sm text-white outline-none focus:border-[#ff8a3d]/60 sm:col-span-2">
               <option value="">No project</option>
@@ -124,7 +124,6 @@ export default function CalendarPage() {
               {groups.map((group) => <option key={group.chatId} value={group.chatId}>{group.title}</option>)}
             </select>
             {!groups.length ? <p className="text-xs text-amber-300/70 sm:col-span-2">Mention the bot in a Telegram group once so it appears here.</p> : null}
-            <textarea value={form.message} onChange={(event) => setForm({ ...form, message: event.target.value })} placeholder="Message" className="min-h-20 rounded-lg border border-white/[0.08] bg-black/35 px-3 py-2 text-sm text-white outline-none focus:border-[#ff8a3d]/60 sm:col-span-2" />
           </div>
           <button onClick={saveReminder} className="mt-3 inline-flex h-10 items-center gap-2 rounded-lg bg-[#ff8a3d] px-3 text-sm font-bold text-black">
             <Save className="h-4 w-4" />

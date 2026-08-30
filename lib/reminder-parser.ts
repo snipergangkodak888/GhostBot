@@ -11,8 +11,7 @@ import {
 
 export type ParsedReminderRequest = {
   ok: true
-  title: string
-  message: string
+  text: string
   dueAt: string
   timeZone: string
   recurrence: ReminderRecurrence
@@ -50,7 +49,7 @@ function removeChronoDates(text: string, now: Date, preserveBareDayPart = false)
   return result
 }
 
-function naturalReminderTitle(text: string, now: Date) {
+function naturalReminderText(text: string, now: Date) {
   const explicitSubject = text.match(/\b(?:for|about)\s+(.+)$/i)?.[1]
     || text.match(/\bto\s+(.+)$/i)?.[1]
   let title = removeChronoDates(explicitSubject || text, now, Boolean(explicitSubject))
@@ -81,9 +80,10 @@ export function parseReminderRequest(
   if (!text) return { ok: false, issue: "missing_title" }
 
   const pipeParts = text.includes("|") ? text.split("|").map((part) => part.trim()) : null
-  const title = pipeParts ? String(pipeParts[0] || "").trim() : naturalReminderTitle(text, now)
+  const reminderText = pipeParts
+    ? String(pipeParts[2] || pipeParts[0] || "").trim()
+    : naturalReminderText(text, now)
   const dueText = pipeParts ? String(pipeParts[1] || "").trim() : text
-  const message = pipeParts ? String(pipeParts[2] || title).trim() || title : title
   const repeat = pipeParts ? pipeParts[3] : undefined
   const targetUsernames = Array.from(new Set(Array.from(text.matchAll(/@([a-z0-9_]+)/gi)).map((match) => match[1].toLowerCase())))
   const targetMode = targetUsernames.length
@@ -94,7 +94,7 @@ export function parseReminderRequest(
         ? "everyone" as const
         : "unspecified" as const
 
-  if (!title) return { ok: false, issue: "missing_title" }
+  if (!reminderText) return { ok: false, issue: "missing_title" }
   if (!dueText || !hasUsableTime(dueText, now)) return { ok: false, issue: "missing_time" }
 
   const parsedDueAt = parseNaturalTeamDateTime(dueText, timeZone, now)
@@ -107,8 +107,7 @@ export function parseReminderRequest(
 
   return {
     ok: true,
-    title,
-    message,
+    text: reminderText,
     dueAt: nextDueAt,
     timeZone,
     recurrence,

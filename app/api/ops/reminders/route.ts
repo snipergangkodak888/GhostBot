@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
 import { normalizeReminderDueAt, TEAM_TIME_ZONE } from '@/lib/team-timezone'
+import { reminderText, reminderWriteText } from '@/lib/reminder-text'
 
 export const dynamic = 'force-dynamic'
 
@@ -8,8 +9,7 @@ function cleanReminder(body: any) {
   const normalized = normalizeReminderDueAt({ dueAt: body.dueAt, timeZone: body.timeZone || TEAM_TIME_ZONE })
   const telegramChatId = body.telegramChatId ? String(body.telegramChatId).trim() : ''
   return {
-    title: String(body.title || '').trim(),
-    message: String(body.message || '').trim(),
+    text: reminderWriteText(body),
     projectId: body.projectId ? String(body.projectId) : null,
     dueAt: normalized?.dueAt || '',
     timeZone: normalized?.timeZone || TEAM_TIME_ZONE,
@@ -26,7 +26,7 @@ export async function GET() {
   try {
     const db = await getDb()
     const reminders = await db.collection('opsReminders').find({}).sort({ dueAt: 1 }).toArray()
-    return NextResponse.json(reminders)
+    return NextResponse.json(reminders.map((reminder: any) => ({ ...reminder, text: reminderText(reminder) })))
   } catch {
     return NextResponse.json([])
   }
@@ -35,8 +35,8 @@ export async function GET() {
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}))
   const reminder = cleanReminder(body)
-  if (!reminder.title && !reminder.message) {
-    return NextResponse.json({ error: 'Reminder title or message is required' }, { status: 400 })
+  if (!reminder.text) {
+    return NextResponse.json({ error: 'Reminder text is required' }, { status: 400 })
   }
   if (!reminder.dueAt) return NextResponse.json({ error: 'A valid reminder due time is required' }, { status: 400 })
   if (!reminder.telegramChatId) return NextResponse.json({ error: 'Select a delivery chat' }, { status: 400 })

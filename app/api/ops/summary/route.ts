@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
 import { calculateSheetFinancials } from '@/lib/ops-sheets'
+import { reminderText } from '@/lib/reminder-text'
 import {
   aggregateLedgerPeriod,
   monthStartKey,
@@ -43,6 +44,7 @@ export async function GET() {
     .filter((r: any) => r.status !== 'done' && new Date(r.dueAt).getTime() >= now)
     .sort((a: any, b: any) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime())
     .slice(0, 6)
+    .map((reminder: any) => ({ ...reminder, text: reminderText(reminder) }))
   const payrollPending = payroll.filter((row: any) => row.status !== 'paid')
   const sheetFinancials = calculateSheetFinancials(sheets)
   const legacyRevenueToday = projects.reduce((sum: number, p: any) => sum + Number(p.revenueToday || 0), 0)

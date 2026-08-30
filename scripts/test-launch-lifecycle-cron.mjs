@@ -65,6 +65,7 @@ function localRequire(id) {
     sendTelegramMessage: async (_token, chatId, text, options) => { messages.push({ chatId: String(chatId), text, options }); return messages.length },
   }
   if (id === "@/lib/team-timezone") return { TEAM_TIME_ZONE: "America/New_York", formatTeamDateTime: () => "Aug 24, 2:00 PM ET", nextRecurringDueAt: () => null }
+  if (id === "@/lib/reminder-text") return { reminderText: (reminder) => String(reminder?.text || reminder?.title || reminder?.message || "").trim() }
   if (id === "@/lib/chat-subscriptions") return {
     getSubscribedChats: async () => [],
     getProfileChats: async (profile) => profile === "trade" ? [{ chatId: "-1002", kind: "group", label: "Trade Floor" }] : [],
@@ -157,7 +158,7 @@ assert.deepEqual(JSON.parse(JSON.stringify(messages.at(-1).options.replyMarkup.i
 await module.exports.processTentativeLaunchTimingFollowups("test", new Date("2026-08-24T16:05:00.000Z"))
 assert.equal(messages.length, 5, "the same tentative follow-up must only send once")
 
-reminders.push({ _id: "daily-risk", title: "Morning risk check", message: "Post the morning risk check", dueAt: "2026-08-25T13:00:00.000Z", timeZone: "America/New_York", recurrence: "daily", deliveryScope: "chat", telegramChatId: "-1002", targetChatTitle: "Trade Floor", targetMode: "specific", targetMembers: [{ telegramId: 101, username: "alex", displayName: "Alex" }, { telegramId: 102, username: "", displayName: "Sam Trader" }], status: "scheduled" })
+reminders.push({ _id: "daily-risk", title: "Morning risk check", message: "Morning risk check", dueAt: "2026-08-25T13:00:00.000Z", timeZone: "America/New_York", recurrence: "daily", deliveryScope: "chat", telegramChatId: "-1002", targetChatTitle: "Trade Floor", targetMode: "specific", targetMembers: [{ telegramId: 101, username: "alex", displayName: "Alex" }, { telegramId: 102, username: "", displayName: "Sam Trader" }], status: "scheduled" })
 telegramTextSucceeds = false
 const failedReminderRun = await module.exports.processDueReminders("test", new Date("2026-08-25T13:00:00.000Z"))
 assert.equal(failedReminderRun.failed, 1)
@@ -170,6 +171,10 @@ assert.equal(successfulReminderRun.sent, 1)
 assert.equal(reminders[0].status, "done", "the mock recurrence helper returns no next occurrence after a successful delivery")
 assert.match(reminderTexts.at(-1), /@alex/)
 assert.match(reminderTexts.at(-1), /tg:\/\/user\?id=102/)
+assert.equal((reminderTexts.at(-1).match(/Morning risk check/g) || []).length, 1, "legacy title/message duplicates must render once")
+assert.doesNotMatch(reminderTexts.at(-1), /Team Reminder/)
+assert.match(reminderTexts.at(-1), /^🔔 <b>Morning risk check<\/b>\n👥 /)
+assert.match(reminderTexts.at(-1), /⏰ <a href="tg:\/\/time\?unix=\d+&amp;format=wDt">Aug 25 · 9:00 AM EDT<\/a>$/)
 
 projects.push(
   { _id: "active-one", name: "One-day launch", status: "active", activatedAt: "2026-08-26T17:00:00.000Z" },

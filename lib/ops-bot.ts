@@ -33,6 +33,7 @@ import {
 import { getSheetSchema, normalizeSheetKind, valuesForKind, type SheetKind } from "@/lib/sheet-schemas"
 import { isReminderRequest, parseReminderRequest, reminderRequestError } from "@/lib/reminder-parser"
 import { reminderTargetForTelegramId, reminderTargetsLabel, resolveReminderTargetUsernames } from "@/lib/reminder-targets"
+import { reminderText, reminderWriteText } from "@/lib/reminder-text"
 import { cleanLaunchProjectName, cleanLaunchProjectNameFromRequest, inferLaunchConfiguration, normalizeProjectStatus, projectActivationReadiness, projectLaunchAt, scheduledLifecycleFields, tentativeLifecycleFields } from "@/lib/project-lifecycle"
 import { formatLaunchSetupReview, launchSetupButtons, launchSetupReady } from "@/lib/launch-setup"
 import { inferLaunchMethod, normalizeLaunchMethod } from "@/lib/launch-method"
@@ -260,7 +261,7 @@ export type OpsAiOptions = {
 function scopedActionPayload(actionType: string, payload: Record<string, any>, scope: OpsAiOptions["dataScope"]) {
   if (!scope || scope === "full") return payload
   const allowed = actionType === "create_reminder"
-    ? ["title", "message", "dueAt", "timeZone", "recurrence", "deliveryScope", "telegramChatId", "targetChatTitle", "targetMode", "targetUsernames", "targetMembers"]
+    ? ["text", "title", "message", "dueAt", "timeZone", "recurrence", "deliveryScope", "telegramChatId", "targetChatTitle", "targetMode", "targetUsernames", "targetMembers"]
     : actionType === "create_project_note"
       ? ["projectName", "text", "note", "message", "_projectId"]
     : scope === "launch"
@@ -987,15 +988,17 @@ async function resolveActionPreview(actionType: string, payload: any, context: {
   if (actionType === "delete_reminder") {
     const reminders = await db.collection("opsReminders").find({}).toArray()
     const matches = reminders.filter((item: any) => {
-      const titleMatch = includesText(item.title, nextPayload.title) || includesText(item.message, nextPayload.title || nextPayload.message)
+      const titleMatch = includesText(reminderText(item), nextPayload.text || nextPayload.title || nextPayload.message)
       const dateOk = nextPayload.dueAt ? sameDateDay(item.dueAt, nextPayload.dueAt) : true
       return titleMatch && dateOk && item.status !== "done"
     })
     if (matches.length === 1) {
       const reminder = matches[0]
-      nextPayload.title = reminder.title || reminder.message
+      nextPayload.text = reminderText(reminder)
+      delete nextPayload.title
+      delete nextPayload.message
       nextPayload.dueAt = reminder.dueAt || nextPayload.dueAt
-      preview.push(`🗑️ Will remove reminder: ${reminder.title || reminder.message}`)
+      preview.push(`🗑️ Will remove reminder: ${reminderText(reminder)}`)
       if (reminder.dueAt) preview.push(`📅 Due: ${formatTeamDateTime(reminder.dueAt)}`)
     } else warnings.push(`I found ${matches.length} matching reminders. I need one exact match before removing.`)
   }
@@ -1040,7 +1043,7 @@ async function resolveActionPreview(actionType: string, payload: any, context: {
   }
 
   if (!isDelete) {
-    if (actionType === "create_reminder" && nextPayload.title) preview.push(`🔔 Reminder: ${nextPayload.title}`)
+    if (actionType === "create_reminder" && reminderWriteText(nextPayload)) preview.push(`🔔 Reminder: ${reminderWriteText(nextPayload)}`)
     if (actionType === "create_reminder" && nextPayload.dueAt) {
       const timeZone = String(nextPayload.timeZone || nextPayload.timezone || TEAM_TIME_ZONE)
       const parsed = parseTeamDateTime(nextPayload.dueAt, timeZone)
@@ -1149,10 +1152,9 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
   let plan: any = deterministicReminder?.ok
     ? {
       actionType: "create_reminder",
-      summary: `Remind this chat about ${deterministicReminder.title}`,
+      summary: `Remind this chat about ${deterministicReminder.text}`,
       payload: {
-        title: deterministicReminder.title,
-        message: deterministicReminder.message,
+        text: deterministicReminder.text,
         dueAt: deterministicReminder.dueAt,
         timeZone: deterministicReminder.timeZone,
         recurrence: deterministicReminder.recurrence,
@@ -1193,7 +1195,7 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
           "create_project: {name, referrer, referrerWallet, referrerStatus, status, service, startDate, launchAt, tentativeLaunchDate, launchTimingStatus, launchTimeZone, launchVenue, launchFundingAsset, launchMethod, chain, quoteToken, quoteTokenAddress, dailyTradingFeeEnabled, dailyTradingFeeUsd, launchFeeUsd, feeConfigurationConfirmed, endDate, currentProfitLoss, notes, tags}",
           "update_project: {projectName, name, referrer, referrerWallet, referrerStatus, status, service, startDate, launchAt, tentativeLaunchDate, launchTimingStatus, launchTimeZone, launchVenue, launchFundingAsset, launchMethod, chain, quoteToken, quoteTokenAddress, dailyTradingFeeEnabled, dailyTradingFeeUsd, launchFeeUsd, feeConfigurationConfirmed, endDate, currentProfitLoss, notes, tags}",
           "create_project_note: {projectName, text}",
-          "create_reminder: {title, message, dueAt, timeZone?, recurrence?}",
+          "create_reminder: {text, dueAt, timeZone?, recurrence?}",
           "create_payroll: {member, amount, projectName, date, status, currency, notes}",
           "add_sheet_row: {projectName, sheetType, row}",
           "delete_project: {projectName}",
@@ -1262,6 +1264,9 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
     }
   }
   if (actionType === "create_reminder") {
+    payload.text = reminderWriteText(payload)
+    delete payload.title
+    delete payload.message
     payload.timeZone = explicitTimeZone || payload.timeZone || memberTimeZone || TEAM_TIME_ZONE
     const normalized = normalizeReminderDueAt(payload, requestNow)
       || normalizeReminderDueAt({ dueAt: text, timeZone: payload.timeZone }, requestNow)
@@ -1550,14 +1555,13 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
   }
 
   if (action.actionType === "create_reminder") {
-    const title = String(payload.title || payload.message || "").trim()
-    if (!title) return "⚠️ Missing reminder title. I did not change anything."
+    const text = reminderWriteText(payload)
+    if (!text) return "⚠️ Missing reminder text. I did not change anything."
     const normalized = normalizeReminderDueAt(payload)
     if (!normalized) return "⚠️ Missing or invalid reminder time. I did not change anything. Please create a new reminder with a specific date and time."
     const dueAt = normalized.dueAt
     await db.collection("opsReminders").insertOne({
-      title,
-      message: String(payload.message || title).trim(),
+      text,
       dueAt,
       timeZone: normalized.timeZone,
       recurrence: reminderRecurrenceFromText(action.request, payload.recurrence),
@@ -1575,7 +1579,7 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
     })
     const reminderTimeZone = normalized.timeZone
     const recurrence = reminderRecurrenceFromText(action.request, payload.recurrence)
-    done = `✅ Reminder created: ${title}\n📅 Due: ${formatTeamDateTime(dueAt, reminderTimeZone)}${recurrence !== "none" ? `\n🔁 Repeats: ${recurrence}` : ""}\n👥 Notify: ${reminderTargetsLabel(payload.targetMode, payload.targetMembers)}${payload.targetChatTitle ? `\n💬 Deliver to: ${payload.targetChatTitle}` : ""}`
+    done = `✅ Reminder created: ${text}\n📅 Due: ${formatTeamDateTime(dueAt, reminderTimeZone)}${recurrence !== "none" ? `\n🔁 Repeats: ${recurrence}` : ""}\n👥 Notify: ${reminderTargetsLabel(payload.targetMode, payload.targetMembers)}${payload.targetChatTitle ? `\n💬 Deliver to: ${payload.targetChatTitle}` : ""}`
   }
 
   if (action.actionType === "create_payroll") {
@@ -1646,14 +1650,14 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
   if (action.actionType === "delete_reminder") {
     const reminders = await db.collection("opsReminders").find({}).toArray()
     const matches = reminders.filter((item: any) => {
-      const titleMatch = includesText(item.title, payload.title) || includesText(item.message, payload.title || payload.message)
+      const titleMatch = includesText(reminderText(item), payload.text || payload.title || payload.message)
       const dateOk = payload.dueAt ? sameDateDay(item.dueAt, payload.dueAt) : true
       return titleMatch && dateOk && item.status !== "done"
     })
     if (matches.length !== 1) return `⚠️ I found ${matches.length} matching reminders. I did not remove anything.`
     const reminder = matches[0]
     await db.collection("opsReminders").deleteOne({ _id: reminder._id })
-    done = `🗑️ Reminder removed: ${reminder.title || reminder.message}`
+    done = `🗑️ Reminder removed: ${reminderText(reminder)}`
   }
 
   if (action.actionType === "delete_payroll") {
@@ -1828,7 +1832,7 @@ export async function answerOpsBot(textInput: string, telegramId?: number | null
     answer = scopedPayroll.length ? `💸 Pending payroll${scopeSuffix}:\n\n${scopedPayroll.map((row: any) => `• ${row.member}: ${money(row.amount)} ${row.project ? `- ${row.project}` : ""} (${row.status || "pending"})`).join("\n")}` : "💸 No pending payroll rows."
   } else if (includes(text, ["reminders", "next reminders", "scheduled reminders"])) {
     const reminders = await db.collection("opsReminders").find({ status: { $ne: "done" } }).sort({ dueAt: 1 }).limit(8).toArray()
-    answer = reminders.length ? `🔔 Upcoming reminders:\n\n${reminders.map((row: any) => `• ${row.title || row.message}${row.dueAt ? ` - ${formatTeamDateTime(row.dueAt, String(row.timeZone || TEAM_TIME_ZONE))}` : ""}`).join("\n")}` : "🔔 No upcoming reminders."
+    answer = reminders.length ? `🔔 Upcoming reminders:\n\n${reminders.map((row: any) => `• ${reminderText(row)}${row.dueAt ? ` - ${formatTeamDateTime(row.dueAt, String(row.timeZone || TEAM_TIME_ZONE))}` : ""}`).join("\n")}` : "🔔 No upcoming reminders."
   } else if (text.startsWith("/activate ") || text.startsWith("/deactivate ")) {
     const active = text.startsWith("/activate ")
     const name = text.replace(active ? "/activate " : "/deactivate ", "").trim()
@@ -1893,8 +1897,7 @@ export async function answerOpsBot(textInput: string, telegramId?: number | null
         targetMembers = resolved.targets
       }
       await db.collection("opsReminders").insertOne({
-        title: parsed.title,
-        message: parsed.message,
+        text: parsed.text,
         dueAt: parsed.dueAt,
         timeZone: parsed.timeZone,
         recurrence: parsed.recurrence,

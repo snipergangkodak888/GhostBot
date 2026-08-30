@@ -3,13 +3,15 @@
 import { useEffect, useMemo, useState } from "react"
 import { Bell, Plus, Save, X } from "lucide-react"
 import { toast } from "sonner"
+import { reminderText } from "@/lib/reminder-text"
 
 type Project = { _id: string; name: string }
 type HostedGroup = { chatId: string; title: string }
 
 type Reminder = {
   _id: string
-  title: string
+  text?: string
+  title?: string
   message?: string
   dueAt?: string
   recurrence?: string
@@ -32,8 +34,7 @@ export default function RemindersPage() {
   const [groups, setGroups] = useState<HostedGroup[]>([])
   const [formOpen, setFormOpen] = useState(false)
   const [form, setForm] = useState({
-    title: "",
-    message: "",
+    text: "",
     dueAt: localDateTimeInput(),
     projectId: "",
     recurrence: "none",
@@ -64,8 +65,8 @@ export default function RemindersPage() {
   )
 
   const saveReminder = async () => {
-    if (!form.title.trim() && !form.message.trim()) {
-      toast.error("Reminder title or message is required")
+    if (!form.text.trim()) {
+      toast.error("Reminder text is required")
       return
     }
     if (!form.telegramChatId) {
@@ -86,7 +87,7 @@ export default function RemindersPage() {
     }
     toast.success("Reminder added")
     setFormOpen(false)
-    setForm({ title: "", message: "", dueAt: localDateTimeInput(), projectId: "", recurrence: "none", telegramChatId: "" })
+    setForm({ text: "", dueAt: localDateTimeInput(), projectId: "", recurrence: "none", telegramChatId: "" })
     load()
   }
 
@@ -109,7 +110,7 @@ export default function RemindersPage() {
             <button onClick={() => setFormOpen(false)} className="grid h-8 w-8 place-items-center rounded-lg border border-white/[0.08] bg-white/[0.04] text-white/65"><X className="h-4 w-4" /></button>
           </div>
           <div className="grid gap-2 sm:grid-cols-2">
-            <input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} placeholder="Reminder title" className="h-10 rounded-lg border border-white/[0.08] bg-black/35 px-3 text-sm text-white outline-none focus:border-[#ff4d5e]/60" />
+            <input value={form.text} onChange={(event) => setForm({ ...form, text: event.target.value })} placeholder="What do you want to remember?" className="h-10 rounded-lg border border-white/[0.08] bg-black/35 px-3 text-sm text-white outline-none focus:border-[#ff4d5e]/60 sm:col-span-2" />
             <label className="space-y-1">
               <input type="datetime-local" value={form.dueAt} onChange={(event) => setForm({ ...form, dueAt: event.target.value })} className="h-10 w-full rounded-lg border border-white/[0.08] bg-black/35 px-3 text-sm text-white outline-none focus:border-[#ff4d5e]/60" />
               <span className="block text-[11px] text-white/40">Your timezone: {browserTimeZone() || "Unknown"}</span>
@@ -129,7 +130,6 @@ export default function RemindersPage() {
               {groups.map((group) => <option key={group.chatId} value={group.chatId}>{group.title}</option>)}
             </select>
             {!groups.length ? <p className="text-xs text-amber-300/70 sm:col-span-2">Mention the bot in a Telegram group once so it appears here.</p> : null}
-            <textarea value={form.message} onChange={(event) => setForm({ ...form, message: event.target.value })} placeholder="Message" className="min-h-20 rounded-lg border border-white/[0.08] bg-black/35 px-3 py-2 text-sm text-white outline-none focus:border-[#ff4d5e]/60 sm:col-span-2" />
           </div>
           <button onClick={saveReminder} className="mt-3 inline-flex h-10 items-center gap-2 rounded-lg bg-[#ff4d5e] px-3 text-sm font-bold text-white">
             <Save className="h-4 w-4" />
@@ -143,7 +143,7 @@ export default function RemindersPage() {
           <article key={reminder._id} className="rounded-2xl border border-white/[0.08] bg-white/[0.035] p-4">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <h2 className="truncate text-base font-bold text-white">{reminder.title}</h2>
+                <h2 className="truncate text-base font-bold text-white">{reminderText(reminder)}</h2>
                 <p className="mt-1 text-sm text-white/45">
                   {reminder.dueAt ? new Date(reminder.dueAt).toLocaleString(undefined, { timeZone: reminder.timeZone || undefined }) : "No date"}
                   {reminder.recurrence ? ` · ${reminder.recurrence}` : ""}
@@ -152,7 +152,6 @@ export default function RemindersPage() {
               </div>
               <span className={`rounded-full px-3 py-1 text-xs font-semibold ${reminder.status === "done" ? "bg-white/10 text-white/45" : "bg-[#ff4d5e]/15 text-[#ff8a95]"}`}>{reminder.status || "scheduled"}</span>
             </div>
-            {reminder.message ? <p className="mt-3 line-clamp-3 text-sm text-white/65">{reminder.message}</p> : null}
           </article>
         ))}
         {!visible.length ? <Empty text="No reminders yet" /> : null}

@@ -8,6 +8,7 @@ import { activateScheduledProject, projectActivationReadiness, projectLaunchAt, 
 import { launchMethodLabel, normalizeLaunchMethod } from "@/lib/launch-method"
 import { operationalLaunchVenue } from "@/lib/launch-venues"
 import { activeProjectReviewStart, DAILY_PROJECT_REVIEW_HOUR_ET, dailyProjectReviewButtons, dailyProjectReviewDateKey, dailyProjectReviewId, dailyProjectReviewText, type DailyProjectReviewRecord } from "@/lib/daily-project-review"
+import { reminderText } from "@/lib/reminder-text"
 
 const EST_TIME_ZONE = LAUNCH_TIME_ZONE
 
@@ -42,6 +43,25 @@ function telegramLocalDateTime(value: string | Date, timeZone: string) {
   return `<a href="tg://time?unix=${Math.floor(date.getTime() / 1000)}&amp;format=wDt">${fallback}</a>`
 }
 
+function compactReminderDateTime(value: string | Date, timeZone: string) {
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) return escapeHtml(formatTeamDateTime(value, timeZone))
+  const dateParts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    month: "short",
+    day: "numeric",
+    ...(new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric" }).format(date) === new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric" }).format(new Date()) ? {} : { year: "numeric" as const }),
+  }).format(date)
+  const timeParts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  }).format(date)
+  const label = escapeHtml(`${dateParts} · ${timeParts}`)
+  return `<a href="tg://time?unix=${Math.floor(date.getTime() / 1000)}&amp;format=wDt">${label}</a>`
+}
+
 function reminderTargetMentions(reminder: any) {
   if (!["creator", "specific"].includes(String(reminder?.targetMode || ""))) return ""
   const targets = Array.isArray(reminder?.targetMembers) ? reminder.targetMembers : []
@@ -52,6 +72,21 @@ function reminderTargetMentions(reminder: any) {
     const label = escapeHtml(target?.displayName || "Trader")
     return Number.isFinite(telegramId) ? `<a href="tg://user?id=${telegramId}">${label}</a>` : label
   }).filter(Boolean).join(" ")
+}
+
+export function formatReminderNotification(reminder: any) {
+  const text = reminderText(reminder) || "Reminder"
+  const targetMentions = reminderTargetMentions(reminder)
+  const targetMode = String(reminder?.targetMode || "everyone")
+  const targets = Array.isArray(reminder?.targetMembers) ? reminder.targetMembers : []
+  const audience = targetMentions || (targetMode === "everyone" ? "Everyone" : "")
+  const audienceIcon = targetMode === "creator" || targets.length === 1 ? "👤" : "👥"
+  const timeZone = String(reminder?.timeZone || TEAM_TIME_ZONE)
+  return [
+    `🔔 <b>${escapeHtml(text)}</b>`,
+    audience ? `${audienceIcon} ${audience}` : "",
+    `⏰ ${compactReminderDateTime(String(reminder?.dueAt || ""), timeZone)}`,
+  ].filter(Boolean).join("\n")
 }
 
 async function claimDelivery(key: string, type: string) {
@@ -121,16 +156,7 @@ export async function processDueReminders(token: string, now: Date) {
       continue
     }
     const reminderTimeZone = String(reminder.timeZone || TEAM_TIME_ZONE)
-    const targetMentions = reminderTargetMentions(reminder)
-    const text = [
-      "🔔 <b>Team Reminder</b>",
-      "",
-      `<b>${escapeHtml(reminder.title || "Reminder")}</b>`,
-      reminder.message ? escapeHtml(reminder.message) : "",
-      targetMentions ? `👥 ${targetMentions}` : "",
-      "",
-      `⏰ ${telegramLocalDateTime(dueAt, reminderTimeZone)}`,
-    ].filter(Boolean).join("\n")
+    const text = formatReminderNotification(reminder)
 
     const result = await sendToRecipients(token, recipients, text)
     sent += result.sent
@@ -513,6 +539,28 @@ export async function runLaunchScheduleCron(now = new Date()) {
     activeProjectReview,
     confirmations,
     readiness,
+    runAt: now.toISOString(),
+  }
+}
+
+export async function runReminderCron(now = new Date()) {
+  const token = await getTelegramBotToken()
+  if (!token) return { ok: false, error: "Telegram bot token is not configured" }
+  const reminders = await processDueReminders(token, now)
+  return {
+    ok: true,
+    reminders,
+    runAt: now.toISOString(),
+  }
+}
+
+export async function runRevenueCron(now = new Date()) {
+  const revenueDailyFees = await ensureDailyTradingFeeExpectations()
+  const revenueValuation = await valuePendingRevenueReceipts()
+  return {
+    ok: true,
+    revenueDailyFees,
+    revenueValuation,
     runAt: now.toISOString(),
   }
 }

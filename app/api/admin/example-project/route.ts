@@ -152,8 +152,7 @@ export async function POST() {
   await db.collection("opsPayroll").insertMany(payrollRows)
 
   await db.collection("opsReminders").insertOne({
-    title: "Review example project data",
-    message: "Check income, expense, payroll, notes, and custom data from the example project.",
+    text: "Review the example project’s income, expenses, payroll, notes, and data",
     projectId,
     dueAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
     recurrence: "none",
