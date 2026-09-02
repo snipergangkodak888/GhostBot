@@ -8,12 +8,12 @@ import { dateKeyInTimeZone, detectExplicitTimeZone, formatTeamDateTime, parseCon
 import { parseReminderRequest, reminderRequestError, type ParsedReminderRequest } from "@/lib/reminder-parser"
 import { reminderText } from "@/lib/reminder-text"
 import { listReminderEligibleMembers, reminderTargetForTelegramId, reminderTargetsLabel, resolveReminderTargetUsernames, type ReminderTarget } from "@/lib/reminder-targets"
-import { editTelegramMessage, getTelegramBotToken, getTelegramBotUsername, isTelegramCaptureActive, sendChatAction, sendTelegramDocument, sendTelegramMessage, sendTelegramPhoto, telegramApi, telegramApiJson, withTelegramLoading } from "@/lib/telegram-bot"
+import { editTelegramMessage, getTelegramBotToken, getTelegramBotUsername, isTelegramCaptureActive, sendChatAction, sendTelegramDocument, sendTelegramMessage, sendTelegramPhoto, telegramApi, telegramApiJson, telegramChatMemberActive, withTelegramLoading } from "@/lib/telegram-bot"
 import { savePayrollDay } from "@/lib/payroll-day"
 import { loadDailyPayrollReport, parseReportDateFromText } from "@/lib/payroll-daily-report"
 import { renderPayrollReportPng } from "@/lib/payroll-report-image"
 import { miscIncomeCategoryLabel, parseIncomeLogCommand } from "@/lib/payroll-misc"
-import { chatProfileLabel, chatPurposeLabel, getChatProfile, listChatSubscriptions, normalizeChatProfile, normalizeChatPurpose, notificationAllowedForProfile, setChatProfile, setChatSubscription, type ChatProfile } from "@/lib/chat-subscriptions"
+import { chatProfileLabel, chatPurposeLabel, getChatProfile, getProfileChats, listChatSubscriptions, normalizeChatProfile, normalizeChatPurpose, notificationAllowedForProfile, setChatProfile, setChatSubscription, type ChatProfile } from "@/lib/chat-subscriptions"
 import { formatLaunchDaySchedule } from "@/lib/launch-calendar"
 import { projectFeeConfig } from "@/lib/revenue-projects"
 import { revenueTransactionUrl } from "@/lib/revenue-explorer"
@@ -26,7 +26,7 @@ import { LAUNCH_CHAINS, launchPad, padsForChain, type LaunchChainId } from "@/li
 import { operationalLaunchVenue, operationalVenuesForChain } from "@/lib/launch-venues"
 import { dailyProjectReviewButtons, dailyProjectReviewId, dailyProjectReviewText, type DailyProjectReviewRecord } from "@/lib/daily-project-review"
 import { calculateLaunchQuote, defaultMmLiquidity, formatLaunchQuote, getLaunchAssetPrice, parseLaunchNumber, type LaunchTargetMetric } from "@/lib/launch-calculator"
-import { botPermissionDeniedMessage, canUseBotCapability, getBotPermissionContext, type BotCapability, type BotPermissionContext } from "@/lib/bot-permissions"
+import { botPermissionDeniedMessage, canEditLaunchSchedule, canOpenTraderSchedule, canUseBotCapability, getBotPermissionContext, type BotCapability, type BotPermissionContext } from "@/lib/bot-permissions"
 import { createGuardEnrollmentLink, guardEnrollmentTokenFromText, guardEnrollmentUrl, handleGuardBotMembershipUpdate, handleGuardChatMemberUpdate, recordGuardChatMember, revokeGuardEnrollmentLinks, syncTelegramChatAdministrators, verifyAndRedeemGuardEnrollment } from "@/lib/guard-enrollment"
 import { activateScheduledProject, activationLifecycleFields, cancelScheduledProject, cleanLaunchProjectName, confirmNoProjectReferrer, confirmStandardProjectFees, deactivateActiveProject, projectActivationReadiness, projectLaunchAt, projectLaunchDateKey, projectLaunchTimingStatus, rescheduleProject, setTentativeProjectLaunchDate } from "@/lib/project-lifecycle"
 import { formatLaunchSetupReview, launchChainButtons, launchChainConfig, launchChainIdForProject, launchMethodButtons, launchQuoteButtons, launchSetupButtons, launchSetupReady, launchVenueButtons, launchVenueSelection } from "@/lib/launch-setup"
@@ -35,6 +35,10 @@ import { launchMethodLabel, normalizeLaunchMethod } from "@/lib/launch-method"
 import { ghostBotOrganicChannelUrl, normalizeOrganicTicker, organicChannelCompletionMessage, organicChannelTitle, SUMO_TRADE_BOT_USERNAME, sumoBotChannelUrl, sumoSubscribeCommand, validOrganicTicker, validSumoProfileId } from "@/lib/organic-channel-setup"
 import { telegramUserAutomationConfigured } from "@/lib/telegram-user-client"
 import { queueOrganicChannelJob } from "@/lib/organic-channel-jobs"
+import { createScheduleEditorGrant } from "@/lib/trader-schedule-access"
+import { addDays, scheduleDateKey, scheduleWeekStart } from "@/lib/trader-schedule"
+import { formatCurrentTraderShift, formatMyTraderShifts, formatTraderShiftDay, shiftCommandButtons } from "@/lib/trader-schedule-telegram"
+import { renderPublishedTraderSchedulePng } from "@/lib/trader-schedule-image"
 
 type InlineButton = { text: string; callback_data?: string; url?: string; web_app?: { url: string } }
 
@@ -158,6 +162,9 @@ async function setBotCommands(token: string) {
       { command: "profit", description: "Show today profit" },
       { command: "projects", description: "Show active projects" },
       { command: "calendar", description: "Show the daily launch schedule" },
+      { command: "shift", description: "Show who is trading now or this week" },
+      { command: "myshift", description: "Show your upcoming trader shifts" },
+      { command: "schedule", description: "Open the trader planner" },
       { command: "addlaunch", description: "Add a launch step by step" },
       { command: "schedulelaunch", description: "Create a launch with guided setup" },
       { command: "organicsetup", description: "Set up organic trade notifications" },
@@ -201,6 +208,8 @@ function helpMessage() {
     "📈 /profit",
     "📁 /projects",
     "📅 /calendar",
+    "👥 /shift - who is trading now",
+    "👤 /myshift - your upcoming shifts",
     "➕ /addlaunch - add a launch step by step",
     "🗓️ /schedulelaunch - create a launch with guided setup",
     "📣 /organicsetup TICKER - set up organic trade notifications",
@@ -215,6 +224,7 @@ function helpMessage() {
     "🌍 /timezone - set your local timezone",
     "💰 /fees - show today’s revenue inbox",
     "⚙️ Admins: /setchat launch|trade|fee|finance|management",
+    "🗓️ /schedule - open the trader planner (Management Chat or admin DM)",
     "🛡️ Admins: /guardlink show|refresh|revoke",
     "📣 /subscribe launches|fees (within the matching chat profile)",
   ].join("\n")
@@ -372,6 +382,26 @@ async function requireCapability(token: string, context: BotPermissionContext, c
   if (canUseBotCapability(context, capability)) return true
   await sendMessage(token, context.chatId, botPermissionDeniedMessage(context, capability))
   return false
+}
+
+async function managementScheduleMember(token: string, chatId: number | string, telegramId: number) {
+  if (!isGroupChatId(chatId)) return false
+  const profile = await getChatProfile(chatId)
+  return profile?.profile === "management" && telegramChatMemberActive(token, chatId, telegramId)
+}
+
+async function adminScheduleSourceChat(token: string, context: BotPermissionContext) {
+  if (context.isGroup) return await managementScheduleMember(token, context.chatId, context.telegramId) ? String(context.chatId) : null
+  if (context.role !== "admin") return null
+  const chats = await getProfileChats("management")
+  const preferred = chats.find((chat) => chat.kind === "group" && Number(chat.chatId) < 0)
+  return preferred ? String(preferred.chatId) : null
+}
+
+async function sendScheduleLauncher(token: string, targetChatId: number | string, telegramId: number, sourceChatId: number | string, req: NextRequest) {
+  const grant = await createScheduleEditorGrant({ telegramId, sourceChatId })
+  const url = `${appUrl(req)}?schedule_grant=${encodeURIComponent(grant.token)}`
+  return sendMessage(token, targetChatId, "🗓️ Open the Ghost Trader Planner below.\n\nThis one-time launcher is valid for 24 hours. After opening it, your editor session stays active for 7 days and access is still rechecked on every request.", [[{ text: "Open Trader Planner", web_app: { url } }]])
 }
 
 function chatPrimaryCapability(context: BotPermissionContext): BotCapability {
@@ -2164,10 +2194,32 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       ? "trade"
       : ["receipt", "consol", "fee", "payroll"].includes(area)
         ? "finance"
+      : area === "schedule"
+          ? null
+          : area === "shift"
+            ? "trade"
         : area === "ai"
           ? aiPermissionPolicy(context).capability
           : null
   if (callbackCapability && !(await requireCapability(token, context, callbackCapability))) return
+
+  if (area === "schedule" && action === "open") {
+    if (!canOpenTraderSchedule(context) || !(await managementScheduleMember(token, chatId, telegramId))) return workflowReply("⛔ The trader planner is available only to current members of the configured Management Chat.")
+    const delivered = await sendScheduleLauncher(token, telegramId, telegramId, chatId, req)
+    return workflowReply(delivered ? "✅ I sent your planner launcher by DM. It is valid for 24 hours." : "⚠️ I could not DM you. Open a private chat with GhostBot, tap Start, then try again.")
+  }
+
+  if (area === "shift") {
+    if (action === "week") {
+      const { png, week } = await renderPublishedTraderSchedulePng(scheduleWeekStart())
+      await sendTelegramPhoto(token, chatId, png, `Ghost Trader Schedule · Week of ${week.weekStart} · ET · Published r${week.publishedRevision}`)
+      return workflowReply("✅ Published week map sent.", shiftCommandButtons())
+    }
+    if (action === "mine") return workflowReply(await formatMyTraderShifts(telegramId), shiftCommandButtons())
+    if (action === "today") return workflowReply(await formatTraderShiftDay(scheduleDateKey()), shiftCommandButtons())
+    if (action === "tomorrow") return workflowReply(await formatTraderShiftDay(addDays(scheduleDateKey(), 1)), shiftCommandButtons())
+    return workflowReply(await formatCurrentTraderShift(), shiftCommandButtons())
+  }
 
   if (area === "eod") {
     const workflowMessageId = Number(callbackMessage?.message_id || 0) || null
@@ -2257,7 +2309,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
 
   if (area === "calendar") {
     const messageId = Number(callbackMessage?.message_id || 0) || null
-    if (context.profile !== "launch") return workflowReply("⛔ Launch schedule editing must be handled in the configured Launch Chat.")
+    if (!canEditLaunchSchedule(context)) return workflowReply("⛔ Launch schedule editing is available in Launch Chat or an admin DM.")
 
     if (action === "day") return sendCalendar(token, chatId, id, messageId)
 
@@ -2342,7 +2394,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
 
   if (area === "tentative" && action === "ack") {
     const messageId = Number(callbackMessage?.message_id || 0) || null
-    if (context.profile !== "launch") return workflowReply("⛔ Tentative launch confirmations must be handled in the configured Launch Chat.")
+    if (!canEditLaunchSchedule(context)) return workflowReply("⛔ Tentative launch confirmations are available in Launch Chat or an admin DM.")
     const dateKey = /^\d{4}-\d{2}-\d{2}$/.test(id) ? id : dateKeyInTimeZone(new Date(), TEAM_TIME_ZONE)
     return acknowledgeTentativeLaunches(token, chatId, telegramId, dateKey, messageId)
   }
@@ -2561,7 +2613,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   }
 
   if (area === "lifecycle") {
-    if (context.profile !== "launch") return workflowReply("⛔ Launch activation confirmations must be handled in the configured Launch Chat.")
+    if (!canEditLaunchSchedule(context)) return workflowReply("⛔ Launch activation confirmations are available in Launch Chat or an admin DM.")
     const messageId = Number(callbackMessage?.message_id || 0) || null
     const scheduleVersion = Number(extra || 0)
     if (action === "settime") {
@@ -3021,6 +3073,39 @@ async function handleCallback(token: string, chatId: number | string, telegramId
 async function routeText(token: string, chatId: number | string, telegramId: number, text: string, req: NextRequest, messageDateMs: number, message?: any) {
   const commandText = stripBotCommandSuffix(text)
   const context = await botPermissions(telegramId, chatId)
+  if (/^\/schedule(?:@\w+)?$/i.test(commandText)) {
+    if (!canOpenTraderSchedule(context)) return sendMessage(token, chatId, "⛔ The trader planner is available to Management Chat members and GhostBot admins in DM.")
+    if (!context.isGroup) {
+      const sourceChatId = await adminScheduleSourceChat(token, context)
+      if (!sourceChatId) return sendMessage(token, chatId, "⚠️ No active Management Chat is configured for the trader planner.")
+      return sendScheduleLauncher(token, chatId, telegramId, sourceChatId, req)
+    }
+    if (!(await managementScheduleMember(token, chatId, telegramId))) return sendMessage(token, chatId, "⛔ The trader planner is available only to current members of the configured Management Chat.")
+    return sendMessage(token, chatId, "🗓️ Trader Scheduler\n\nEveryone in this Management Chat can open and edit the planner. The published week powers Trade Floor /shift responses; draft changes stay private until published.\n\nTap below for your secure launcher.", [[{ text: "Open Trader Scheduler", callback_data: "schedule:open" }]])
+  }
+  if (/^\/(?:myshift)(?:@\w+)?$/i.test(commandText)) {
+    if (!(await requireCapability(token, context, "trade"))) return
+    return sendMessage(token, chatId, await formatMyTraderShifts(telegramId), shiftCommandButtons())
+  }
+  const shiftCommand = commandText.match(/^\/(?:shift|shifts|whoson)(?:@\w+)?(?:\s+(.+))?$/i)
+  if (shiftCommand) {
+    if (!(await requireCapability(token, context, "trade"))) return
+    const request = String(shiftCommand[1] || "").trim().toLowerCase()
+    if (request === "week") {
+      const { png, week } = await renderPublishedTraderSchedulePng(scheduleWeekStart())
+      await sendTelegramPhoto(token, chatId, png, `Ghost Trader Schedule · Week of ${week.weekStart} · ET · Published r${week.publishedRevision}`)
+      return
+    }
+    if (request === "me" || request === "mine") return sendMessage(token, chatId, await formatMyTraderShifts(telegramId), shiftCommandButtons())
+    if (request === "today") return sendMessage(token, chatId, await formatTraderShiftDay(scheduleDateKey()), shiftCommandButtons())
+    if (request === "tomorrow") return sendMessage(token, chatId, await formatTraderShiftDay(addDays(scheduleDateKey(), 1)), shiftCommandButtons())
+    if (request) {
+      const parsed = parseNaturalTeamDate(request, TEAM_TIME_ZONE, new Date())
+      if (!parsed) return sendMessage(token, chatId, "I could not read that day. Try /shift, /shift tomorrow, or /shift week.")
+      return sendMessage(token, chatId, await formatTraderShiftDay(parsed), shiftCommandButtons())
+    }
+    return sendMessage(token, chatId, await formatCurrentTraderShift(), shiftCommandButtons())
+  }
   const setChatCommand = commandText.match(/^\/setchat(?:\s+(.+))?$/i)
   if (setChatCommand) {
     if (context.role !== "admin") return sendMessage(token, chatId, botPermissionDeniedMessage(context, "management"))
@@ -3216,7 +3301,7 @@ async function routeText(token: string, chatId: number | string, telegramId: num
 
   if (/^(?:all\s+)?(?:launches?\s+)?(?:are\s+)?still\s+tbd(?:\s+today)?[.!]?$/i.test(commandText)) {
     if (!(await requireCapability(token, context, "launch"))) return
-    if (context.profile !== "launch") return sendMessage(token, chatId, "⛔ Tentative launch confirmations must be handled in the configured Launch Chat.")
+    if (!canEditLaunchSchedule(context)) return sendMessage(token, chatId, "⛔ Tentative launch confirmations are available in Launch Chat or an admin DM.")
     return acknowledgeTentativeLaunches(token, chatId, telegramId, dateKeyInTimeZone(new Date(), TEAM_TIME_ZONE))
   }
 
@@ -3325,7 +3410,11 @@ export async function POST(req: NextRequest) {
 
   if (callback?.id) {
     await answerCallback(token, callback.id)
-    const ok = await ensureAccess({ token, chatId, telegramId, text: "", profile: from, req })
+    const isScheduleOpen = String(callback.data || "") === "schedule:open"
+    const ok = isScheduleOpen && telegramId
+      ? await managementScheduleMember(token, chatId, telegramId)
+      : await ensureAccess({ token, chatId, telegramId, text: "", profile: from, req })
+    if (isScheduleOpen && !ok) await sendMessage(token, chatId, "⛔ The trader planner is available only to current members of this Management Chat.")
     if (ok) await hostGroupIfAllowed(message?.chat, from)
     if (ok && telegramId) {
       try {
@@ -3375,7 +3464,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
-    const ok = await ensureAccess({ token, chatId, telegramId, text, profile: from, req })
+    const isScheduleRequest = /^\/schedule(?:@\w+)?$/i.test(stripBotCommandSuffix(groupMessage.routedText))
+    const ok = isScheduleRequest && telegramId && await managementScheduleMember(token, chatId, telegramId)
+      ? true
+      : await ensureAccess({ token, chatId, telegramId, text, profile: from, req })
     if (ok) await hostGroupIfAllowed(chat, from)
     if (ok && telegramId) await routeText(token, chatId, telegramId, groupMessage.routedText, req, messageDateMs, message)
     return NextResponse.json({ ok: true })

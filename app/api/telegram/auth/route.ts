@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createHmac, randomUUID } from "crypto"
 import { getDb } from "@/lib/db"
 import { getTeamAccess, redeemGuardInviteCode } from "@/lib/team-access"
+import { exchangeScheduleEditorGrant, scheduleEditorCookie } from "@/lib/trader-schedule-access"
 
 const TG_ANALYTICS_API = "https://tganalytics.xyz"
 
@@ -98,7 +99,13 @@ export async function POST(request: NextRequest) {
     const body = text ? JSON.parse(text) : {}
     const initData = String(body.initData || "")
     const guardCode = String(body.guardCode || body.inviteCode || "").trim()
-    const startParam = body.startParam || (initData ? new URLSearchParams(initData).get("start_param") : null)
+    const signedStartParam = initData ? new URLSearchParams(initData).get("start_param") : null
+    const bodyStartParam = String(body.startParam || "").trim()
+    // Direct Telegram Web App buttons do not copy URL parameters into signed
+    // initData. Schedule grants remain safe here because the initData identity is
+    // verified below and each grant is one-time, short-lived, and user-bound.
+    const directScheduleGrant = bodyStartParam.startsWith("sched_") ? bodyStartParam : null
+    const startParam = signedStartParam || directScheduleGrant || (process.env.NODE_ENV === "development" ? bodyStartParam : null)
     let userData: TelegramUserData | null = body.userData || body.user || null
 
     if ((!userData || !userData.id) && initData) {
@@ -164,8 +171,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "User is banned", banned: true }, { status: 403 })
     }
 
+    let scheduleSession: Awaited<ReturnType<typeof exchangeScheduleEditorGrant>> = null
+    if (String(startParam || "").startsWith("sched_")) {
+      scheduleSession = await exchangeScheduleEditorGrant({ token: String(startParam), telegramId })
+      if (!scheduleSession) return NextResponse.json({ error: "This schedule link is invalid, expired, belongs to another person, or you are no longer in Management Chat." }, { status: 403 })
+    }
+
     const access = await getTeamAccess(telegramId)
-    if (!access.allowed) {
+    if (!access.allowed && !scheduleSession) {
       if (access.reason === "deactivated") {
         return NextResponse.json({ error: "Your team access is deactivated", accessDenied: true }, { status: 403 })
       }
@@ -199,6 +212,7 @@ export async function POST(request: NextRequest) {
     const response = NextResponse.json({
       success: true,
       isNewUser,
+      destination: scheduleSession ? "/schedule" : "/dashboard",
       user: {
         id: user?._id,
         telegramId,
@@ -221,6 +235,7 @@ export async function POST(request: NextRequest) {
 
     response.cookies.set("telegram_user_id", String(user?._id || telegramId), cookieOptions)
     response.cookies.set("telegram_session", sessionToken, cookieOptions)
+    if (scheduleSession) response.cookies.set("schedule_editor", scheduleSession.session, scheduleEditorCookie)
 
     return response
   } catch (error) {

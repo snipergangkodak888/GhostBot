@@ -1,4 +1,4 @@
-import { getDb } from "@/lib/db"
+import { getDb, queryCollectionDocuments } from "@/lib/db"
 import { getTelegramBotToken, sendTelegramMessage, sendTelegramText } from "@/lib/telegram-bot"
 import { formatTeamDateTime, nextRecurringDueAt, TEAM_TIME_ZONE } from "@/lib/team-timezone"
 import { getProfileChats, getSubscribedChats } from "@/lib/chat-subscriptions"
@@ -127,12 +127,10 @@ async function sendToRecipients(token: string, recipients: CronRecipient[], text
 
 export async function processDueReminders(token: string, now: Date) {
   const db = await getDb()
-  const reminders = await db.collection("opsReminders").find({}).toArray()
-  const due = reminders.filter((reminder: any) => {
-    if (reminder.status === "done") return false
-    const dueAt = new Date(reminder.dueAt || "")
-    return !Number.isNaN(dueAt.getTime()) && dueAt.getTime() <= now.getTime()
-  })
+  const due = await queryCollectionDocuments("opsReminders", [
+    ["data->>dueAt", `lte.${now.toISOString()}`],
+    ["or", "(data->>status.is.null,data->>status.neq.done)"],
+  ])
 
   let sent = 0
   let failed = 0

@@ -169,7 +169,8 @@ try {
   for (const expected of ["Today’s Launches —", `TBD — ${tentativeProjectName} · Solana/Pump.fun · Senzu plugin`]) {
     if (!calendarText.includes(expected)) throw new Error(`Calendar is missing ${expected}. Response: ${calendarText}`)
   }
-  if (calendarText.includes("🚀") || calendarText.includes("· Scheduled") || calendarText.match(/Aug \d{1,2}/g)?.length !== 1) throw new Error(`Calendar was not reduced to the compact one-day format. Response: ${calendarText}`)
+  const calendarDates = calendarText.match(/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}\b/g) || []
+  if (calendarText.includes("🚀") || calendarText.includes("· Scheduled") || calendarDates.length !== 1) throw new Error(`Calendar was not reduced to the compact one-day format. Response: ${calendarText}`)
   const calendarButtons = (calendar.messages || []).flatMap((message) => message.replyMarkup?.inline_keyboard || []).flat()
   if (calendarButtons.length !== 1 || calendarButtons[0]?.text !== "Open launches" || !String(calendarButtons[0]?.callback_data || "").startsWith("calendar:edit:")) throw new Error(`Calendar should contain only one Open launches button. Buttons: ${JSON.stringify(calendarButtons)}`)
   const editPicker = await sendBotLabUpdate(config, { callbackData: calendarButtons[0].callback_data, messageId: calendar.messages?.[0]?.messageId })

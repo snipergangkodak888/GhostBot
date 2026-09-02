@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
-import { supabaseConfig, supabaseRest } from '@/lib/supabase'
 import { APP_NAME, MAIN_LOGO_URL } from '@/lib/branding'
 
 // Disable Next.js caching for this route
@@ -14,18 +13,6 @@ function normalizeAiModel(value: unknown) {
 }
 
 async function loadSettings() {
-  if (supabaseConfig.url && (supabaseConfig.hasServiceRoleKey || supabaseConfig.hasAnonKey)) {
-    try {
-      const rows = await supabaseRest<Array<{ key: string; value: unknown }>>('settings?select=key,value')
-      return rows.reduce((acc: Record<string, unknown>, s) => {
-        acc[s.key] = s.value
-        return acc
-      }, {})
-    } catch (error) {
-      console.warn('[public-settings] Supabase settings load failed, falling back to document adapter:', error)
-    }
-  }
-
   try {
     const db = await getDb()
     const rows = await db.collection('settings').find({}).toArray()

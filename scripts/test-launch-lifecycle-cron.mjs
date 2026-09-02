@@ -58,7 +58,15 @@ const source = fs.readFileSync("lib/ops-cron.ts", "utf8")
 const output = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
 const module = { exports: {} }
 function localRequire(id) {
-  if (id === "@/lib/db") return { getDb: async () => db }
+  if (id === "@/lib/db") return {
+    getDb: async () => db,
+    queryCollectionDocuments: async (collection, filters) => {
+      if (collection !== "opsReminders") return []
+      const dueExpression = filters.find(([column]) => column === "data->>dueAt")?.[1] || ""
+      const cutoff = new Date(dueExpression.replace(/^lte\./, "")).getTime()
+      return reminders.filter((reminder) => reminder.status !== "done" && new Date(reminder.dueAt || "").getTime() <= cutoff)
+    },
+  }
   if (id === "@/lib/telegram-bot") return {
     getTelegramBotToken: async () => "test",
     sendTelegramText: async (_token, _chatId, text) => { if (telegramTextSucceeds) reminderTexts.push(text); return telegramTextSucceeds },

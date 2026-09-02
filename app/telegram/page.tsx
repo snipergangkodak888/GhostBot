@@ -9,7 +9,7 @@ declare global {
     Telegram?: {
       WebApp?: {
         initData?: string
-        initDataUnsafe?: { user?: Record<string, unknown> }
+        initDataUnsafe?: { user?: Record<string, unknown>; start_param?: string }
         ready?: () => void
         expand?: () => void
       }
@@ -47,6 +47,7 @@ function TelegramLoginContent() {
   const [authContext, setAuthContext] = useState<{ initData: string; userData: any; startParam?: string | null } | null>(null)
 
   const fallbackInitData = useMemo(() => params.get("initData") || "", [params])
+  const scheduleGrant = useMemo(() => params.get("schedule_grant") || "", [params])
 
   const authenticate = async (context: { initData: string; userData: any; startParam?: string | null }, code = "") => {
       const startedAt = Date.now()
@@ -72,7 +73,7 @@ function TelegramLoginContent() {
 
         const wait = Math.max(0, 650 - (Date.now() - startedAt))
         window.setTimeout(() => {
-        router.replace("/dashboard")
+        router.replace(data?.destination || "/dashboard")
         }, wait)
       } catch (err) {
       setError(err instanceof Error ? err.message : "Telegram login failed")
@@ -96,13 +97,13 @@ function TelegramLoginContent() {
         return
       }
 
-      const context = { initData, userData: telegramUser, startParam: webApp?.initDataUnsafe?.start_param }
+      const context = { initData, userData: telegramUser, startParam: webApp?.initDataUnsafe?.start_param || scheduleGrant }
       setAuthContext(context)
       authenticate(context)
     }
 
     run()
-  }, [fallbackInitData, router])
+  }, [fallbackInitData, router, scheduleGrant])
 
   const submitCode = (event: FormEvent) => {
     event.preventDefault()

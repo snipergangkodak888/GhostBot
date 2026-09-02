@@ -58,6 +58,17 @@ export function canUseBotCapability(context: BotPermissionContext, capability: B
   return CHAT_CAPABILITIES[context.profile].includes(capability)
 }
 
+// The scheduler is collaboratively editable by active Guard members, but only
+// when the request originates from the configured Management Chat. It is kept
+// separate from the broader management capability, which remains admin-only.
+export function canOpenTraderSchedule(context: BotPermissionContext) {
+  return (context.isGroup && context.profile === "management") || (!context.isGroup && context.role === "admin")
+}
+
+export function canEditLaunchSchedule(context: BotPermissionContext) {
+  return context.profile === "launch" || (!context.isGroup && context.role === "admin")
+}
+
 export function botPermissionDeniedMessage(context: BotPermissionContext, capability: BotCapability) {
   if (context.isGroup && !context.profile) return "⛔ This chat has not been configured. A GhostBot admin must run /setchat launch, /setchat trade, /setchat fee, /setchat finance, or /setchat management."
   if (capability === "finance") return "⛔ Financial, revenue, receipt, and payroll information is not available in this chat."

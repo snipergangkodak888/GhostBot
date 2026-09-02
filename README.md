@@ -29,6 +29,7 @@ The codebase uses Supabase as the data store. Application data is saved through 
   - backup/reset tools
   - app version/cache release
 - Telegram bot webhook for ops commands
+- Management-only drag-and-drop trader scheduler with published Trade Floor `/shift` views
 - Supabase-backed documents, projects, payroll, reminders, sheets, settings, users, admin accounts, and logs
 
 ## Project structure
@@ -138,6 +139,12 @@ Run everything with one command:
 ```bash
 npm run dev:bot
 ```
+
+### Trader scheduler
+
+Configure the Management and Trade Floor groups with `/setchat management` and `/setchat trade`. Managers open the private planner with `/schedule`; the Trade Floor can use `/shift`, `/shift today`, `/shift tomorrow`, `/shift week`, and `/myshift` without receiving planner access.
+
+Apply `supabase/schema.sql` with `pnpm db:init` and set `SCHEDULE_SESSION_SECRET` before enabling the planner. See [docs/trader-scheduler.md](docs/trader-scheduler.md) for its access, publishing, and data model.
 
 Wait for `GhostBot is ready`, then message the development bot. In a group, use a slash command or mention the bot, for example:
 

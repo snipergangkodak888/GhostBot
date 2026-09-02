@@ -44,7 +44,7 @@ const output = ts.transpileModule(source, {
 const module = { exports: {} }
 
 function localRequire(id) {
-  if (id === "@/lib/db") return { getDb: async () => db }
+  if (id === "@/lib/db") return { getDb: async () => db, queryCollectionDocuments: async () => [] }
   if (id === "@/lib/ops-sheets") {
     return { calculateSheetFinancials: () => ({ incomeToday: 100, expenseToday: 10, payrollToday: 5, profitToday: 85, profitThisWeek: 85, profitThisMonth: 85 }) }
   }
@@ -61,8 +61,12 @@ function localRequire(id) {
   if (id === "@/lib/team-timezone") {
     return { TEAM_TIME_ZONE: "America/New_York", formatTeamDateTime: () => "test time", nextRecurringDueAt: () => null }
   }
+  if (id === "@/lib/reminder-text") return { reminderText: () => "Reminder" }
   if (id === "@/lib/chat-subscriptions") {
-    return { getSubscribedChats: async (purpose) => purpose === "finance" ? subscriptions : purpose === "launches" ? launchSubscriptions : [] }
+    return {
+      getSubscribedChats: async (purpose) => purpose === "finance" ? subscriptions : purpose === "launches" ? launchSubscriptions : [],
+      getProfileChats: async () => [],
+    }
   }
   if (id === "@/lib/launch-calendar") {
     return { LAUNCH_TIME_ZONE: "America/New_York", formatLaunchDaySchedule: async () => "Today’s Launches — Saturday, Aug 22\n\nTBD — Test · Solana · Other MM plugin", getLaunchesForDay: async () => [{ name: "Test" }], launchDateKey: () => "2026-08-22" }
@@ -71,13 +75,29 @@ function localRequire(id) {
     return { ensureDailyTradingFeeExpectations: async () => ({}), valuePendingRevenueReceipts: async () => ({}) }
   }
   if (id === "@/lib/project-lifecycle") {
-    return { projectActivationReadiness: () => ({ ready: true, missing: [], chain: "", quoteToken: "" }), projectLaunchAt: () => null }
+    return {
+      activateScheduledProject: async () => ({ ok: false }),
+      projectActivationReadiness: () => ({ ready: true, missing: [], chain: "", quoteToken: "" }),
+      projectLaunchAt: () => null,
+      projectLaunchDateKey: () => "",
+      projectLaunchTimingStatus: () => "confirmed",
+    }
   }
   if (id === "@/lib/launch-method") {
     return { launchMethodLabel: () => "Other MM plugin", normalizeLaunchMethod: () => "other_mm_plugin" }
   }
   if (id === "@/lib/launch-venues") {
     return { operationalLaunchVenue: () => null }
+  }
+  if (id === "@/lib/daily-project-review") {
+    return {
+      DAILY_PROJECT_REVIEW_HOUR_ET: 20,
+      activeProjectReviewStart: () => null,
+      dailyProjectReviewDateKey: () => "2026-08-22",
+      dailyProjectReviewId: (chatId, dateKey) => `daily-project-review:${chatId}:${dateKey}`,
+      dailyProjectReviewText: () => "Daily review",
+      dailyProjectReviewButtons: () => [],
+    }
   }
   throw new Error(`Unexpected import: ${id}`)
 }

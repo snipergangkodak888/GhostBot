@@ -59,9 +59,11 @@ function capturedTelegramResponse(method: string, body: Record<string, any>) {
 
 export async function getTelegramBotToken() {
   if (isTelegramCaptureActive()) return "ghostbot-local-lab-token"
+  const envToken = String(process.env.TELEGRAM_BOT_TOKEN || "").trim()
+  if (envToken) return envToken
   const db = await getDb()
   const settingsRow = await db.collection("settings").findOne({ key: "telegramBotToken" }).catch(() => null)
-  return String(settingsRow?.value || process.env.TELEGRAM_BOT_TOKEN || "").trim()
+  return String(settingsRow?.value || "").trim()
 }
 
 let cachedBotUsername = ""
@@ -102,6 +104,14 @@ export async function telegramApiJson(token: string, method: string, body: Recor
     return null
   }
   return response.json().catch(() => null)
+}
+
+export async function telegramChatMemberActive(token: string, chatId: number | string, telegramId: number) {
+  if (!token || Number(chatId) >= 0 || !Number.isFinite(telegramId)) return false
+  const payload = await telegramApiJson(token, "getChatMember", { chat_id: chatId, user_id: telegramId })
+  const member = payload?.result
+  const status = String(member?.status || "")
+  return ["creator", "administrator", "member"].includes(status) || (status === "restricted" && member?.is_member === true)
 }
 
 export type TelegramMessageOptions = {

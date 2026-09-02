@@ -34,7 +34,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     fetch("/api/telegram/auth", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ initData, userData, startParam: webApp?.initDataUnsafe?.start_param }),
+      body: JSON.stringify({ initData, userData, startParam: (webApp?.initDataUnsafe as any)?.start_param }),
     }).then(async (res) => {
       if (!res.ok) {
         router.replace("/telegram")

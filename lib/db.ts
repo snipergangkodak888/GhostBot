@@ -167,6 +167,23 @@ async function fetchRows(collection: string): Promise<StoredRow[]> {
   )
 }
 
+export async function queryCollectionDocuments(
+  collection: string,
+  filters: Array<[column: string, expression: string]>,
+): Promise<AnyDoc[]> {
+  if (!supabaseConfig.url || (!supabaseConfig.hasServiceRoleKey && !supabaseConfig.hasAnonKey)) {
+    return []
+  }
+
+  const params = new URLSearchParams({
+    collection: `eq.${collection}`,
+    select: "collection,id,data,created_at,updated_at",
+  })
+  for (const [column, expression] of filters) params.set(column, expression)
+  const rows = await supabaseRest<StoredRow[]>(`${DOCUMENTS_TABLE}?${params.toString()}`)
+  return rows.map(rowToDoc)
+}
+
 async function upsertDoc(collection: string, doc: AnyDoc) {
   if (!supabaseConfig.url || (!supabaseConfig.hasServiceRoleKey && !supabaseConfig.hasAnonKey)) {
     throw new Error("Supabase is not configured")

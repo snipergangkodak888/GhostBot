@@ -1,6 +1,5 @@
 import type { Metadata } from 'next'
 import { getDb } from '@/lib/db'
-import { supabaseRest, supabaseConfig } from '@/lib/supabase'
 import { GeistSans } from 'geist/font/sans'
 import { GeistMono } from 'geist/font/mono'
 import './globals.css'
@@ -13,13 +12,6 @@ import { GoogleAnalyticsLoader } from '@/components/google-analytics-loader'
 import { APP_NAME, MAIN_LOGO_URL } from '@/lib/branding'
 
 async function getPlatformName(): Promise<string> {
-  if (supabaseConfig.url && (supabaseConfig.hasServiceRoleKey || supabaseConfig.hasAnonKey)) {
-    try {
-      const rows = await supabaseRest<Array<{ value: string }>>('settings?key=eq.platformName&select=value&limit=1')
-      if (rows?.[0]?.value) return rows[0].value
-    } catch {}
-  }
-
   try {
     const db = await getDb()
     const setting = await db.collection('settings').findOne({ key: 'platformName' })

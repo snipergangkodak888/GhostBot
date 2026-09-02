@@ -9,6 +9,7 @@
     "bot:lab": "node ./scripts/bot-lab.mjs",
     "bot:test": "node ./scripts/bot-lab-test.mjs",
     "bot:test:permissions": "node ./scripts/test-bot-permissions.mjs",
+    "bot:test:schedule": "node ./scripts/test-trader-schedule.cjs",
     "bot:test:guard": "node ./scripts/test-guard-access.mjs",
     "bot:test:enrollment": "node ./scripts/test-guard-enrollment.mjs",
     "bot:test:launch": "node ./scripts/test-launch-method.mjs && node ./scripts/test-launch-workflow.mjs",

@@ -6,6 +6,8 @@ import { runOpsSuperCron } from "@/lib/ops-cron"
 
 export const dynamic = "force-dynamic"
 
+let activeRun: ReturnType<typeof runOpsSuperCron> | null = null
+
 async function adminAllowed() {
   const token = cookies().get("admin_token")?.value
   if (!token) return false
@@ -36,8 +38,17 @@ async function run(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "Unauthorized cron request" }, { status: 401 })
   }
 
-  const result = await runOpsSuperCron()
-  return NextResponse.json(result, { status: result.ok ? 200 : 400 })
+  if (activeRun) {
+    return NextResponse.json({ ok: true, skipped: true, reason: "already_running" }, { status: 202 })
+  }
+
+  activeRun = runOpsSuperCron()
+  try {
+    const result = await activeRun
+    return NextResponse.json(result, { status: result.ok ? 200 : 400 })
+  } finally {
+    activeRun = null
+  }
 }
 
 export async function GET(req: NextRequest) {
