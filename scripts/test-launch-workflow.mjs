@@ -16,10 +16,11 @@ const config = botLabConfig({ telegramId, chatId: telegramId, chatType: "group" 
 const suffix = Date.now().toString().slice(-6)
 const projectName = `SnapGame${suffix}`
 const tentativeProjectName = `Tentative${suffix}`
+const renamedTentativeProjectName = `Renamed${suffix}`
 const customQuoteProjectName = `CustomQuote${suffix}`
 const wizardProjectName = `WizardLaunch${suffix}`
 const parsedProjectName = `Pathelous${suffix}`
-const testProjectNames = new Set([projectName, tentativeProjectName, customQuoteProjectName, wizardProjectName])
+const testProjectNames = new Set([projectName, tentativeProjectName, renamedTentativeProjectName, customQuoteProjectName, wizardProjectName])
 const aaplAddress = "0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9"
 const launchChatId = String(-Math.abs(config.chatId))
 const launchProfileId = `codex-launch-profile-${telegramId}`
@@ -81,12 +82,21 @@ async function lookupTestProject(name = projectName) {
   return rows.find((row) => row.data?.name === name)?.data || null
 }
 
+async function lookupProjectDocuments(collection, projectId) {
+  const { url, key } = supabaseCredentials()
+  const query = new URLSearchParams({ select: "id,data,collection", collection: `eq.${collection}`, limit: "1000" })
+  const response = await fetch(`${url}/rest/v1/documents?${query}`, { headers: { apikey: key, Authorization: `Bearer ${key}` } })
+  if (!response.ok) throw new Error(`${collection} verification failed: ${response.status} ${await response.text()}`)
+  const rows = await response.json()
+  return rows.map((row) => row.data).filter((data) => String(data?.projectId || "") === String(projectId))
+}
+
 async function cleanup() {
   const { url, key } = supabaseCredentials()
   const headers = { apikey: key, Authorization: `Bearer ${key}` }
   const query = new URLSearchParams({
     select: "id,data,collection",
-    collection: "in.(opsProjects,opsProjectNotes,opsSheets,opsAiActions,opsBotLogs)",
+    collection: "in.(opsProjects,opsProjectNotes,opsProjectLifecycleEvents,opsSheets,opsAiActions,opsBotLogs)",
     limit: "1000",
   })
   const response = await fetch(`${url}/rest/v1/documents?${query}`, { headers })
@@ -96,6 +106,7 @@ async function cleanup() {
   const ids = rows.filter((row) => {
     if (row.collection === "opsProjects") return testProjectNames.has(row.data?.name)
     if (row.collection === "opsProjectNotes") return testProjectNames.has(row.data?.projectName) || projectIds.has(String(row.data?.projectId || ""))
+    if (row.collection === "opsProjectLifecycleEvents") return testProjectNames.has(row.data?.projectName) || projectIds.has(String(row.data?.projectId || ""))
     if (row.collection === "opsSheets") return testProjectNames.has(row.data?.projectName) || projectIds.has(String(row.data?.projectId || ""))
     return Number(row.data?.telegramId) === telegramId
   }).map((row) => row.id)
@@ -248,6 +259,22 @@ try {
     if (!responseText(noteQuestion).includes(expectedNote)) throw new Error(`Natural-language note lookup is missing ${expectedNote}. Response: ${responseText(noteQuestion)}`)
   }
 
+  const renameCalendar = await sendBotLabUpdate(config, { text: "/calendar" })
+  const renamePicker = await sendBotLabUpdate(config, { callbackData: callbackStartingWith(renameCalendar, "calendar:edit:"), messageId: renameCalendar.messages?.[0]?.messageId })
+  const renameLaunch = await sendBotLabUpdate(config, { callbackData: callbackStartingWith(renamePicker, `calendar:launch:${tentativeProject._id}:`), messageId: renamePicker.messages?.[0]?.messageId })
+  const renameCallback = callbackStartingWith(renameLaunch, `calendar:name:${tentativeProject._id}:`)
+  if (!renameCallback || !responseText(renameLaunch).includes(tentativeProjectName)) throw new Error(`Launch editor did not expose project-name editing. Response: ${responseText(renameLaunch)}`)
+  const renamePrompt = await sendBotLabUpdate(config, { callbackData: renameCallback, messageId: renameLaunch.messages?.[0]?.messageId })
+  if (!responseText(renamePrompt).includes(`Current name: ${tentativeProjectName}`)) throw new Error(`Rename flow did not show the current project name. Response: ${responseText(renamePrompt)}`)
+  const renamedLaunch = await sendBotLabUpdate(config, { text: renamedTentativeProjectName })
+  if (!responseText(renamedLaunch).includes(`renamed from ${tentativeProjectName} to ${renamedTentativeProjectName}`)) throw new Error(`Launch rename was not confirmed. Response: ${responseText(renamedLaunch)}`)
+  const renamedProject = await lookupTestProject(renamedTentativeProjectName)
+  if (!renamedProject || await lookupTestProject(tentativeProjectName)) throw new Error("Launch rename did not replace the project name cleanly.")
+  for (const collection of ["opsProjectNotes", "opsSheets"]) {
+    const related = await lookupProjectDocuments(collection, tentativeProject._id)
+    if (!related.length || related.some((row) => row.projectName !== renamedTentativeProjectName)) throw new Error(`${collection} did not receive the renamed project name: ${JSON.stringify(related)}`)
+  }
+
   const methodDraft = await sendBotLabUpdate(config, { text: `/schedulelaunch MethodChoice${suffix} pumpfun sol launch tomorrow at 2 PM ET no referrer` })
   const methodDraftText = responseText(methodDraft)
   if (!methodDraftText.includes("launch method") || !callbackStartingWith(methodDraft, "launchsetup:method:")) throw new Error(`A missing launch method did not expose the required picker. Response: ${methodDraftText}`)
@@ -328,7 +355,7 @@ try {
 
   console.log(text)
   console.log(tentativeCreatedText)
-  console.log("\nPASS: launch setup handles the /addlaunch wizard, clean natural-language names, time-only and TBD edits, command escape from pending prompts, tentative launches, notes, custom contract quote tokens, Uniswap V4, venue edits, and the compact /calendar flow.")
+  console.log("\nPASS: launch setup handles the /addlaunch wizard, clean natural-language names, calendar renames, time-only and TBD edits, command escape from pending prompts, tentative launches, notes, custom contract quote tokens, Uniswap V4, venue edits, and the compact /calendar flow.")
 } finally {
   const deleted = await cleanup().catch((error) => {
     console.error(`Cleanup warning: ${error instanceof Error ? error.message : String(error)}`)

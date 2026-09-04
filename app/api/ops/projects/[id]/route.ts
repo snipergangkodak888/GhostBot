@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
 import { ObjectId } from '@/lib/object-id'
-import { deleteProjectCascade } from '@/lib/platform-data'
+import { deleteProjectCascade, renameProject } from '@/lib/platform-data'
 import { cleanProjectFeeFields } from '@/lib/revenue-projects'
 import { activationLifecycleFields, normalizeProjectStatus, projectActivationReadiness, projectLaunchAt, scheduledLifecycleFields } from '@/lib/project-lifecycle'
 import { parseTeamDateTime } from '@/lib/team-timezone'
@@ -20,7 +20,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   const existing = await db.collection('opsProjects').findOne(idFilter(params.id))
   if (!existing) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
   const update: Record<string, any> = { updatedAt: new Date() }
-  for (const key of ['name', 'owner', 'referrer', 'referrerWallet', 'service', 'notes']) {
+  for (const key of ['owner', 'referrer', 'referrerWallet', 'service', 'notes']) {
     if (typeof body[key] === 'string') update[key] = body[key].trim()
   }
   if (body.referrerAccountId !== undefined) update.referrerAccountId = body.referrerAccountId ? String(body.referrerAccountId).trim() : null
@@ -92,13 +92,12 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     update.activationOverdue = false
   }
 
-  await db.collection('opsProjects').updateOne(idFilter(params.id), { $set: update })
-  if (typeof update.name === 'string' && update.name) {
-    await db.collection('revenueFeeEvents').updateMany(
-      { projectId: String(existing._id) },
-      { $set: { projectName: update.name, updatedAt: new Date().toISOString() } },
-    )
+  if (typeof body.name === 'string') {
+    const renamed = await renameProject(String(existing._id), body.name, { source: 'dashboard' })
+    if (!renamed.ok) return NextResponse.json({ error: renamed.error }, { status: 409 })
   }
+
+  await db.collection('opsProjects').updateOne(idFilter(params.id), { $set: update })
   const project = await db.collection('opsProjects').findOne(idFilter(params.id))
   return NextResponse.json({ project })
 }

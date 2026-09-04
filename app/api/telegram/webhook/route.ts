@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { answerOpsAi, answerOpsBot, answerProjectNotes, buildConversationContext, chooseOpsAiActionCandidate, executeOpsAiAction, formatOpsProjectDetails, proposeOpsAiAction, rejectOpsAiAction, type OpsAiOptions } from "@/lib/ops-bot"
 import { getMemberTimeZone, getTeamAccess, guardCodeFromText, redeemGuardInviteCode, saveMemberTimeZone } from "@/lib/team-access"
 import { getDb } from "@/lib/db"
-import { deleteProjectCascade } from "@/lib/platform-data"
+import { deleteProjectCascade, renameProject } from "@/lib/platform-data"
 import { getSheetSchema, SHEET_KIND_ORDER, valuesForKind, type SheetKind } from "@/lib/sheet-schemas"
 import { dateKeyInTimeZone, detectExplicitTimeZone, formatTeamDateTime, parseContextualTeamDateTime, parseNaturalTeamDate, parseNaturalTeamDateTime, parseTeamDateTime, teamZoneLabel, TIME_ZONE_OPTIONS, timeZoneFromOption, TEAM_TIME_ZONE } from "@/lib/team-timezone"
 import { parseReminderRequest, reminderRequestError, type ParsedReminderRequest } from "@/lib/reminder-parser"
@@ -1171,6 +1171,7 @@ async function showCalendarLaunchEditor(token: string, chatId: number | string, 
         [{ text: "Change date or time", callback_data: `lifecycle:delay:${id}:${scheduleVersion}` }],
         [{ text: "Make time TBD / move day", callback_data: `lifecycle:tentativeday:${id}:${scheduleVersion}` }],
       ]
+  buttons.push([{ text: "Change project name", callback_data: `calendar:name:${id}:${scheduleVersion}` }])
   buttons.push([{ text: "Change launch venue / DEX", callback_data: `calendar:venue:${id}:${scheduleVersion}` }])
   buttons.push([{ text: "Add note", callback_data: `calendar:addnote:${id}:${scheduleVersion}` }])
   if (scheduled) buttons.push([{ text: "Cancel launch", callback_data: `lifecycle:cancel:${id}:${scheduleVersion}` }])
@@ -1395,7 +1396,7 @@ async function processState(token: string, chatId: number | string, telegramId: 
     return true
   }
 
-  const stateCapability: BotCapability = String(state.action || "").startsWith("launch_calc") || String(state.action || "").startsWith("launch_setup") || String(state.action || "").startsWith("add_launch_wizard") || String(state.action || "").startsWith("organic_setup") || state.action === "schedule_launch_request" || state.action === "reschedule_launch" || state.action === "tentative_launch_day" || state.action === "add_launch_note"
+  const stateCapability: BotCapability = String(state.action || "").startsWith("launch_calc") || String(state.action || "").startsWith("launch_setup") || String(state.action || "").startsWith("add_launch_wizard") || String(state.action || "").startsWith("organic_setup") || state.action === "schedule_launch_request" || state.action === "reschedule_launch" || state.action === "tentative_launch_day" || state.action === "add_launch_note" || state.action === "rename_launch"
     ? "launch"
     : ["add_project", "edit_project", "add_reminder", "reminder_audience", "timezone_for_manual_reminder", "timezone_for_reminder"].includes(String(state.action || ""))
       ? (context.profile === "launch" ? "launch" : "trade")
@@ -1785,6 +1786,27 @@ async function processState(token: string, chatId: number | string, telegramId: 
     await finishState(token, chatId, telegramId, state, message, reviewMessageId ? [reviewMessageId] : [])
     const updated = await db.collection("opsProjects").findOne({ _id: String(project._id) })
     if (updated) await showCalendarLaunchEditor(token, chatId, updated, reviewMessageId, "Note added.")
+    return true
+  }
+
+  if (state.action === "rename_launch") {
+    const project = await db.collection("opsProjects").findOne({ _id: String(state.projectId) })
+    const reviewMessageId = Number(state.reviewMessageId || state.promptMessageId || 0) || null
+    if (!project || String(project.status || "") === "inactive" || Number(project.scheduleVersion || 0) !== Number(state.scheduleVersion || 0)) {
+      await finishState(token, chatId, telegramId, state, message, reviewMessageId ? [reviewMessageId] : [])
+      await editOrSendWorkflowMessage(token, chatId, reviewMessageId, "This launch was already updated. Open /calendar for the latest version.")
+      return true
+    }
+    const name = cleanLaunchProjectName(text).slice(0, 80)
+    const result = await renameProject(String(project._id), name, { telegramId, source: "launch_chat" })
+    if (!result.ok) {
+      await setState(telegramId, state, chatId)
+      await editOrSendWorkflowMessage(token, chatId, reviewMessageId, `${result.error}\n\nCurrent name: ${project.name}\nSend /cancel to stop.`)
+      await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
+      return true
+    }
+    await finishState(token, chatId, telegramId, state, message, reviewMessageId ? [reviewMessageId] : [])
+    await showCalendarLaunchEditor(token, chatId, result.project, reviewMessageId, result.changed ? `Project renamed from ${result.previousName} to ${result.project.name}.` : "Project name unchanged.")
     return true
   }
 
@@ -2352,6 +2374,23 @@ async function handleCallback(token: string, chatId: number | string, telegramId
           authorName: member?.name || member?.firstName || member?.username || "Team member",
         },
         text: `Send one note for ${project.name}.\n\nIt will appear as a separate bullet. Send /cancel to stop.`,
+      })
+      return
+    }
+
+    if (action === "name") {
+      const project = await db.collection("opsProjects").findOne({ _id: id })
+      const scheduleVersion = Number(extra || 0)
+      if (!project || String(project.status || "") === "inactive" || Number(project.scheduleVersion || 0) !== scheduleVersion) {
+        return editOrSendWorkflowMessage(token, chatId, messageId, "This launch was already updated. Open /calendar for the latest version.")
+      }
+      await beginTextWorkflow({
+        token,
+        chatId,
+        telegramId,
+        reviewMessageId: messageId,
+        state: { action: "rename_launch", projectId: id, scheduleVersion },
+        text: `Send the corrected project name.\n\nCurrent name: ${project.name}\nSend /cancel to stop.`,
       })
       return
     }

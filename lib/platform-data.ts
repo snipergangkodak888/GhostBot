@@ -79,6 +79,46 @@ export async function deleteProjectCascade(projectId: string, knownProjectName?:
   }
 }
 
+export async function renameProject(projectId: string, requestedName: string, metadata: { telegramId?: number | null; source?: string } = {}) {
+  const name = String(requestedName || "").trim().slice(0, 80)
+  if (!name || !/[a-z0-9]/i.test(name)) return { ok: false as const, error: "Send a project name with at least one letter or number." }
+
+  const db = await getDb()
+  const project = await db.collection("opsProjects").findOne({ _id: projectId })
+  if (!project) return { ok: false as const, error: "Project not found." }
+
+  const projects = await db.collection("opsProjects").find({}).toArray()
+  const duplicate = projects.find((row: any) => String(row._id) !== String(projectId) && normalize(row.name) === normalize(name))
+  if (duplicate) return { ok: false as const, error: `A project named ${duplicate.name} already exists. Choose a unique name instead.` }
+
+  const previousName = String(project.name || "").trim()
+  if (previousName === name) return { ok: true as const, project, previousName, changed: false as const }
+
+  const now = new Date()
+  await db.collection("opsProjects").updateOne(
+    { _id: project._id },
+    { $set: { name, projectNameUpdatedAt: now, projectNameUpdatedByTelegramId: metadata.telegramId || null, updatedAt: now } },
+  )
+  await Promise.all([
+    db.collection("opsProjectNotes").updateMany({ projectId: String(project._id) }, { $set: { projectName: name, updatedAt: now } }),
+    db.collection("opsSheets").updateMany({ projectId: String(project._id) }, { $set: { projectName: name, updatedAt: now } }),
+    db.collection("revenueFeeEvents").updateMany({ projectId: String(project._id) }, { $set: { projectName: name, updatedAt: now.toISOString() } }),
+    db.collection("opsPayroll").updateMany({ projectId: String(project._id) }, { $set: { project: name, updatedAt: now } }),
+  ])
+  await db.collection("opsProjectLifecycleEvents").insertOne({
+    projectId: String(project._id),
+    projectName: name,
+    action: "renamed",
+    previousProjectName: previousName,
+    source: metadata.source || "manual",
+    telegramId: metadata.telegramId || null,
+    createdAt: now,
+  })
+
+  const renamed = await db.collection("opsProjects").findOne({ _id: project._id })
+  return { ok: true as const, project: renamed || { ...project, name, updatedAt: now }, previousName, changed: true as const }
+}
+
 export async function resetPlatformData() {
   const db = await getDb()
   const collections = await db.collections()
@@ -98,4 +138,3 @@ export async function resetPlatformData() {
     deletedByCollection,
   }
 }
-
