@@ -1153,7 +1153,6 @@ async function showCalendarLaunchEditor(token: string, chatId: number | string, 
   const location = calendarLaunchLocation(project)
   const method = normalizeLaunchMethod(project.launchMethod) ? ` · ${launchMethodLabel(project.launchMethod)}` : ""
   const timing = launchAt ? calendarTimeLabel(launchAt) : "TBD"
-  const timingStatus = projectLaunchTimingStatus(project)
   const scheduled = ["scheduled", "in_progress"].includes(String(project.status || ""))
   const notes = await db.collection("opsProjectNotes").find({ projectId: id }).sort({ createdAt: -1 }).limit(6).toArray()
   const noteLines = notes.map((note: any) => {
@@ -1162,15 +1161,7 @@ async function showCalendarLaunchEditor(token: string, chatId: number | string, 
   })
   const buttons: InlineButton[][] = !scheduled
     ? []
-    : timingStatus === "tentative"
-      ? [
-        [{ text: "Set exact time", callback_data: `lifecycle:settime:${id}:${scheduleVersion}` }],
-        [{ text: "Move day", callback_data: `lifecycle:tentativeday:${id}:${scheduleVersion}` }],
-      ]
-      : [
-        [{ text: "Change date or time", callback_data: `lifecycle:delay:${id}:${scheduleVersion}` }],
-        [{ text: "Make time TBD / move day", callback_data: `lifecycle:tentativeday:${id}:${scheduleVersion}` }],
-      ]
+    : [[{ text: "Change launch timing", callback_data: `calendar:timing:${id}:${scheduleVersion}` }]]
   buttons.push([{ text: "Change project name", callback_data: `calendar:name:${id}:${scheduleVersion}` }])
   buttons.push([{ text: "Change launch venue / DEX", callback_data: `calendar:venue:${id}:${scheduleVersion}` }])
   buttons.push([{ text: "Add note", callback_data: `calendar:addnote:${id}:${scheduleVersion}` }])
@@ -1179,7 +1170,7 @@ async function showCalendarLaunchEditor(token: string, chatId: number | string, 
   const status = String(project.status || "scheduled").replace(/_/g, " ").replace(/^./, (char) => char.toUpperCase())
   const text = [
     notice,
-    `${project.name}\n${timing} · ${location}${method}\n${status}`,
+    `${project.name}\n${calendarDayLabel(dateKey)} · ${timing}\n${location}${method}\n${status}`,
     `Notes\n${noteLines.length ? noteLines.join("\n") : "No notes yet."}`,
   ].filter(Boolean).join("\n\n")
   return showLaunchSetupPicker(token, chatId, messageId, text, buttons)
@@ -1382,6 +1373,15 @@ async function processState(token: string, chatId: number | string, telegramId: 
 
   if (text === "⬅️ Back" || text === "/cancel") {
     const reviewMessageId = Number(state.reviewMessageId || 0) || null
+    if (state.action === "reschedule_launch" && state.returnToCalendar && canEditLaunchSchedule(context)) {
+      const project = await db.collection("opsProjects").findOne({ _id: String(state.projectId) })
+      if (project && project.status !== "inactive") {
+        const messageId = Number(state.promptMessageId || reviewMessageId || 0) || null
+        await finishState(token, chatId, telegramId, state, message, messageId ? [messageId] : [])
+        await showCalendarLaunchEditor(token, chatId, project, messageId, "Timing edit cancelled.")
+        return true
+      }
+    }
     if (String(state.action || "").startsWith("launch_setup") && state.actionId && reviewMessageId) {
       const draft = await getLaunchSetupAction(db, String(state.actionId), context)
       await finishState(token, chatId, telegramId, state, message, [reviewMessageId])
@@ -1697,9 +1697,10 @@ async function processState(token: string, chatId: number | string, telegramId: 
         return true
       }
       const resolvedText = `✅ ${(result.project as any).name} is tentative\n${tentativeLaunchDate} · Time TBD`
-      const reviewMessageId = Number(state.reviewMessageId || state.promptMessageId || 0) || null
-      await editOrSendWorkflowMessage(token, chatId, reviewMessageId, resolvedText)
+      const reviewMessageId = Number(state.promptMessageId || state.reviewMessageId || 0) || null
       await finishState(token, chatId, telegramId, state, message, reviewMessageId ? [reviewMessageId] : [])
+      if (state.returnToCalendar) await showCalendarLaunchEditor(token, chatId, result.project, reviewMessageId, resolvedText)
+      else await editOrSendWorkflowMessage(token, chatId, reviewMessageId, resolvedText)
       return true
     }
     const parsed = parseContextualTeamDateTime(text, {
@@ -1730,9 +1731,10 @@ async function processState(token: string, chatId: number | string, telegramId: 
       return true
     }
     const resolvedText = `✅ ${(result.project as any).name} rescheduled\n${formatTeamDateTime(parsed.date, parsed.timeZone)}`
-    const reviewMessageId = Number(state.reviewMessageId || state.promptMessageId || 0) || null
-    await editOrSendWorkflowMessage(token, chatId, reviewMessageId, resolvedText)
+    const reviewMessageId = Number(state.promptMessageId || state.reviewMessageId || 0) || null
     await finishState(token, chatId, telegramId, state, message, reviewMessageId ? [reviewMessageId] : [])
+    if (state.returnToCalendar) await showCalendarLaunchEditor(token, chatId, result.project, reviewMessageId, resolvedText)
+    else await editOrSendWorkflowMessage(token, chatId, reviewMessageId, resolvedText)
     return true
   }
 
@@ -2330,6 +2332,36 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     return startOrganicChannelSetup(token, chatId, telegramId, validOrganicTicker(suggestedTicker) ? suggestedTicker : "", callbackMessageId)
   }
 
+  if ((area === "calendar" && ["timing", "maketbd"].includes(action))
+    || (area === "lifecycle" && ["settime", "delay", "maketbd"].includes(action))) {
+    if (!canEditLaunchSchedule(context)) return workflowReply("⛔ Launch schedule editing is available in Launch Chat or a DM with launch scheduling access.")
+    const messageId = Number(callbackMessage?.message_id || 0) || null
+    const scheduleVersion = Number(extra || 0)
+    const project = await db.collection("opsProjects").findOne({ _id: id })
+    if (!project || !["scheduled", "in_progress"].includes(String(project.status || "")) || Number(project.scheduleVersion || 0) !== scheduleVersion) return editOrSendWorkflowMessage(token, chatId, messageId, "This launch was already updated. Open /calendar for the latest schedule.")
+    const returnToCalendar = area === "calendar"
+    const timeZone = project.launchTimeZone || TEAM_TIME_ZONE
+    const defaultLaunchDate = projectLaunchDateKey(project, timeZone) || dateKeyInTimeZone(new Date(), timeZone)
+    const defaultLaunchAt = projectLaunchAt(project)?.toISOString() || null
+    if (action === "maketbd") {
+      const result = await setTentativeProjectLaunchDate({ projectId: id, tentativeLaunchDate: defaultLaunchDate, telegramId, chatId, timeZone, expectedScheduleVersion: scheduleVersion })
+      await clearState(telegramId)
+      const notice = result.ok ? `✅ ${(result.project as any).name} is tentative\n${defaultLaunchDate} · Time TBD` : `⚠️ ${result.error}`
+      if (result.ok && returnToCalendar) return showCalendarLaunchEditor(token, chatId, result.project, messageId, notice)
+      return editOrSendWorkflowMessage(token, chatId, messageId, notice)
+    }
+    await beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: messageId, state: { action: "reschedule_launch", projectId: id, scheduleVersion, defaultLaunchDate, defaultLaunchAt, timeZone, returnToCalendar }, text: [
+      `Send the launch timing for ${project.name}.`,
+      "",
+      `A time by itself applies to ${calendarDayLabel(defaultLaunchDate)}.`,
+      defaultLaunchAt ? `A day by itself keeps ${calendarTimeLabel(new Date(defaultLaunchAt))}.` : "If you send only a day, I’ll ask for the time next.",
+      `Times default to ${teamZoneLabel(timeZone)} unless you include a timezone.`,
+      "Examples: 12:30 PM ET · tomorrow at 2 PM · Thursday at noon · same time tomorrow · TBD",
+      "Send /cancel to stop.",
+    ].join("\n"), buttons: [[{ text: "Set time to TBD", callback_data: `${area}:maketbd:${id}:${scheduleVersion}` }]] })
+    return
+  }
+
   if (area === "calendar") {
     const messageId = Number(callbackMessage?.message_id || 0) || null
     if (!canEditLaunchSchedule(context)) return workflowReply("⛔ Launch schedule editing is available in Launch Chat or a DM with launch scheduling access.")
@@ -2656,30 +2688,6 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     if (!canEditLaunchSchedule(context)) return workflowReply("⛔ Launch activation confirmations are available in Launch Chat or a DM with launch scheduling access.")
     const messageId = Number(callbackMessage?.message_id || 0) || null
     const scheduleVersion = Number(extra || 0)
-    if (action === "settime") {
-      const project = await db.collection("opsProjects").findOne({ _id: id })
-      if (!project || !["scheduled", "in_progress"].includes(String(project.status || "")) || Number(project.scheduleVersion || 0) !== scheduleVersion) return editOrSendWorkflowMessage(token, chatId, messageId, "This launch was already updated. Open /calendar for the latest schedule.")
-      const timeZone = project.launchTimeZone || TEAM_TIME_ZONE
-      const defaultLaunchDate = projectLaunchDateKey(project, timeZone) || dateKeyInTimeZone(new Date(), timeZone)
-      const defaultLaunchAt = projectLaunchAt(project)?.toISOString() || null
-      await beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: messageId, state: { action: "reschedule_launch", projectId: id, scheduleVersion, defaultLaunchDate, defaultLaunchAt, timeZone }, text: [
-        `Send the launch timing for ${project.name}.`,
-        "",
-        `A time by itself applies to ${calendarDayLabel(defaultLaunchDate)}.`,
-        "Examples: 12:30 PM ET · tomorrow at 2 PM · Thursday at noon · next Thursday at 3 PM · TBD",
-        "Send /cancel to stop.",
-      ].join("\n"), buttons: [[{ text: "Set time to TBD", callback_data: `lifecycle:maketbd:${id}:${scheduleVersion}` }]] })
-      return
-    }
-    if (action === "maketbd") {
-      const project = await db.collection("opsProjects").findOne({ _id: id })
-      if (!project || !["scheduled", "in_progress"].includes(String(project.status || "")) || Number(project.scheduleVersion || 0) !== scheduleVersion) return editOrSendWorkflowMessage(token, chatId, messageId, "This launch was already updated. Open /calendar for the latest schedule.")
-      const timeZone = project.launchTimeZone || TEAM_TIME_ZONE
-      const tentativeLaunchDate = projectLaunchDateKey(project, timeZone) || dateKeyInTimeZone(new Date(), timeZone)
-      const result = await setTentativeProjectLaunchDate({ projectId: id, tentativeLaunchDate, telegramId, chatId, timeZone, expectedScheduleVersion: scheduleVersion })
-      await clearState(telegramId)
-      return editOrSendWorkflowMessage(token, chatId, messageId, result.ok ? `✅ ${(result.project as any).name} is tentative\n${tentativeLaunchDate} · Time TBD` : `⚠️ ${result.error}`)
-    }
     if (action === "tentativeday") {
       const project = await db.collection("opsProjects").findOne({ _id: id })
       if (!project || !["scheduled", "in_progress"].includes(String(project.status || "")) || Number(project.scheduleVersion || 0) !== scheduleVersion) return editOrSendWorkflowMessage(token, chatId, messageId, "This launch was already updated. Open /calendar for the latest schedule.")
@@ -2697,22 +2705,6 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       }
       if (result.alreadyActive) return editOrSendWorkflowMessage(token, chatId, messageId, `✅ ${(result.project as any).name} is already active.`)
       return editOrSendWorkflowMessage(token, chatId, messageId, `✅ ${(result.project as any).name} is Active\nDaily trading fees begin ${result.dailyFeeStartDate}.`)
-    }
-    if (action === "delay") {
-      const project = await db.collection("opsProjects").findOne({ _id: id })
-      if (!project || !["scheduled", "in_progress"].includes(String(project.status || "")) || Number(project.scheduleVersion || 0) !== scheduleVersion) return editOrSendWorkflowMessage(token, chatId, messageId, "This launch was already updated. Open /calendar for the latest schedule.")
-      const timeZone = project.launchTimeZone || TEAM_TIME_ZONE
-      const defaultLaunchDate = projectLaunchDateKey(project, timeZone) || dateKeyInTimeZone(new Date(), timeZone)
-      const defaultLaunchAt = projectLaunchAt(project)?.toISOString() || null
-      await beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: messageId, state: { action: "reschedule_launch", projectId: id, scheduleVersion, defaultLaunchDate, defaultLaunchAt, timeZone }, text: [
-        `Send the new timing for ${project.name}.`,
-        "",
-        `A time by itself keeps ${calendarDayLabel(defaultLaunchDate)}.`,
-        defaultLaunchAt ? `A day by itself keeps ${calendarTimeLabel(new Date(defaultLaunchAt))}.` : "If you send only a day, I’ll ask for the time next.",
-        "Examples: 12:30 PM ET · tomorrow at 2 PM · Thursday this time · same time tomorrow · TBD",
-        "Send /cancel to stop.",
-      ].join("\n"), buttons: [[{ text: "Set time to TBD", callback_data: `lifecycle:maketbd:${id}:${scheduleVersion}` }]] })
-      return
     }
     if (action === "cancel") {
       const result = await cancelScheduledProject(id, telegramId, new Date(), scheduleVersion)

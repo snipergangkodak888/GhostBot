@@ -144,6 +144,107 @@ assert.match(await callback(memberId, 'launchsetup:create:shared'), /already con
 assert.equal(rows.get('opsProjects').length, projectCount, 'Replaying confirmation must not create a duplicate')
 assert.match(await ops.rejectOpsAiAction('shared', memberId, { currentChatId: chatId }), /already confirmed/)
 
+// Open launches and reminder buttons must use the same contextual timing flow.
+const timingProjectId = 'timing-launch'
+await db.collection('opsProjects').insertOne({ ...payload, _id: timingProjectId, status: 'scheduled', launchTimingStatus: 'confirmed', scheduleVersion: 1 })
+const timingProject = () => db.collection('opsProjects').findOne({ _id: timingProjectId })
+const lastButtons = () => messages.at(-1)?.options?.replyMarkup?.inline_keyboard?.flat() || []
+function buttonWithText(label) {
+  const button = lastButtons().find(item => item.text === label)
+  assert.ok(button?.callback_data, `Missing ${label}: ${JSON.stringify(messages.at(-1))}`)
+  return button.callback_data
+}
+async function timingReply(text, user = memberId, sourceChat = chatId) {
+  messages.length = 0
+  await webhook.routeText('test', sourceChat, user, text, req, Date.now(), { message_id: 101, chat: { id: sourceChat } })
+  return messages.map(message => message.text).join('\n')
+}
+async function editTiming(user = memberId, sourceChat = chatId) {
+  const project = await timingProject()
+  await callback(user, `calendar:launch:${project._id}:${project.scheduleVersion}`, sourceChat)
+  assert.match(await callback(user, buttonWithText('Change launch timing'), sourceChat), /Send the launch timing/)
+}
+function assertTimingCard() {
+  assert.equal(messages.at(-1).messageId, 100, 'Saving must update the existing card')
+  assert.match(messages.at(-1).text, /Notes\nNo notes yet/)
+  assert.match(buttonWithText('Change launch timing'), /^calendar:timing:/)
+}
+
+await timingReply('/calendar 2030-09-09')
+await callback(memberId, buttonWithText('Open launches'))
+const launchButton = lastButtons().find(button => button.callback_data.startsWith(`calendar:launch:${timingProjectId}:`))
+assert.ok(launchButton, 'Open launches must include the scheduled project')
+await callback(memberId, launchButton.callback_data)
+assert.match(messages.at(-1).text, /Sep 9/)
+await callback(memberId, buttonWithText('Change launch timing'))
+const staleTimingCallback = `calendar:timing:${timingProjectId}:1`
+assert.equal((await db.collection('opsBotStates').findOne({ telegramId: memberId })).returnToCalendar, true)
+assert.match(await timingReply('3:30'), /AM or PM/)
+assert.equal((await timingProject()).launchAt, payload.launchAt, 'Ambiguous input must not change the schedule')
+assert.match(await timingReply('3:30 PM ET'), /rescheduled/)
+assert.equal((await timingProject()).launchAt, '2030-09-09T19:30:00.000Z', 'A time alone must retain the launch date')
+assert.equal(await db.collection('opsBotStates').findOne({ telegramId: memberId }), null)
+assertTimingCard()
+assert.match(await callback(memberId, staleTimingCallback), /already updated/)
+
+await editTiming()
+await timingReply('September 12, 2030')
+assert.equal((await timingProject()).launchAt, '2030-09-12T19:30:00.000Z', 'A day alone must retain the launch time')
+assert.equal(buttonWithText('Back to launches'), 'calendar:edit:2030-09-12')
+assertTimingCard()
+
+await editTiming()
+assert.match(await timingReply('time TBD'), /is tentative/)
+assert.equal((await timingProject()).launchAt, null)
+assert.equal((await timingProject()).tentativeLaunchDate, '2030-09-12')
+assertTimingCard()
+await editTiming()
+assert.match(await timingReply('September 13, 2030'), /What time should it launch/)
+await timingReply('noon')
+assert.equal((await timingProject()).launchAt, '2030-09-13T16:00:00.000Z', 'A follow-up time must use the requested day')
+assert.equal((await timingProject()).launchTimingStatus, 'confirmed')
+assertTimingCard()
+
+await editTiming()
+await callback(memberId, buttonWithText('Set time to TBD'))
+assert.equal((await timingProject()).tentativeLaunchDate, '2030-09-13')
+assertTimingCard()
+await editTiming()
+const beforeCancel = await timingProject()
+assert.match(await timingReply('/cancel'), /Timing edit cancelled/)
+assert.deepEqual(await timingProject(), beforeCancel)
+assertTimingCard()
+
+await editTiming()
+await timingReply('/calendar 2030-09-13')
+assert.equal(await db.collection('opsBotStates').findOne({ telegramId: memberId }), null, 'Calendar commands must leave timing entry')
+await editTiming(dmId, dmId)
+assert.match(await timingReply('2 PM PT', dmId, dmId), /rescheduled/)
+assert.equal((await timingProject()).launchAt, '2030-09-13T21:00:00.000Z')
+assertTimingCard()
+
+// Existing reminder and older calendar buttons remain valid.
+let currentTimingProject = await timingProject()
+await callback(memberId, `lifecycle:delay:${timingProjectId}:${currentTimingProject.scheduleVersion}`)
+assert.equal((await db.collection('opsBotStates').findOne({ telegramId: memberId })).returnToCalendar, false)
+await timingReply('4 PM ET')
+assert.equal((await timingProject()).launchAt, '2030-09-13T20:00:00.000Z')
+assert.equal(lastButtons().length, 0, 'Reminder replies retain their completion message')
+currentTimingProject = await timingProject()
+await callback(memberId, `lifecycle:settime:${timingProjectId}:${currentTimingProject.scheduleVersion}`)
+await callback(memberId, buttonWithText('Set time to TBD'))
+assert.equal((await timingProject()).launchTimingStatus, 'tentative')
+assert.equal(lastButtons().length, 0)
+assert.match(await callback(memberId, `calendar:timing:${timingProjectId}:${(await timingProject()).scheduleVersion}`, -200), /not available/)
+
+await editTiming()
+await db.collection('opsProjects').updateOne({ _id: timingProjectId }, { $set: { scheduleVersion: (await timingProject()).scheduleVersion + 1 } })
+assert.match(await timingReply('5 PM ET'), /already updated/, 'Another member’s timing update must not be overwritten')
+assert.equal((await timingProject()).launchTimingStatus, 'tentative')
+await db.collection('opsProjects').updateOne({ _id: timingProjectId }, { $set: { status: 'active' } })
+await callback(memberId, `calendar:launch:${timingProjectId}:${(await timingProject()).scheduleVersion}`)
+assert.ok(!lastButtons().some(button => button.text === 'Change launch timing'), 'Activated launches must not be rescheduled')
+
 await draft('cancel-shared')
 assert.match(await callback(memberId, 'launchsetup:cancel:cancel-shared'), /Refused/)
 assert.equal((await db.collection('opsAiActions').findOne({ _id: 'cancel-shared' })).rejectedByTelegramId, memberId)
@@ -229,4 +330,4 @@ assert.equal((await access.getTeamAccess(memberId)).member.launchDmAccess, true)
 assert.equal((await access.getTeamAccess(memberId)).member.accessRole, 'member')
 assert.equal(rows.get('opsPermissionAudit').at(-1).actor, 'test-admin')
 assert.equal((await adminRoute.POST({ json: async () => ({ action: 'update-member-launch-dm-access', id: 'member-2', enabled: 'true' }) })).status, 400)
-console.log('PASS: shared drafts, text edits, confirmation/cancellation, chat isolation, launch DMs, financial command/callback/AI denials, revocation, and admin-only access changes.')
+console.log('PASS: shared drafts, calendar/reminder timing edits, TBD, stale schedules, chat isolation, launch DMs, financial denials, revocation, and admin-only access changes.')

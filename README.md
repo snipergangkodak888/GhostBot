@@ -328,6 +328,8 @@ Enable **Launch DMs** for an existing member in Admin → Guard Team to let them
 
 Pending launch drafts in a configured Launch Chat are shared: any active Guard member in that chat can edit, confirm, or cancel them, regardless of who started the draft. Drafts stay bound to their original chat, and private drafts remain creator-only.
 
+To change a scheduled launch, use `/calendar` (or `/calendar tomorrow`) → **Open launches** → choose the launch → **Change launch timing**. Enter natural language such as `3 PM ET`, `tomorrow at noon`, `same time tomorrow`, or `TBD`. This uses the same timing flow as launch reminders: a time alone keeps the launch day, a day alone keeps an existing time, and a TBD launch asks for the time if needed. Saving or cancelling returns to the launch details. Launches already marked Active cannot be rescheduled from this flow.
+
 Run one of these commands inside each Telegram group. The caller must be both a GhostBot admin and a Telegram group administrator:
 
 - `/setchat launch` — launch schedule, launch calculator, natural-language launch changes, and chat-specific reminders; enables the morning launch schedule.
