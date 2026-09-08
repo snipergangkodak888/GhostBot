@@ -8,7 +8,7 @@
     "dev:bot": "node ./scripts/dev-bot.mjs",
     "bot:lab": "node ./scripts/bot-lab.mjs",
     "bot:test": "node ./scripts/bot-lab-test.mjs",
-    "bot:test:permissions": "node ./scripts/test-bot-permissions.mjs",
+    "bot:test:permissions": "node ./scripts/test-bot-permissions.mjs && node ./scripts/test-launch-permissions.mjs",
     "bot:test:schedule": "node ./scripts/test-trader-schedule.cjs",
     "bot:test:guard": "node ./scripts/test-guard-access.mjs",
     "bot:test:enrollment": "node ./scripts/test-guard-enrollment.mjs",

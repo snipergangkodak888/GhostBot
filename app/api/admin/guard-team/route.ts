@@ -1,11 +1,20 @@
 import { NextRequest, NextResponse } from "next/server"
-import { createGuardInviteCode, deactivateGuardMember, deleteGuardInviteCode, normalizeTeamAccessRole, updateGuardMemberRole } from "@/lib/team-access"
+import { createGuardInviteCode, deactivateGuardMember, deleteGuardInviteCode, normalizeTeamAccessRole, updateGuardMemberLaunchDmAccess, updateGuardMemberRole } from "@/lib/team-access"
+import { cookies } from "next/headers"
+import { verifyAdminToken } from "@/lib/auth"
 import { getDb } from "@/lib/db"
 import { getGuardEnrollmentDashboard, grantDiscoveredGuardAccess } from "@/lib/guard-enrollment"
 
 export const dynamic = "force-dynamic"
 
+async function requireAdmin() {
+  const token = cookies().get("admin_token")?.value
+  if (!token) return null
+  try { return await verifyAdminToken(token) } catch { return null }
+}
+
 export async function GET() {
+  if (!(await requireAdmin())) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   const db = await getDb()
   const [members, codes, enrollment] = await Promise.all([
     db.collection("guardMembers").find({}).sort({ createdAt: -1 }).toArray(),
@@ -16,6 +25,8 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  const admin = await requireAdmin()
+  if (!admin) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   const body = await req.json().catch(() => ({}))
   const action = String(body.action || "")
 
@@ -27,6 +38,12 @@ export async function POST(req: NextRequest) {
 
   if (action === "update-member-role") {
     const result = await updateGuardMemberRole(String(body.id || ""), normalizeTeamAccessRole(body.accessRole))
+    return NextResponse.json(result, { status: result.ok ? 200 : 404 })
+  }
+
+  if (action === "update-member-launch-dm-access") {
+    if (typeof body.enabled !== "boolean") return NextResponse.json({ error: "Enabled must be true or false" }, { status: 400 })
+    const result = await updateGuardMemberLaunchDmAccess(String(body.id || ""), body.enabled, admin.sub)
     return NextResponse.json(result, { status: result.ok ? 200 : 404 })
   }
 

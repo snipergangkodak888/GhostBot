@@ -1,5 +1,6 @@
 import { getDb } from "@/lib/db"
 import { getMemberTimeZone } from "@/lib/team-access"
+import { canCollaborateOnLaunchDraft, getBotPermissionContext } from "@/lib/bot-permissions"
 import { deleteProjectCascade } from "@/lib/platform-data"
 import { calculateSheetFinancials, createDefaultSheetsForProject, inferSheetKind } from "@/lib/ops-sheets"
 import { getOpsSourceDocs } from "@/lib/ops-source-docs"
@@ -1416,20 +1417,29 @@ export async function chooseOpsAiActionCandidate(actionId: string, choice: "newe
   }
 }
 
-export async function rejectOpsAiAction(actionId: string, telegramId?: number | null) {
+async function canAccessOpsAiAction(action: any, telegramId?: number | null, chatId?: number | string) {
+  if (!action) return false
+  if (!telegramId || !action.telegramId || Number(action.telegramId) === Number(telegramId)) return true
+  if (chatId == null) return false
+  return canCollaborateOnLaunchDraft(await getBotPermissionContext({ telegramId, chatId }), action)
+}
+
+export async function rejectOpsAiAction(actionId: string, telegramId?: number | null, options: { currentChatId?: number | string } = {}) {
   const db = await getDb()
   const action = await db.collection("opsAiActions").findOne({ _id: actionId })
-  if (!action || (telegramId && action.telegramId && Number(action.telegramId) !== Number(telegramId))) {
+  if (!(await canAccessOpsAiAction(action, telegramId, options.currentChatId))) {
     return "⚠️ I could not find that pending action."
   }
-  await db.collection("opsAiActions").updateOne({ _id: actionId }, { $set: { status: "rejected", updatedAt: new Date() } })
+  if (action.status !== "pending") return `⚠️ This action is already ${action.status}.`
+  if (action.chatId && options.currentChatId != null && String(action.chatId) !== String(options.currentChatId)) return "⛔ This action must be confirmed in the chat where it was created."
+  await db.collection("opsAiActions").updateOne({ _id: actionId, status: "pending" }, { $set: { status: "rejected", rejectedByTelegramId: telegramId || null, updatedAt: new Date() } })
   return formatBotText("❌ Refused. I did not change anything.", { allowEmoji: true })
 }
 
 export async function executeOpsAiAction(actionId: string, telegramId?: number | null, options: { allowedActionTypes?: string[]; currentChatId?: number | string; dataScope?: OpsAiOptions["dataScope"] } = {}) {
   const db = await getDb()
   const action = await db.collection("opsAiActions").findOne({ _id: actionId })
-  if (!action || (telegramId && action.telegramId && Number(action.telegramId) !== Number(telegramId))) {
+  if (!(await canAccessOpsAiAction(action, telegramId, options.currentChatId))) {
     return "⚠️ I could not find that pending action."
   }
   if (action.status !== "pending") return `⚠️ This action is already ${action.status}.`
@@ -1722,7 +1732,7 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
   }
 
   if (!done) return "⚠️ I could not execute that action."
-  await db.collection("opsAiActions").updateOne({ _id: actionId }, { $set: { status: "confirmed", executedAt: now, updatedAt: now } })
+  await db.collection("opsAiActions").updateOne({ _id: actionId }, { $set: { status: "confirmed", executedByTelegramId: telegramId || null, executedAt: now, updatedAt: now } })
   return formatBotText(done, { allowEmoji: true })
 }
 

@@ -324,6 +324,10 @@ You can connect the webhook from the admin settings page.
 
 Guard Team members have either a `Member` or `Admin` role. Set existing admins in Admin → Guard Team before configuring Telegram groups. A user can perform an action only when both their member role and the current chat profile allow it.
 
+Enable **Launch DMs** for an existing member in Admin → Guard Team to let them create, edit, reschedule, and confirm launches privately. This stores `launchDmAccess` on their Guard member record and applies the Launch Chat permission profile to their DMs. Their role stays `Member`; payroll, treasury, revenue, financial reports, and management remain unavailable. Admin DMs keep full access.
+
+Pending launch drafts in a configured Launch Chat are shared: any active Guard member in that chat can edit, confirm, or cancel them, regardless of who started the draft. Drafts stay bound to their original chat, and private drafts remain creator-only.
+
 Run one of these commands inside each Telegram group. The caller must be both a GhostBot admin and a Telegram group administrator:
 
 - `/setchat launch` — launch schedule, launch calculator, natural-language launch changes, and chat-specific reminders; enables the morning launch schedule.

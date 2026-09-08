@@ -16,6 +16,7 @@ type GuardMember = {
   activatedAt?: string
   deactivatedAt?: string
   accessRole?: "member" | "admin"
+  launchDmAccess?: boolean
 }
 
 type GuardCode = {
@@ -124,6 +125,18 @@ export default function GuardTeamPage() {
     const data = await res.json().catch(() => ({}))
     if (!res.ok) return toast.error(data.error || "Guard access was not updated")
     toast.success(`Guard access granted as ${accessRole}`)
+    load()
+  }
+
+  const updateLaunchDmAccess = async (id: string, enabled: boolean) => {
+    const res = await fetch("/api/admin/guard-team", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ action: "update-member-launch-dm-access", id, enabled }),
+    })
+    if (!res.ok) return toast.error("Launch DM access was not updated")
+    toast.success(enabled ? "Launch scheduling enabled in DMs" : "Launch scheduling disabled in DMs")
     load()
   }
 
@@ -280,12 +293,13 @@ export default function GuardTeamPage() {
       </section>
 
       <section className="rounded-2xl border border-white/[0.08] bg-white/[0.035] p-4">
-        <h2 className="mb-4 text-sm font-bold text-white">Team Members</h2>
+        <h2 className="mb-2 text-sm font-bold text-white">Team Members</h2>
+        <p className="mb-4 text-xs text-white/40">Enable Launch DMs to let a member schedule launches privately. Their DMs use Launch Chat permissions, with no payroll, treasury, or financial reports. Admins already have full access.</p>
         {loading ? <Empty text="Loading members..." /> : members.length === 0 ? <Empty text="No team members yet" /> : (
           <div className="overflow-hidden rounded-xl border border-white/[0.08]">
             <table className="w-full text-left text-sm">
               <thead className="bg-white/[0.04] text-xs uppercase text-white/40">
-                <tr><th className="px-4 py-3">Member</th><th className="px-4 py-3">Telegram</th><th className="px-4 py-3">Role</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Joined</th><th className="px-4 py-3 text-right">Action</th></tr>
+                <tr><th className="px-4 py-3">Member</th><th className="px-4 py-3">Telegram</th><th className="px-4 py-3">Role</th><th className="px-4 py-3">Launch DMs</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Joined</th><th className="px-4 py-3 text-right">Action</th></tr>
               </thead>
               <tbody className="divide-y divide-white/[0.06]">
                 {members.map((member) => (
@@ -297,6 +311,9 @@ export default function GuardTeamPage() {
                         <option value="member">Member</option>
                         <option value="admin">Admin</option>
                       </select>
+                    </td>
+                    <td className="px-4 py-3">
+                      <input type="checkbox" aria-label={`Launch scheduling in DMs for ${member.username || member.telegramId}`} checked={member.accessRole === "admin" || member.launchDmAccess === true} disabled={member.status !== "active" || member.accessRole === "admin"} onChange={(event) => updateLaunchDmAccess(member._id, event.target.checked)} className="h-4 w-4 accent-blue-500 disabled:opacity-40" />
                     </td>
                     <td className="px-4 py-3"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${member.status === "active" ? "bg-emerald-500/15 text-emerald-200" : "bg-red-500/15 text-red-200"}`}>{member.status || "active"}</span></td>
                     <td className="px-4 py-3 text-white/45">{dateLabel(member.activatedAt || member.createdAt)}</td>

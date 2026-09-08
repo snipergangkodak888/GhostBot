@@ -26,7 +26,7 @@ import { LAUNCH_CHAINS, launchPad, padsForChain, type LaunchChainId } from "@/li
 import { operationalLaunchVenue, operationalVenuesForChain } from "@/lib/launch-venues"
 import { dailyProjectReviewButtons, dailyProjectReviewId, dailyProjectReviewText, type DailyProjectReviewRecord } from "@/lib/daily-project-review"
 import { calculateLaunchQuote, defaultMmLiquidity, formatLaunchQuote, getLaunchAssetPrice, parseLaunchNumber, type LaunchTargetMetric } from "@/lib/launch-calculator"
-import { botPermissionDeniedMessage, canEditLaunchSchedule, canOpenTraderSchedule, canUseBotCapability, getBotPermissionContext, type BotCapability, type BotPermissionContext } from "@/lib/bot-permissions"
+import { botPermissionDeniedMessage, canCollaborateOnLaunchDraft, canEditLaunchSchedule, canOpenTraderSchedule, canUseBotCapability, getBotPermissionContext, isLaunchDraftAction, type BotCapability, type BotPermissionContext } from "@/lib/bot-permissions"
 import { createGuardEnrollmentLink, guardEnrollmentTokenFromText, guardEnrollmentUrl, handleGuardBotMembershipUpdate, handleGuardChatMemberUpdate, recordGuardChatMember, revokeGuardEnrollmentLinks, syncTelegramChatAdministrators, verifyAndRedeemGuardEnrollment } from "@/lib/guard-enrollment"
 import { activateScheduledProject, activationLifecycleFields, cancelScheduledProject, cleanLaunchProjectName, confirmNoProjectReferrer, confirmStandardProjectFees, deactivateActiveProject, projectActivationReadiness, projectLaunchAt, projectLaunchDateKey, projectLaunchTimingStatus, rescheduleProject, setTentativeProjectLaunchDate } from "@/lib/project-lifecycle"
 import { formatLaunchSetupReview, launchChainButtons, launchChainConfig, launchChainIdForProject, launchMethodButtons, launchQuoteButtons, launchSetupButtons, launchSetupReady, launchVenueButtons, launchVenueSelection } from "@/lib/launch-setup"
@@ -1383,7 +1383,7 @@ async function processState(token: string, chatId: number | string, telegramId: 
   if (text === "⬅️ Back" || text === "/cancel") {
     const reviewMessageId = Number(state.reviewMessageId || 0) || null
     if (String(state.action || "").startsWith("launch_setup") && state.actionId && reviewMessageId) {
-      const draft = await getLaunchSetupAction(db, String(state.actionId), telegramId, chatId)
+      const draft = await getLaunchSetupAction(db, String(state.actionId), context)
       await finishState(token, chatId, telegramId, state, message, [reviewMessageId])
       if (draft.ok) await showLaunchSetupReview(token, chatId, draft.action, reviewMessageId, "Edit cancelled.")
       else await editOrSendWorkflowMessage(token, chatId, reviewMessageId, "Edit cancelled.")
@@ -1553,7 +1553,7 @@ async function processState(token: string, chatId: number | string, telegramId: 
   }
 
   if (["launch_setup_name", "launch_setup_referrer", "launch_setup_refpct", "launch_setup_exact_time", "launch_setup_tentative_day", "launch_setup_custom_quote"].includes(String(state.action || ""))) {
-    const draft = await getLaunchSetupAction(db, String(state.actionId || ""), telegramId, chatId)
+    const draft = await getLaunchSetupAction(db, String(state.actionId || ""), context)
     if (!draft.ok) {
       const workflowMessageId = Number(state.promptMessageId || state.reviewMessageId || 0) || null
       await editOrSendWorkflowMessage(token, chatId, workflowMessageId, `⚠️ ${draft.error}`)
@@ -2120,11 +2120,12 @@ async function sendExistingExpectationPicker(token: string, chatId: number | str
   return editOrSendWorkflowMessage(token, chatId, messageId, `${receiptSummary(receipt)}\n\nChoose the existing expectation:`, eligible.map((fee: any) => [{ text: `${fee.projectName || "Project"} · ${feeTypeLabel(fee.feeType)} · ${fee.expectedUsd == null ? `${fee.expectedAssetAmount} ${fee.quoteAsset}` : `$${Number(fee.expectedUsd).toFixed(2)}`}`.slice(0, 60), callback_data: `receipt:expect:${fee._id}` }]))
 }
 
-async function getLaunchSetupAction(db: any, actionId: string, telegramId: number, chatId: number | string) {
+async function getLaunchSetupAction(db: any, actionId: string, context: BotPermissionContext) {
   const action = await db.collection("opsAiActions").findOne({ _id: actionId })
-  if (!action || String(action.actionType || "") !== "create_project" || !(action.payload?.launchAt || action.payload?.launchDate || action.payload?.tentativeLaunchDate)) return { ok: false as const, error: "This launch draft was not found." }
-  if (action.telegramId && Number(action.telegramId) !== telegramId) return { ok: false as const, error: "Only the person who started this launch draft can change it." }
-  if (action.chatId && String(action.chatId) !== String(chatId)) return { ok: false as const, error: "This launch draft must be completed in the chat where it was started." }
+  if (!isLaunchDraftAction(action)) return { ok: false as const, error: "This launch draft was not found." }
+  if (!canUseBotCapability(context, "launch")) return { ok: false as const, error: botPermissionDeniedMessage(context, "launch") }
+  if (action.chatId && String(action.chatId) !== String(context.chatId)) return { ok: false as const, error: "This launch draft must be completed in the chat where it was started." }
+  if (action.telegramId && Number(action.telegramId) !== context.telegramId && !canCollaborateOnLaunchDraft(context, action)) return { ok: false as const, error: "This launch draft can only be changed by its creator or members of its Launch Chat." }
   if (action.status !== "pending") return { ok: false as const, error: `This launch draft is already ${action.status}.` }
   return { ok: true as const, action }
 }
@@ -2331,7 +2332,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
 
   if (area === "calendar") {
     const messageId = Number(callbackMessage?.message_id || 0) || null
-    if (!canEditLaunchSchedule(context)) return workflowReply("⛔ Launch schedule editing is available in Launch Chat or an admin DM.")
+    if (!canEditLaunchSchedule(context)) return workflowReply("⛔ Launch schedule editing is available in Launch Chat or a DM with launch scheduling access.")
 
     if (action === "day") return sendCalendar(token, chatId, id, messageId)
 
@@ -2433,13 +2434,13 @@ async function handleCallback(token: string, chatId: number | string, telegramId
 
   if (area === "tentative" && action === "ack") {
     const messageId = Number(callbackMessage?.message_id || 0) || null
-    if (!canEditLaunchSchedule(context)) return workflowReply("⛔ Tentative launch confirmations are available in Launch Chat or an admin DM.")
+    if (!canEditLaunchSchedule(context)) return workflowReply("⛔ Tentative launch confirmations are available in Launch Chat or a DM with launch scheduling access.")
     const dateKey = /^\d{4}-\d{2}-\d{2}$/.test(id) ? id : dateKeyInTimeZone(new Date(), TEAM_TIME_ZONE)
     return acknowledgeTentativeLaunches(token, chatId, telegramId, dateKey, messageId)
   }
 
   if (area === "launchsetup") {
-    const draft = await getLaunchSetupAction(db, id, telegramId, chatId)
+    const draft = await getLaunchSetupAction(db, id, context)
     if (!draft.ok) return workflowReply(`⚠️ ${draft.error}`)
     let launchAction = draft.action
     const messageId = Number(callbackMessage?.message_id || 0) || null
@@ -2634,7 +2635,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       return
     }
     if (action === "cancel") {
-      const text = await rejectOpsAiAction(id, telegramId)
+      const text = await rejectOpsAiAction(id, telegramId, { currentChatId: chatId })
       return workflowReply(text)
     }
     if (action === "create") {
@@ -2652,7 +2653,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   }
 
   if (area === "lifecycle") {
-    if (!canEditLaunchSchedule(context)) return workflowReply("⛔ Launch activation confirmations are available in Launch Chat or an admin DM.")
+    if (!canEditLaunchSchedule(context)) return workflowReply("⛔ Launch activation confirmations are available in Launch Chat or a DM with launch scheduling access.")
     const messageId = Number(callbackMessage?.message_id || 0) || null
     const scheduleVersion = Number(extra || 0)
     if (action === "settime") {
@@ -2906,6 +2907,8 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   if (area === "ai" && action === "confirm") {
     const pendingLaunch = await db.collection("opsAiActions").findOne({ _id: id })
     if (pendingLaunch?.status === "pending" && pendingLaunch.actionType === "create_project" && (pendingLaunch.payload?.launchAt || pendingLaunch.payload?.launchDate || pendingLaunch.payload?.tentativeLaunchDate) && aiPermissionPolicy(context).dataScope === "launch") {
+      const draft = await getLaunchSetupAction(db, id, context)
+      if (!draft.ok) return workflowReply(`⚠️ ${draft.error}`)
       return showLaunchSetupReview(token, chatId, pendingLaunch, Number(callbackMessage?.message_id || 0) || null, "Review every launch detail before creating it.")
     }
     const previewMessageId = Number(callbackMessage?.message_id || 0) || null
@@ -2925,7 +2928,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   }
   if (area === "ai" && action === "reject") {
     return sendAsyncResponse(token, chatId, async () => ({
-      text: await rejectOpsAiAction(id, telegramId),
+      text: await rejectOpsAiAction(id, telegramId, { currentChatId: chatId }),
     }), "⏳ One moment…", callbackMessageId)
   }
   if (area === "ai" && (action === "newest" || action === "oldest")) {
@@ -3340,7 +3343,7 @@ async function routeText(token: string, chatId: number | string, telegramId: num
 
   if (/^(?:all\s+)?(?:launches?\s+)?(?:are\s+)?still\s+tbd(?:\s+today)?[.!]?$/i.test(commandText)) {
     if (!(await requireCapability(token, context, "launch"))) return
-    if (!canEditLaunchSchedule(context)) return sendMessage(token, chatId, "⛔ Tentative launch confirmations are available in Launch Chat or an admin DM.")
+    if (!canEditLaunchSchedule(context)) return sendMessage(token, chatId, "⛔ Tentative launch confirmations are available in Launch Chat or a DM with launch scheduling access.")
     return acknowledgeTentativeLaunches(token, chatId, telegramId, dateKeyInTimeZone(new Date(), TEAM_TIME_ZONE))
   }
 

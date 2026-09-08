@@ -11,6 +11,7 @@ export type BotPermissionContext = {
   profile: ChatProfile | null
   configured: boolean
   capture: boolean
+  allowed?: boolean
 }
 
 const MEMBER_CAPABILITIES: Record<TeamAccessRole, BotCapability[]> = {
@@ -39,20 +40,23 @@ export async function getBotPermissionContext(params: {
     getTeamAccess(params.telegramId),
     isGroup ? getChatProfile(params.chatId) : Promise.resolve(null),
   ])
+  const role = normalizeTeamAccessRole(access.member?.accessRole)
   return {
     telegramId: params.telegramId,
     chatId: params.chatId,
     isGroup,
-    role: normalizeTeamAccessRole(access.member?.accessRole),
-    profile: (chat?.profile || null) as ChatProfile | null,
+    role,
+    profile: (chat?.profile || (!isGroup && access.allowed && role !== "admin" && access.member?.launchDmAccess === true ? "launch" : null)) as ChatProfile | null,
     configured: !isGroup || Boolean(chat?.profile),
     capture: false,
+    allowed: access.allowed,
   }
 }
 
 export function canUseBotCapability(context: BotPermissionContext, capability: BotCapability) {
+  if (context.allowed === false) return false
   if (!MEMBER_CAPABILITIES[context.role].includes(capability)) return false
-  if (!context.isGroup) return true
+  if (!context.isGroup) return context.profile === "launch" ? capability === "launch" : true
   if (!context.profile) return capability === "management" && context.role === "admin"
   if (["fee", "finance", "management"].includes(context.profile) && context.role !== "admin") return false
   return CHAT_CAPABILITIES[context.profile].includes(capability)
@@ -66,7 +70,20 @@ export function canOpenTraderSchedule(context: BotPermissionContext) {
 }
 
 export function canEditLaunchSchedule(context: BotPermissionContext) {
-  return context.profile === "launch" || (!context.isGroup && context.role === "admin")
+  return canUseBotCapability(context, "launch") && (context.profile === "launch" || (!context.isGroup && context.role === "admin"))
+}
+
+export function isLaunchDraftAction(action: any) {
+  return action?.actionType === "create_project" && Boolean(action.payload?.launchAt || action.payload?.launchDate || action.payload?.tentativeLaunchDate)
+}
+
+export function canCollaborateOnLaunchDraft(context: BotPermissionContext, action: any) {
+  return isLaunchDraftAction(action)
+    && context.isGroup
+    && context.profile === "launch"
+    && canUseBotCapability(context, "launch")
+    && Boolean(action.chatId)
+    && String(action.chatId) === String(context.chatId)
 }
 
 export function botPermissionDeniedMessage(context: BotPermissionContext, capability: BotCapability) {

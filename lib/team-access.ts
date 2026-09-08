@@ -183,6 +183,27 @@ export async function updateGuardMemberRole(id: string, accessRole: TeamAccessRo
   return { ok: true as const, accessRole: role }
 }
 
+export async function updateGuardMemberLaunchDmAccess(id: string, enabled: boolean, actor = "admin") {
+  const db = await getDb()
+  const member = await db.collection("guardMembers").findOne({ _id: id })
+  if (!member) return { ok: false as const, error: "Member not found" }
+  const now = new Date()
+  await db.collection("guardMembers").updateOne(
+    { _id: id },
+    { $set: { launchDmAccess: enabled, updatedAt: now } },
+  )
+  await db.collection("opsPermissionAudit").insertOne({
+    action: "update_member_launch_dm_access",
+    memberId: String(id),
+    telegramId: member.telegramId,
+    previousLaunchDmAccess: member.launchDmAccess === true,
+    launchDmAccess: enabled,
+    actor,
+    createdAt: now,
+  })
+  return { ok: true as const, launchDmAccess: enabled }
+}
+
 export async function deactivateGuardMember(id: string) {
   const db = await getDb()
   const member = await db.collection("guardMembers").findOne({ _id: id })
