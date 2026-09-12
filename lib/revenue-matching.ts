@@ -116,6 +116,7 @@ export function findReceiptMatchCandidates(receipts: RevenueReceipt[], target: M
   const allowed = tolerance(expected, usesUsd)
   const eligible = receipts
     .filter((receipt) => receipt.direction === "incoming")
+    .filter((receipt) => receipt.walletRole !== "treasury" && !receipt.consolidationBatchId)
     .filter((receipt) => receipt.chain === target.chain)
     .filter((receipt) => !target.asset || target.asset === "USD" || receipt.asset === target.asset)
     .filter((receipt) => !target.tokenAddress || sameTokenAddress(target.chain, receipt.tokenAddress, target.tokenAddress))
@@ -129,7 +130,15 @@ export function findReceiptMatchCandidates(receipts: RevenueReceipt[], target: M
     })
     .slice(0, MAX_CANDIDATE_RECEIPTS)
 
-  const groups = [...clusterReceipts(eligible), eligible]
+  // A symbol alone is not a token identity. Never sum different contracts (or
+  // chains) just because both report the same symbol.
+  const byToken = new Map<string, RevenueReceipt[]>()
+  for (const receipt of eligible) {
+    const address = receipt.chain === "solana" ? String(receipt.tokenAddress || "") : String(receipt.tokenAddress || "").toLowerCase()
+    const key = `${receipt.chain}:${receipt.asset}:${address}`
+    byToken.set(key, [...(byToken.get(key) || []), receipt])
+  }
+  const groups = Array.from(byToken.values()).flatMap((group) => [...clusterReceipts(group), group])
   const found = new Map<string, { receipts: RevenueReceipt[]; total: number }>()
   for (const group of groups) {
     if (!group.length) continue

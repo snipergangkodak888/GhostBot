@@ -1,11 +1,12 @@
 import { getDb } from "@/lib/db"
 import { getSubscribedChats } from "@/lib/chat-subscriptions"
 import { getTelegramBotToken, telegramApi } from "@/lib/telegram-bot"
-import { CHAIN_LABELS, projectFeeConfig } from "@/lib/revenue-projects"
+import { CHAIN_LABELS, projectFeeConfig, searchFeeProjects } from "@/lib/revenue-projects"
 import type { RevenueChain, RevenueFeeEvent, RevenueReceipt } from "@/lib/revenue-types"
 import { revenueTransactionUrl } from "@/lib/revenue-explorer"
+import { receiptMatchPreview } from "@/lib/revenue-match-preview"
 
-function escapeHtml(value: unknown) {
+export function escapeHtml(value: unknown) {
   return String(value || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
 }
 
@@ -65,11 +66,7 @@ export async function feeProjectButtons(feeId: string, limit = 8) {
     db.collection("revenueFeeEvents").findOne({ _id: feeId }),
     db.collection("opsProjects").find({ status: { $ne: "inactive" } }).sort({ updatedAt: -1 }).toArray(),
   ])
-  const explicitAsset = String(fee?.grossAsset || fee?.quoteAsset || "").toUpperCase()
-  const configured = projects.filter((project: any) => {
-    const config = projectFeeConfig(project)
-    return config.chain && (!explicitAsset || explicitAsset === "USD" || config.quoteAssets.includes(explicitAsset))
-  }).slice(0, limit)
+  const configured = searchFeeProjects(projects, fee, "").matches.slice(0, limit)
   const rows = configured.map((project: any) => [{
     text: `${project.name} · ${revenueChainLabel(projectFeeConfig(project).chain as RevenueChain)}`.slice(0, 60),
     callback_data: `fee:project:${feeId}:${project._id}`,
@@ -90,6 +87,43 @@ export function formatFeeExpectation(fee: RevenueFeeEvent) {
     fee.parse?.warnings?.length ? `Needs review: ${escapeHtml(fee.parse.warnings.join("; "))}` : "",
   ].filter(Boolean)
   return lines.join("\n")
+}
+
+/** Shared by new forwards, repeated forwards, and callbacks so stale buttons cannot restart a completed fee. */
+export async function feeWorkflowView(fee: RevenueFeeEvent) {
+  const id = String(fee._id)
+  const db = await getDb()
+  const text = formatFeeExpectation(fee)
+  if (["confirmed", "ignored", "waived"].includes(fee.status)) return { text: `${text}\n\nStatus: <b>${escapeHtml(fee.status)}</b>. No new fee was created.`, buttons: [] }
+  if (fee.status === "match_proposed") {
+    const receipts = await db.collection("revenueReceipts").find({ _id: { $in: fee.proposedReceiptIds || [] } }).toArray() as RevenueReceipt[]
+    const preview = receiptMatchPreview(fee, receipts)
+    const lines = preview.rows.slice(0, 12).map((row) => {
+      const url = revenueTransactionUrl(row.chain, row.transactionHash)
+      const label = `${amount(row.amount, row.asset)} · ${row.transactionHash.slice(0, 10)}…`
+      return url ? `• <a href="${escapeHtml(url)}">${escapeHtml(label)}</a>` : `• ${escapeHtml(label)}`
+    })
+    if (preview.rows.length > 12) lines.push(`…plus ${preview.rows.length - 12} more; review all transactions in Revenue Inbox.`)
+    lines.push(`Combined available: <b>${preview.total == null ? "needs review" : amount(preview.total, preview.asset)}</b>`)
+    if (preview.difference != null) lines.push(`${preview.difference < 0 ? "Shortfall" : "Excess"}: <b>${amount(Math.abs(preview.difference), preview.asset)}</b>`)
+    if (preview.rows.length > 1) lines.push(`Received over ${preview.spanSeconds < 60 ? `${preview.spanSeconds} seconds` : `${Math.round(preview.spanSeconds / 60)} minutes`}.`)
+    lines.push("Amounts and timing suggest a match; they do not prove which project sent it. Review before accepting.")
+    const buttons = preview.missingReceipts ? [] : [[{ text: `✅ Accept ${preview.rows.length} receipt${preview.rows.length === 1 ? "" : "s"} as one fee`, callback_data: `fee:match:${id}` }]]
+    buttons.push([{ text: "🔄 Search receipts again", callback_data: `fee:receipts:${id}` }])
+    return { text: `${text}\n\n<b>Suggested receipt batch</b>\n${lines.join("\n")}`, buttons }
+  }
+  if (["awaiting_receipt", "missing"].includes(fee.status)) return { text: `${text}\n\nWaiting for a matching receipt or batch. Receipts can arrive before or after this message.`, buttons: [[{ text: "🔄 Search receipts", callback_data: `fee:receipts:${id}` }]] }
+  if (fee.status === "awaiting_asset") {
+    const project = await db.collection("opsProjects").findOne({ _id: fee.projectId })
+    return { text: `${text}\n\nWhich asset was received?`, buttons: projectFeeConfig(project).acceptedRevenueAssets.map((asset) => [{ text: asset, callback_data: `fee:asset:${id}:${asset}` }]) }
+  }
+  if (fee.status === "awaiting_confirmation") return { text: `${text}\n\nConfirm these fee details to search wallet receipts.`, buttons: [[{ text: "✅ Confirm expectation", callback_data: `fee:confirm:${id}` }]] }
+  if (!fee.feeType) return { text: `${text}\n\nChoose the fee type:`, buttons: [
+    [{ text: "Liquidation", callback_data: `fee:type:${id}:liquidation` }],
+    [{ text: "Daily trading", callback_data: `fee:type:${id}:daily_trading` }, { text: "Launch / TGE cash", callback_data: `fee:type:${id}:launch` }],
+    [{ text: "Dev allocation", callback_data: `fee:type:${id}:dev_allocation` }],
+  ] }
+  return { text: `${text}\n\nChoose the existing project:`, buttons: await feeProjectButtons(id) }
 }
 
 export async function notifyFeeInboxReceipt(receipt: RevenueReceipt) {

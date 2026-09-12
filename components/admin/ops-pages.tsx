@@ -52,6 +52,7 @@ type Project = {
   chain?: string
   quoteToken?: string
   quoteAssets?: string[]
+  acceptedRevenueAssets?: string[]
   quoteTokenAddress?: string
   referrerStatus?: "pending" | "assigned" | "none"
   feeConfigurationConfirmed?: boolean
@@ -135,6 +136,7 @@ const emptyProject = {
   notes: "",
   chain: "",
   quoteToken: "",
+  acceptedRevenueAssets: "",
   quoteTokenAddress: "",
   referrerStatus: "pending",
   dailyTradingFeeEnabled: false,
@@ -412,6 +414,7 @@ export function AdminProjectsPage() {
       notes: project.notes || "",
       chain: project.chain || "",
       quoteToken: project.quoteToken || (project.quoteAssets?.length === 1 ? project.quoteAssets[0] : ""),
+      acceptedRevenueAssets: (project.acceptedRevenueAssets || project.quoteAssets || (project.quoteToken ? [project.quoteToken] : [])).join(", "),
       quoteTokenAddress: project.quoteTokenAddress || "",
       referrerStatus: project.referrerStatus || (project.referrerAccountId || project.referrer ? "assigned" : "pending"),
       dailyTradingFeeEnabled: project.dailyTradingFeeEnabled === true,
@@ -445,6 +448,7 @@ export function AdminProjectsPage() {
       launchAt: form.launchAt || null,
       quoteToken: form.quoteToken.trim().toUpperCase(),
       quoteAssets: form.quoteToken.trim() ? [form.quoteToken.trim().toUpperCase()] : [],
+      acceptedRevenueAssets: form.acceptedRevenueAssets.trim() || form.quoteToken.trim(),
       quoteTokenAddress: form.quoteTokenAddress.trim(),
       feeConfigurationConfirmed: Boolean(form.chain && form.quoteToken.trim()),
       dailyTradingFeeUsd: Number(form.dailyTradingFeeUsd || 500),
@@ -594,6 +598,10 @@ export function AdminProjectsPage() {
               <Field label="Revenue chain"><Select value={form.chain} onChange={(e) => setForm({ ...form, chain: e.target.value })}><option value="">Not configured</option><option value="ethereum">Ethereum Mainnet</option><option value="base">Base</option><option value="bnb">BNB Smart Chain</option><option value="robinhood">Robinhood Chain</option><option value="solana">Solana</option></Select></Field>
               <Field label="Project quote token"><Input value={form.quoteToken} onChange={(e) => setForm({ ...form, quoteToken: e.target.value.toUpperCase() })} placeholder={form.chain === "solana" ? "SOL" : "ETH"} /></Field>
               <Field label="Custom quote token CA"><Input value={form.quoteTokenAddress} onChange={(e) => setForm({ ...form, quoteTokenAddress: e.target.value.trim() })} placeholder={form.chain === "solana" ? "Mint address (optional)" : "0x… (optional)"} /></Field>
+            </div>
+            <div className="mt-3">
+              <Field label="Accepted revenue assets"><Input value={form.acceptedRevenueAssets} onChange={(e) => setForm({ ...form, acceptedRevenueAssets: e.target.value.toUpperCase() })} placeholder={form.chain === "solana" ? "SOL, USDC" : form.chain === "bnb" ? "BNB, USDC" : "ETH, USDC"} /></Field>
+              <p className="mt-1 text-xs text-white/45">Comma-separated assets this project can cash out on its chain. This does not change its trading pair. Leave blank to use the quote token.</p>
             </div>
             <div className="mt-3 grid gap-3 md:grid-cols-3">
               <Field label="Daily fee (USD)"><Input type="number" min="0" value={form.dailyTradingFeeUsd} onChange={(e) => setForm({ ...form, dailyTradingFeeUsd: e.target.value })} /></Field>

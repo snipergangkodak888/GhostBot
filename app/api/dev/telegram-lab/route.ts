@@ -149,6 +149,9 @@ export async function POST(req: NextRequest) {
   const update = callbackData
     ? callbackUpdate({ callbackData, telegramId, chatId, chatType, username, firstName, messageId })
     : messageUpdate({ text, telegramId, chatId, chatType, username, firstName, messageId })
+  if (!callbackData && body.forwardOrigin && "message" in update) {
+    Object.assign(update.message, { forward_origin: body.forwardOrigin })
+  }
 
   const captured = await withTelegramCapture(async () => {
     const webhookRequest = new NextRequest("http://localhost/api/telegram/webhook", {

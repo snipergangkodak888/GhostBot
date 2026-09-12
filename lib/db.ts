@@ -277,6 +277,18 @@ class SupabaseCollection {
     return { acknowledged: true, insertedId: inserted._id }
   }
 
+  /** Insert-only with a caller-supplied ID; retries must never overwrite existing accounting. */
+  async insertOneIfAbsent(doc: AnyDoc) {
+    if (!doc._id) throw new Error("A stable ID is required for insertOneIfAbsent")
+    const prepared = prepareDoc(doc)
+    const rows = await supabaseRest<StoredRow[]>(`${DOCUMENTS_TABLE}?on_conflict=collection,id`, {
+      method: "POST",
+      headers: { Prefer: "resolution=ignore-duplicates,return=representation" },
+      body: { collection: this.name, id: prepared._id, data: prepared, updated_at: new Date().toISOString() },
+    })
+    return { insertedId: prepared._id, inserted: rows.length > 0 }
+  }
+
   async insertMany(docs: AnyDoc[]) {
     const insertedIds: Record<number, string> = {}
     for (let i = 0; i < docs.length; i++) {

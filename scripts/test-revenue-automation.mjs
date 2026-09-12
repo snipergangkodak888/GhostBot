@@ -20,6 +20,7 @@ function loadTypeScriptModule(path, overrides = {}) {
     }
     if (id === "@/lib/db") return { getDb: async () => { throw new Error("Database access is not used by this unit test") } }
     if (id === "@/lib/team-timezone") return { teamDateKey: () => "2026-08-20" }
+    if (["@/lib/revenue-forward-identity", "@/lib/revenue-match-preview", "@/lib/revenue-allocations"].includes(id)) return loadTypeScriptModule(id.replace("@/", "") + ".ts")
     return require(id)
   }
   vm.runInNewContext(`(function (exports, require, module, process, Buffer) { ${output}\n})(module.exports, require, module, process, Buffer)`, { module, require: localRequire, process, Buffer })
@@ -33,6 +34,7 @@ function memoryDb(seed = {}) {
     const actual = doc[key]
     if (expected && typeof expected === "object" && !Array.isArray(expected)) {
       if (Array.isArray(expected.$in)) return expected.$in.includes(actual)
+      if (Object.hasOwn(expected, "$ne")) return actual !== expected.$ne
       return false
     }
     return String(actual) === String(expected)
@@ -62,6 +64,11 @@ function memoryDb(seed = {}) {
         const saved = { ...structuredClone(doc), _id: doc._id || `memory-${nextId++}` }
         docs.push(saved)
         return { insertedId: saved._id }
+      },
+      insertOneIfAbsent: async (doc) => {
+        if (docs.some((row) => row._id === doc._id)) return { insertedId: doc._id, inserted: false }
+        docs.push(structuredClone(doc))
+        return { insertedId: doc._id, inserted: true }
       },
       updateOne: async (filter, update) => {
         const doc = docs.find((row) => matches(row, filter))
@@ -572,4 +579,125 @@ assert.equal(consolidation.consolidationPairMatches(
   { chain: "solana", asset: "USDC", direction: "incoming", transactionHash: "tx-b", amount: 1000, walletRole: "treasury" },
 ), false)
 
-console.log("Revenue automation tests passed")
+// Regression: SOL-pair project cashes out USDC through two privacy-wallet arrivals.
+const customQuote = loadTypeScriptModule("lib/custom-quote-token.ts")
+const projectsModule = loadTypeScriptModule("lib/revenue-projects.ts", { "@/lib/custom-quote-token": customQuote })
+const forwardIdentity = loadTypeScriptModule("lib/revenue-forward-identity.ts")
+const previewModule = loadTypeScriptModule("lib/revenue-match-preview.ts", { "@/lib/revenue-allocations": allocations })
+const oldWwr = { _id: "wwr", name: "WWR", status: "active", chain: "solana", quoteToken: "SOL", quoteAssets: ["SOL"], dailyTradingFeeEnabled: true }
+const wwr = { ...oldWwr, acceptedRevenueAssets: ["SOL", "USDC"] }
+assert.match(projectsModule.searchFeeProjects([oldWwr], { grossAsset: "USDC" }, "wwr").message, /WWR is active, but accepts SOL revenue, not USDC/)
+assert.equal(projectsModule.searchFeeProjects([wwr], { grossAsset: "USDC" }, "WWR").matches.length, 1)
+assert.match(projectsModule.searchFeeProjects([{ ...wwr, status: "inactive" }], {}, "WWR").message, /WWR is inactive/)
+assert.match(projectsModule.searchFeeProjects([{ ...wwr, chain: "" }], {}, "WWR").message, /no revenue chain/)
+assert.match(projectsModule.searchFeeProjects([wwr], {}, "not-a-project").message, /No project name/)
+const cleanWwr = projectsModule.cleanProjectFeeFields({ ...wwr, acceptedRevenueAssets: " sol, usdc, SOL " })
+assert.deepEqual(Array.from(cleanWwr.acceptedRevenueAssets), ["SOL", "USDC"])
+assert.equal(cleanWwr.quoteToken, "SOL")
+assert.deepEqual(Array.from(cleanWwr.quoteAssets), ["SOL"])
+assert.deepEqual(Array.from(projectsModule.projectFeeConfig(oldWwr).acceptedRevenueAssets), ["SOL"])
+const customProject = { chain: "ethereum", quoteToken: "CUSTOM", quoteTokenAddress: evmWallet, acceptedRevenueAssets: ["CUSTOM", "ETH", "USDC"] }
+assert.equal(projectsModule.projectAcceptsReceipt(customProject, { chain: "ethereum", asset: "USDC", tokenAddress: evmSender }), true)
+assert.equal(projectsModule.projectAcceptsReceipt(customProject, { chain: "ethereum", asset: "CUSTOM", tokenAddress: evmSender }), false)
+assert.equal(projectsModule.projectAcceptsReceipt(wwr, { chain: "base", asset: "USDC" }), false)
+
+const batchRows = [213.497478, 210.375758].map((value, i) => ({
+  _id: `wwr-part-${i}`, eventKey: `wwr-part-${i}`, walletRole: "revenue", chain: "solana", asset: "USDC", tokenAddress: "usdc-mint", direction: "incoming",
+  amount: value, amountUsd: value, allocations: [], status: "unclassified", date: "2026-09-12", blockTime: `2026-09-12T15:${i ? "51:22" : "50:52"}.000Z`, createdAt: "2026-09-12T15:51:30.000Z", transactionHash: `test-signature-${i}`,
+}))
+const cashoutText = "Cashout Summary:\nA total of 8,502 USDC was withdrawn from the MM balance.\n8,000 USDC was sent here via Husher.\n502 USDC was taken for the 5% liquidation + privacy swap fee."
+const batchDb = memoryDb({ opsProjects: [wwr], revenueReceipts: batchRows })
+const batchService = loadTypeScriptModule("lib/revenue-service.ts", {
+  "@/lib/db": { getDb: async () => batchDb },
+  "@/lib/team-timezone": { dateKeyInTimeZone: (date) => date.toISOString().slice(0, 10), teamDateKey: () => "2026-09-12" },
+  "@/lib/revenue-matching": matching, "@/lib/revenue-parser": parser, "@/lib/revenue-projects": projectsModule,
+  "@/lib/revenue-consolidation": { getConsolidation: async () => null },
+  "@/lib/revenue-consolidation-candidates": { listConsolidationCandidates: async () => [] },
+  "@/lib/revenue-pricing": { valueRevenueReceipt: async (receipt) => receipt },
+  "@/lib/revenue-payroll": revenuePayroll, "@/lib/revenue-allocations": allocations,
+})
+const forwardParams = { chatId: -123, messageId: 5282, text: cashoutText, messageDate: new Date("2026-09-12T15:51:31Z"), originIdentity: "hidden:Bands" }
+const [firstForward, repeatedForward] = await Promise.all([
+  batchService.createForwardedFeeEvent(forwardParams),
+  batchService.createForwardedFeeEvent({ ...forwardParams, messageId: 5288 }),
+])
+assert.equal(firstForward.fee._id, repeatedForward.fee._id)
+assert.equal([firstForward, repeatedForward].filter((row) => !row.duplicate).length, 1)
+assert.equal(batchDb.collections.get("revenueFeeEvents").length, 1)
+const batchFeeId = firstForward.fee._id
+assert.ok(Buffer.byteLength(`fee:project:${batchFeeId}:${"p".repeat(24)}`) <= 64)
+const assignedBatch = await batchService.assignFeeProject(batchFeeId, "wwr")
+assert.equal(assignedBatch.quoteAsset, "USDC")
+assert.equal(assignedBatch.expectedAssetAmount, 425.1)
+assert.equal(assignedBatch.status, "awaiting_confirmation")
+const suggestedBatch = await batchService.confirmFeeExpectation(batchFeeId, 123)
+assert.equal(suggestedBatch.status, "match_proposed")
+assert.equal(suggestedBatch.proposedReceiptIds.length, 2)
+assert.ok(batchDb.collections.get("revenueReceipts").every((row) => row.allocations.length === 0))
+const preview = previewModule.receiptMatchPreview(suggestedBatch, batchDb.collections.get("revenueReceipts"))
+assert.ok(Math.abs(preview.total - 423.873236) < 0.00000001)
+assert.ok(Math.abs(preview.difference + 1.226764) < 0.00000001)
+assert.equal(preview.spanSeconds, 30)
+const batchTelegram = loadTypeScriptModule("lib/revenue-telegram.ts", {
+  "@/lib/db": { getDb: async () => batchDb }, "@/lib/revenue-projects": projectsModule,
+  "@/lib/chat-subscriptions": { getSubscribedChats: async () => [] }, "@/lib/telegram-bot": {},
+  "@/lib/revenue-explorer": explorer, "@/lib/revenue-match-preview": previewModule,
+})
+const batchView = await batchTelegram.feeWorkflowView(suggestedBatch)
+assert.match(batchView.text, /423.873236 USDC/)
+assert.match(batchView.text, /1.226764 USDC/)
+assert.match(batchView.text, /30 seconds/)
+assert.match(batchView.buttons[0][0].text, /Accept 2 receipts as one fee/)
+assert.equal((await batchService.createForwardedFeeEvent({ ...forwardParams, messageId: 6000 })).fee.status, "match_proposed")
+await batchService.confirmFeeExpectation(batchFeeId, 123) // Old expectation button must not reset its reservation.
+assert.equal(batchDb.collections.get("revenueReceipts")[0].status, "match_proposed")
+const acceptedBatch = await batchService.acceptReceiptMatch(batchFeeId, 123)
+assert.equal(acceptedBatch.status, "confirmed")
+assert.equal(acceptedBatch.matchedReceiptIds.length, 2)
+assert.equal(acceptedBatch.actualReceivedUsd, 423.87)
+assert.equal((await batchService.createForwardedFeeEvent({ ...forwardParams, messageId: 6001 })).fee.status, "confirmed")
+assert.equal((await batchTelegram.feeWorkflowView(acceptedBatch)).buttons.length, 0)
+await batchService.setFeeQuoteAsset(batchFeeId, "SOL")
+assert.equal(batchDb.collections.get("revenueFeeEvents")[0].quoteAsset, "USDC")
+assert.equal(batchDb.collections.get("revenueReceipts").reduce((sum, row) => sum + row.allocations.length, 0), 2)
+
+const identity = forwardIdentity.forwardedFeeIdentity(forwardParams)
+assert.notEqual(identity, forwardIdentity.forwardedFeeIdentity({ ...forwardParams, messageDate: new Date("2026-09-13T15:51:31Z") }))
+assert.notEqual(identity, forwardIdentity.forwardedFeeIdentity({ ...forwardParams, originIdentity: "hidden:Another admin" }))
+assert.notEqual(forwardIdentity.forwardedFeeIdentity({ ...forwardParams, text: "https://solscan.io/tx/AbC" }), forwardIdentity.forwardedFeeIdentity({ ...forwardParams, text: "https://solscan.io/tx/abc" }))
+assert.equal(forwardIdentity.forwardOriginIdentity({ forward_origin: { type: "channel", chat: { id: -55 }, message_id: 99 } }), "channel:-55:99")
+assert.equal(forwardIdentity.forwardOriginIdentity({ forward_origin: { type: "hidden_user", sender_user_name: "Bands" } }), "hidden:Bands")
+
+const batchTarget = { chain: "solana", asset: "USDC", expectedAmount: 425.1, date: "2026-09-12", occurredAt: "2026-09-12T15:51:31Z" }
+for (const invalid of [{ walletRole: "treasury" }, { direction: "outgoing" }, { consolidationBatchId: "pending-bridge" }, { status: "internal" }, { status: "allocated" }, { status: "match_proposed" }, { chain: "base" }, { date: "2026-09-11" }, { tokenAddress: "other-contract" }]) {
+  assert.equal(matching.findReceiptCombination([batchRows[0], { ...batchRows[1], ...invalid }], batchTarget), null, JSON.stringify(invalid))
+}
+const splitTen = Array.from({ length: 10 }, (_, i) => ({ ...batchRows[0], _id: `part-${i}`, amount: 75, amountUsd: 75 }))
+assert.equal(matching.findReceiptCombination(splitTen, { ...batchTarget, expectedAmount: 750 }).receiptIds.length, 10)
+assert.equal(matching.findReceiptCombination([batchRows[0]], batchTarget), null)
+
+// Explicit receipt-first daily classification can use USDC even when the schedule defaults to SOL.
+await batchDb.collection("revenueReceipts").insertOne({ ...batchRows[0], _id: "daily-usdc", amount: 500, amountUsd: 500 })
+const dailyMultiAsset = await batchService.classifyReceiptAsRevenue({ receiptId: "daily-usdc", feeType: "daily_trading", projectId: "wwr" }, 123)
+assert.equal(dailyMultiAsset.status, "confirmed")
+assert.equal(dailyMultiAsset.quoteAsset, "USDC")
+assert.equal(dailyMultiAsset.recognizedUsd, 500)
+
+// Receipt-later works too: no first-part false positive, then one batch proposal.
+const laterForward = await batchService.createForwardedFeeEvent({ ...forwardParams, messageId: 7000, messageDate: new Date("2026-09-13T15:51:31Z") })
+await batchService.assignFeeProject(laterForward.fee._id, "wwr")
+assert.equal((await batchService.confirmFeeExpectation(laterForward.fee._id)).status, "awaiting_receipt")
+await batchService.saveRevenueReceipt({ ...batchRows[0], _id: undefined, eventKey: "later-first", date: "2026-09-13", blockTime: "2026-09-13T15:50:52Z" })
+assert.equal((await batchService.getRevenueFee(laterForward.fee._id)).status, "awaiting_receipt")
+await batchService.saveRevenueReceipt({ ...batchRows[1], _id: undefined, eventKey: "later-second", date: "2026-09-13", blockTime: "2026-09-13T15:51:22Z" })
+assert.equal((await batchService.getRevenueFee(laterForward.fee._id)).proposedReceiptIds.length, 2)
+
+// Old recorded forwards (without identity keys) and explicitly closed duplicates
+// must resume their canonical record instead of reopening the duplicate.
+const legacyTime = new Date("2026-09-14T12:00:00Z")
+await batchDb.collection("revenueFeeEvents").insertOne({ _id: "legacy-forward", source: "telegram_forward", sourceKey: "telegram:-123:7100", date: "2026-09-14", status: "awaiting_project", telegram: { chatId: "-123", originalText: cashoutText, originalDate: legacyTime.toISOString() }, createdAt: legacyTime.toISOString() })
+assert.equal((await batchService.createForwardedFeeEvent({ ...forwardParams, messageDate: legacyTime, messageId: 7101 })).fee._id, "legacy-forward")
+await batchDb.collection("revenueFeeEvents").insertOne({ _id: "legacy-duplicate", sourceKey: "telegram:-123:7102", status: "ignored", duplicateOfFeeId: "legacy-forward" })
+assert.equal((await batchService.createForwardedFeeEvent({ ...forwardParams, messageDate: legacyTime, messageId: 7102 })).fee._id, "legacy-forward")
+
+console.log("Revenue automation tests passed (including multi-asset, duplicate forward, 2/10-part batches, preview, and stale-button regressions)")

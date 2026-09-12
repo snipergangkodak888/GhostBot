@@ -6,6 +6,8 @@ import { toast } from "sonner"
 import { revenueTransactionUrl } from "@/lib/revenue-explorer"
 import { receiptAllocatedAmount, receiptAvailableAmount, receiptAvailableUsd } from "@/lib/revenue-allocations"
 import { isGlobalRevenueFeeType } from "@/lib/revenue-types"
+import { projectAcceptsReceipt, projectFeeConfig } from "@/lib/revenue-projects"
+import { receiptMatchPreview } from "@/lib/revenue-match-preview"
 
 const money = (value: unknown) => value == null ? "Pending value" : Number(value).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 })
 const amount = (value: unknown, asset: unknown) => `${Number(value || 0).toLocaleString("en-US", { maximumFractionDigits: 8 })} ${String(asset || "")}`
@@ -13,9 +15,21 @@ const title = (value: unknown) => String(value || "unclassified").replace(/_/g, 
 const dailyFeeIsResolved = (fees: any[], projectId: unknown) => fees.some((fee: any) => String(fee.projectId) === String(projectId) && fee.feeType === "daily_trading" && ["confirmed", "ignored", "waived"].includes(fee.status))
 const globalFeeType = isGlobalRevenueFeeType
 const tokenAddress = (chain: unknown, value: unknown) => String(chain || "") === "solana" ? String(value || "").trim() : String(value || "").trim().toLowerCase()
-const projectAcceptsReceipt = (project: any, receipt: any) => project.chain === receipt.chain
-  && (project.quoteAssets || []).includes(receipt.asset)
-  && (!project.quoteTokenAddress || tokenAddress(project.chain, project.quoteTokenAddress) === tokenAddress(receipt.chain, receipt.tokenAddress))
+
+function ReceiptBatchPreview({ fee, receipts }: { fee: any; receipts: any[] }) {
+  const preview = receiptMatchPreview(fee, receipts)
+  return <div className="mt-3 rounded-lg border border-blue-400/20 bg-blue-400/5 p-3 text-sm">
+    <p className="font-bold">Suggested batch · {preview.rows.length} receipts</p>
+    <div className="mt-2 space-y-1">{preview.rows.map((row) => <div key={row._id} className="flex flex-wrap gap-x-3 text-white/65">
+      <span>{amount(receiptAvailableAmount(row), row.asset)}</span>
+      <span>{new Date(row.blockTime || row.createdAt).toLocaleTimeString()}</span>
+      <a href={revenueTransactionUrl(row.chain, row.transactionHash) || undefined} target="_blank" rel="noreferrer" className="text-blue-300">{row.transactionHash.slice(0, 14)}… ↗</a>
+    </div>)}</div>
+    <p className="mt-2">Combined: {preview.total == null ? "Needs review" : amount(preview.total, preview.asset)} · Expected: {amount(preview.expected, preview.asset)}</p>
+    {preview.difference != null ? <p className="text-white/65">{preview.difference < 0 ? "Shortfall" : "Excess"}: {amount(Math.abs(preview.difference), preview.asset)}{preview.rows.length > 1 ? ` · Received over ${preview.spanSeconds} seconds` : ""}</p> : null}
+    <p className="mt-1 text-xs text-white/45">Amounts and timing suggest a match, not proof of the project. Review every transaction before accepting.</p>
+  </div>
+}
 
 export function AdminRevenuePage() {
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10))
@@ -73,10 +87,11 @@ export function AdminRevenuePage() {
     <section className="rounded-2xl border border-white/[0.08] bg-black/40 p-5"><h2 className="font-black">Fee expectations</h2><p className="mt-1 text-xs text-white/40">Forwarded messages land here for project selection. Scheduled daily fees already know their project.</p><div className="mt-4 space-y-3">
       {!expectedFees.length ? <p className="rounded-xl border border-dashed border-white/10 p-8 text-center text-sm text-white/35">No fee expectations for this day.</p> : expectedFees.map((fee: any) => <article key={fee._id} className="rounded-xl border border-white/[0.08] bg-white/[0.035] p-4">
         <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-bold">{fee.projectName || "Choose a project"} · {title(fee.feeType)}</h3><p className="mt-1 text-sm text-white/50">{fee.expectedAssetAmount != null ? amount(fee.expectedAssetAmount, fee.quoteAsset || fee.grossAsset) : money(fee.expectedUsd)} · {title(fee.status)}</p>{fee.feeType === "daily_trading" && fee.actualReceivedUsd != null ? <p className="mt-1 text-xs text-white/45">Fixed revenue {money(fee.recognizedUsd)} · wallet received {money(fee.actualReceivedUsd)} · conversion variance {Number(fee.conversionVarianceUsd || 0) >= 0 ? "+" : ""}{money(fee.conversionVarianceUsd || 0)}</p> : null}{fee.grossAmount != null ? <p className="mt-1 text-xs text-white/35">Gross cashout {amount(fee.grossAmount, fee.grossAsset)}; liquidation fee only, privacy fee excluded.</p> : null}</div><span className={`rounded-full px-3 py-1 text-xs font-bold ${fee.status === "confirmed" ? "bg-emerald-500/15 text-emerald-300" : "bg-amber-500/15 text-amber-200"}`}>{title(fee.status)}</span></div>
+        {fee.status === "match_proposed" ? <ReceiptBatchPreview fee={fee} receipts={data.receipts} /> : null}
         <div className="mt-3 flex flex-wrap gap-2">
           {!fee.feeType ? <select defaultValue="" onChange={(event) => event.target.value && action({ action: "set_fee_type", feeId: fee._id, feeType: event.target.value })} className="rounded-lg border border-white/10 bg-[#111] px-3 py-2 text-sm"><option value="">Classify fee…</option><option value="liquidation">Liquidation</option><option value="daily_trading">Daily trading</option><option value="launch">Launch / TGE cash</option><option value="dev_allocation">Dev allocation</option><option value="other">Other</option></select> : null}
           {!fee.projectId && !globalFeeType(fee.feeType) ? <select defaultValue="" onChange={(event) => event.target.value && action({ action: "assign_project", feeId: fee._id, projectId: event.target.value })} className="rounded-lg border border-white/10 bg-[#111] px-3 py-2 text-sm"><option value="">Choose existing project…</option>{data.projects.map((project: any) => <option key={project._id} value={project._id}>{project.name} · {project.chain || "chain not set"}</option>)}</select> : null}
-          {fee.status === "awaiting_asset" ? <select defaultValue="" onChange={(event) => event.target.value && action({ action: "set_asset", feeId: fee._id, asset: event.target.value })} className="rounded-lg border border-white/10 bg-[#111] px-3 py-2 text-sm"><option value="">Choose quote asset…</option>{(data.projects.find((project: any) => String(project._id) === String(fee.projectId))?.quoteAssets || []).map((asset: string) => <option key={asset}>{asset}</option>)}</select> : null}
+          {fee.status === "awaiting_asset" ? <select defaultValue="" onChange={(event) => event.target.value && action({ action: "set_asset", feeId: fee._id, asset: event.target.value })} className="rounded-lg border border-white/10 bg-[#111] px-3 py-2 text-sm"><option value="">Choose received asset…</option>{projectFeeConfig(data.projects.find((project: any) => String(project._id) === String(fee.projectId))).acceptedRevenueAssets.map((asset: string) => <option key={asset}>{asset}</option>)}</select> : null}
           {fee.status === "awaiting_confirmation" ? <button onClick={() => action({ action: "confirm_fee", feeId: fee._id }, "Fee expectation confirmed")} className="rounded-lg bg-blue-500 px-3 py-2 text-sm font-bold"><Check className="mr-1 inline h-4 w-4" />Confirm expectation</button> : null}
           {fee.status === "awaiting_receipt" ? <button onClick={() => action({ action: "propose_match", feeId: fee._id })} className="rounded-lg border border-blue-400/30 px-3 py-2 text-sm text-blue-200">Search receipts</button> : null}
           {fee.status === "match_proposed" ? <button onClick={() => action({ action: "accept_match", feeId: fee._id }, "Receipt match confirmed")} className="rounded-lg bg-[#42e6a4] px-3 py-2 text-sm font-bold text-black"><Link2 className="mr-1 inline h-4 w-4" />Accept suggested match ({fee.proposedReceiptIds?.length || 0})</button> : null}

@@ -33,6 +33,7 @@ export type ProjectFeeConfig = {
   chain: RevenueChain | ""
   quoteToken: string
   quoteAssets: string[]
+  acceptedRevenueAssets: string[]
   quoteTokenAddress: string
   quoteTokenDecimals: number | null
   dailyTradingFeeEnabled: boolean
@@ -129,6 +130,8 @@ export type RevenueFeeEvent = {
   date: string
   source: "telegram_forward" | "daily_schedule" | "manual"
   sourceKey: string
+  forwardIdentityKey?: string
+  duplicateOfFeeId?: string
   telegram?: {
     chatId: string
     messageId: number

@@ -2,8 +2,9 @@ import { createHash } from "node:crypto"
 import { getDb } from "@/lib/db"
 import { dateKeyInTimeZone, teamDateKey } from "@/lib/team-timezone"
 import { findReceiptCombination } from "@/lib/revenue-matching"
-import { normalizedMessageFingerprint, parseFeeMessage } from "@/lib/revenue-parser"
-import { projectFeeConfig } from "@/lib/revenue-projects"
+import { parseFeeMessage } from "@/lib/revenue-parser"
+import { forwardedFeeIdentity, normalizedForwardText } from "@/lib/revenue-forward-identity"
+import { projectAcceptsReceipt, projectFeeConfig } from "@/lib/revenue-projects"
 import type {
   FeeType,
   RevenueFeeEvent,
@@ -39,31 +40,49 @@ function sameTokenAddress(chain: unknown, left: unknown, right: unknown) {
   return normalize(left) === normalize(right)
 }
 
-function sourceFingerprint(chatId: number | string, messageId: number, text: string) {
-  return createHash("sha256")
-    .update(`${chatId}:${messageId}:${normalizedMessageFingerprint(text)}`)
-    .digest("hex")
-}
-
 export async function createForwardedFeeEvent(params: {
   chatId: number | string
   messageId: number
   text: string
   telegramId?: number | null
   messageDate?: Date
+  originIdentity?: string
 }) {
   const db = await getDb()
   const sourceKey = `telegram:${params.chatId}:${params.messageId}`
+  const reuse = async (row: any) => {
+    const seen = new Set<string>()
+    while (row.duplicateOfFeeId && !seen.has(String(row._id))) {
+      seen.add(String(row._id))
+      const original = await db.collection(FEES).findOne({ _id: row.duplicateOfFeeId })
+      if (!original) break
+      row = original
+    }
+    return { fee: row as RevenueFeeEvent, duplicate: true }
+  }
   const existing = await db.collection(FEES).findOne({ sourceKey })
-  if (existing) return { fee: existing as RevenueFeeEvent, duplicate: true }
+  if (existing) return reuse(existing)
+
+  const forwardIdentityKey = forwardedFeeIdentity(params)
+  const canonical = await db.collection(FEES).findOne({ forwardIdentityKey })
+  if (canonical) return reuse(canonical)
+  // Older events predate origin identity storage. Reuse an exact original-time
+  // and content match, not merely another cashout with the same amount.
+  if (params.messageDate) {
+    const legacy = await db.collection(FEES).find({ source: "telegram_forward", date: dateKeyInTimeZone(params.messageDate) }).sort({ createdAt: 1 }).toArray()
+    const same = legacy.find((row) => !row.forwardIdentityKey && !row.duplicateOfFeeId && String(row.telegram?.chatId) === String(params.chatId) && row.telegram?.originalDate === params.messageDate!.toISOString() && normalizedForwardText(row.telegram?.originalText || "") === normalizedForwardText(params.text))
+    if (same) return reuse(same)
+  }
 
   const now = new Date()
   const occurredAt = params.messageDate || now
   const parsed = parseFeeMessage(params.text)
   const fee: RevenueFeeEvent = {
+    _id: forwardIdentityKey.slice(0, 24),
     date: dateKeyInTimeZone(occurredAt),
     source: "telegram_forward",
     sourceKey,
+    forwardIdentityKey,
     telegram: {
       chatId: String(params.chatId),
       messageId: params.messageId,
@@ -92,8 +111,13 @@ export async function createForwardedFeeEvent(params: {
     createdAt: iso(now),
     updatedAt: iso(now),
   }
-  const result = await db.collection(FEES).insertOne({ ...fee, sourceFingerprint: sourceFingerprint(params.chatId, params.messageId, params.text) })
-  return { fee: { ...fee, _id: String(result.insertedId) }, duplicate: false }
+  const result = await db.collection(FEES).insertOneIfAbsent(fee)
+  if (!result.inserted) {
+    const saved = await db.collection(FEES).findOne({ _id: result.insertedId })
+    if (!saved) throw new Error("The forwarded fee could not be loaded; retry this message")
+    return reuse(saved)
+  }
+  return { fee, duplicate: false }
 }
 
 function resolvedQuoteAsset(parsedAsset: string | null | undefined, quoteAssets: string[]) {
@@ -110,24 +134,29 @@ export async function assignFeeProject(feeId: string, projectId: string) {
   ])
   if (!fee) throw new Error("Fee entry was not found")
   if (!project) throw new Error("Project was not found")
+  if (["confirmed", "ignored", "waived"].includes(fee.status)) return fee as RevenueFeeEvent
+  if ((fee.proposedReceiptIds || []).length) throw new Error("Review the existing receipt match before changing this fee's project")
   if (project.status === "inactive") throw new Error("Inactive projects cannot receive new fee entries")
 
   const config = projectFeeConfig(project)
   if (!config.chain) throw new Error("Set the project's revenue chain before assigning fees")
   if (!fee.feeType) throw new Error("The fee type was not recognized; classify it from Revenue Inbox")
   const explicitAsset = String(fee.grossAsset || fee.quoteAsset || "").toUpperCase()
-  if (explicitAsset && explicitAsset !== "USD" && !config.quoteAssets.includes(explicitAsset)) {
+  if (explicitAsset && explicitAsset !== "USD" && !config.acceptedRevenueAssets.includes(explicitAsset)) {
     throw new Error(`${project.name || "This project"} is not configured to receive ${explicitAsset} revenue`)
   }
   if (fee.source === "telegram_forward" && fee.feeType === "daily_trading") {
     const scheduled = await db.collection(FEES).findOne({ sourceKey: `daily:${fee.date}:${project._id}` })
     if (scheduled) {
       await db.collection(FEES).updateOne({ _id: feeId }, { $set: { status: "ignored", duplicateOfFeeId: String(scheduled._id), projectId: String(project._id), projectName: String(project.name || ""), updatedAt: iso() } })
+      if (explicitAsset && explicitAsset !== "USD" && scheduled.quoteAsset !== explicitAsset && !["confirmed", "ignored", "waived", "match_proposed"].includes(scheduled.status)) {
+        return setFeeQuoteAsset(String(scheduled._id), explicitAsset)
+      }
       return scheduled as RevenueFeeEvent
     }
   }
 
-  const quoteAsset = resolvedQuoteAsset(fee.grossAsset || fee.quoteAsset, config.quoteAssets)
+  const quoteAsset = resolvedQuoteAsset(fee.grossAsset || fee.quoteAsset, config.acceptedRevenueAssets)
   let expectedAssetAmount = fee.expectedAssetAmount == null ? null : Number(fee.expectedAssetAmount)
   let expectedUsd = fee.expectedUsd == null ? null : Number(fee.expectedUsd)
   let liquidationPercentage: number | null = null
@@ -168,11 +197,14 @@ export async function assignFeeProject(feeId: string, projectId: string) {
 export async function setFeeQuoteAsset(feeId: string, assetInput: string) {
   const db = await getDb()
   const fee = await db.collection(FEES).findOne({ _id: feeId })
+  if (!fee) throw new Error("Fee entry was not found")
+  if (["confirmed", "ignored", "waived"].includes(fee.status)) return fee as RevenueFeeEvent
+  if ((fee.proposedReceiptIds || []).length) throw new Error("Review the receipt match before changing its asset")
   if (!fee?.projectId) throw new Error("Select a project first")
   const project = await db.collection("opsProjects").findOne({ _id: fee.projectId })
   const config = projectFeeConfig(project)
   const asset = String(assetInput || "").trim().toUpperCase()
-  if (!config.quoteAssets.includes(asset)) throw new Error(`${asset} is not configured for this project`)
+  if (!config.acceptedRevenueAssets.includes(asset)) throw new Error(`${asset} is not configured for this project's revenue`)
 
   let expectedAssetAmount = fee.expectedAssetAmount ?? null
   if ((fee.feeType === "daily_trading" || fee.feeType === "launch") && asset === "USDC") {
@@ -190,6 +222,8 @@ export async function setFeeType(feeId: string, feeType: FeeType) {
   const db = await getDb()
   const fee = await db.collection(FEES).findOne({ _id: feeId })
   if (!fee) throw new Error("Fee entry was not found")
+  if (["confirmed", "ignored", "waived"].includes(fee.status)) return fee as RevenueFeeEvent
+  if ((fee.proposedReceiptIds || []).length) throw new Error("Review the receipt match before changing its fee type")
   await db.collection(FEES).updateOne(
     { _id: feeId },
     { $set: { feeType, status: fee.projectId ? "awaiting_asset" : "awaiting_project", updatedAt: iso() } },
@@ -240,9 +274,7 @@ export async function createFeeFromReceipts(params: { receiptIds: string[]; feeT
   const project = params.projectId ? await db.collection("opsProjects").findOne({ _id: params.projectId }) : null
   if (projectRequired && !project) throw new Error("Choose an existing project")
   if (project) {
-    const config = projectFeeConfig(project)
-    if (config.chain !== receipt.chain || !config.quoteAssets.includes(receipt.asset)) throw new Error("Project chain or quote asset does not match this receipt")
-    if (config.quoteTokenAddress && !sameTokenAddress(config.chain, receipt.tokenAddress, config.quoteTokenAddress)) throw new Error("Receipt token contract does not match the project's custom quote token")
+    if (!projectAcceptsReceipt(project, receipt)) throw new Error("Project chain, accepted revenue asset, or custom token contract does not match this receipt")
   }
   if (params.feeType === "daily_trading") {
     const date = receipt.date || dateKeyInTimeZone(new Date(receipt.blockTime || iso()))
@@ -252,7 +284,6 @@ export async function createFeeFromReceipts(params: { receiptIds: string[]; feeT
     if (!dailyFee) throw new Error("This project is not eligible for a daily trading fee on this date")
     if (dailyFee.status === "confirmed") throw new Error(`${project?.name || "This project"}'s $500 daily trading fee is already confirmed for ${date}`)
     if (["ignored", "waived"].includes(dailyFee.status)) throw new Error("This daily trading fee was already ignored or waived")
-    if (dailyFee.quoteAsset && dailyFee.quoteAsset !== receipt.asset) throw new Error(`This daily trading fee is waiting for ${dailyFee.quoteAsset}, not ${receipt.asset}`)
     const expectedUsd = Number(dailyFee.expectedUsd || projectFeeConfig(project).dailyTradingFeeUsd || 500)
     const metrics = fixedFeeReceiptMetrics(receipts, expectedUsd)
     if (!metrics.fullyValued) throw new Error("Value the selected receipt(s) in USD before applying the daily fee")
@@ -346,6 +377,7 @@ export async function confirmFeeExpectation(feeId: string, telegramId?: number |
   const db = await getDb()
   const fee = await db.collection(FEES).findOne({ _id: feeId })
   if (!fee) throw new Error("Fee entry was not found")
+  if (["confirmed", "ignored", "waived", "match_proposed"].includes(fee.status)) return fee as RevenueFeeEvent
   if (!fee.projectId || !fee.chain || !fee.quoteAsset || !fee.feeType) throw new Error("Project, chain, asset, and fee type are required")
   await db.collection(FEES).updateOne(
     { _id: feeId },
@@ -392,11 +424,15 @@ export async function acceptReceiptMatch(feeId: string, telegramId?: number | nu
   const fee = await db.collection(FEES).findOne({ _id: feeId })
   if (!fee) throw new Error("Fee entry was not found")
   if (fee.status === "confirmed") return fee as RevenueFeeEvent
+  if (["ignored", "waived"].includes(fee.status)) throw new Error("This fee is closed and cannot receive new receipt matches")
   const receiptIds = Array.from(new Set((receiptIdsInput?.length ? receiptIdsInput : fee.proposedReceiptIds || []).map(String)))
   if (!receiptIds.length) throw new Error("Choose at least one receipt")
   const receipts = await Promise.all(receiptIds.map((id) => db.collection(RECEIPTS).findOne({ _id: id })))
   if (receipts.some((receipt) => !receipt)) throw new Error("One or more receipts were not found")
+  if (receipts.some((receipt) => receipt.direction !== "incoming" || receipt.walletRole === "treasury" || receipt.consolidationBatchId || !["unclassified", "match_proposed"].includes(receipt.status))) throw new Error("Selected receipts must be available revenue-wallet arrivals, not internal movements or already classified receipts")
+  if (receipts.some((receipt) => receipt.date && receipt.date !== fee.date)) throw new Error("Selected receipts must belong to the fee's accounting day")
   if (receipts.some((receipt) => receipt.chain !== fee.chain || receipt.asset !== fee.quoteAsset)) throw new Error("Receipt chain or asset does not match the fee")
+  if (receipts.some((receipt) => !sameTokenAddress(fee.chain, receipt.tokenAddress, receipts[0].tokenAddress))) throw new Error("A receipt batch must use the same exact token contract")
   if (fee.quoteTokenAddress && receipts.some((receipt) => !sameTokenAddress(fee.chain, receipt.tokenAddress, fee.quoteTokenAddress))) throw new Error("Receipt token contract does not match the fee")
   if (receipts.some((receipt) => receipt.status === "match_proposed" && receipt.proposedFeeEventId && receipt.proposedFeeEventId !== feeId)) throw new Error("A selected receipt is reserved for another fee")
 

@@ -60,7 +60,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   if (body.referrerStatus !== undefined || body.referrer !== undefined || body.referrerAccountId !== undefined) {
     update.referrerStatus = String(body.referrerStatus || (body.referrerAccountId || body.referrer ? 'assigned' : 'pending'))
   }
-  if (["chain", "revenueChain", "quoteToken", "quoteAssets", "quoteTokenAddress", "quoteTokenDecimals", "dailyTradingFeeEnabled", "dailyTradingFeeUsd", "liquidationFeeEnabled", "liquidationFeePercentage", "launchFeeUsd"].some((key) => body[key] !== undefined)) {
+  if (["chain", "revenueChain", "quoteToken", "quoteAssets", "acceptedRevenueAssets", "quoteTokenAddress", "quoteTokenDecimals", "dailyTradingFeeEnabled", "dailyTradingFeeUsd", "liquidationFeeEnabled", "liquidationFeePercentage", "launchFeeUsd"].some((key) => body[key] !== undefined)) {
     const feeInput = { ...existing, ...body, chain: body.chain ?? body.revenueChain ?? existing.chain }
     try {
       const customQuote = feeInput.quoteTokenAddress

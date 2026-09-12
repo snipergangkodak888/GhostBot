@@ -15,10 +15,11 @@ import { renderPayrollReportPng } from "@/lib/payroll-report-image"
 import { miscIncomeCategoryLabel, parseIncomeLogCommand } from "@/lib/payroll-misc"
 import { chatProfileLabel, chatPurposeLabel, getChatProfile, getProfileChats, listChatSubscriptions, normalizeChatProfile, normalizeChatPurpose, notificationAllowedForProfile, setChatProfile, setChatSubscription, type ChatProfile } from "@/lib/chat-subscriptions"
 import { formatLaunchDaySchedule } from "@/lib/launch-calendar"
-import { projectFeeConfig } from "@/lib/revenue-projects"
+import { projectAcceptsReceipt, projectFeeConfig, searchFeeProjects } from "@/lib/revenue-projects"
 import { revenueTransactionUrl } from "@/lib/revenue-explorer"
-import { acceptReceiptMatch, assignFeeProject, classifyReceiptAsRevenue, confirmFeeExpectation, createForwardedFeeEvent, ensureDailyTradingFeeExpectations, getRevenueReceipt, listRevenueDay, setFeeQuoteAsset, setFeeType, updateReceiptClassification } from "@/lib/revenue-service"
-import { feeProjectButtons, formatConsolidationCandidate, formatFeeExpectation, isFeeInboxChat, receiptClassificationButtons, revenueChainLabel } from "@/lib/revenue-telegram"
+import { acceptReceiptMatch, assignFeeProject, classifyReceiptAsRevenue, confirmFeeExpectation, createForwardedFeeEvent, ensureDailyTradingFeeExpectations, getRevenueReceipt, listRevenueDay, proposeReceiptMatch, setFeeQuoteAsset, setFeeType, updateReceiptClassification } from "@/lib/revenue-service"
+import { escapeHtml, feeProjectButtons, feeWorkflowView, formatConsolidationCandidate, formatFeeExpectation, isFeeInboxChat, receiptClassificationButtons, revenueChainLabel } from "@/lib/revenue-telegram"
+import { forwardOriginIdentity } from "@/lib/revenue-forward-identity"
 import { confirmConsolidationCandidate, getConsolidationCandidate, rejectConsolidationCandidate } from "@/lib/revenue-consolidation-candidates"
 import { isGlobalRevenueFeeType, type FeeType } from "@/lib/revenue-types"
 import { receiptAvailableAmount, receiptAvailableUsd } from "@/lib/revenue-allocations"
@@ -1909,15 +1910,11 @@ async function processState(token: string, chatId: number | string, telegramId: 
     const term = text.trim().toLowerCase()
     const [fee, projects] = await Promise.all([
       db.collection("revenueFeeEvents").findOne({ _id: state.feeId }),
-      db.collection("opsProjects").find({ status: { $ne: "inactive" } }).sort({ name: 1 }).toArray(),
+      db.collection("opsProjects").find({}).sort({ name: 1 }).toArray(),
     ])
-    const explicitAsset = String(fee?.grossAsset || fee?.quoteAsset || "").toUpperCase()
-    const matches = projects.filter((project: any) => {
-      const config = projectFeeConfig(project)
-      return config.chain && String(project.name || "").toLowerCase().includes(term) && (!explicitAsset || explicitAsset === "USD" || config.quoteAssets.includes(explicitAsset))
-    }).slice(0, 10)
+    const { matches, message: searchMessage } = searchFeeProjects(projects, fee, term)
     if (!matches.length) {
-      await editOrSendWorkflowMessage(token, chatId, workflowMessageId, "No configured active project matched that name. Try another search or /cancel.")
+      await editOrSendWorkflowMessage(token, chatId, workflowMessageId, `${escapeHtml(searchMessage)}\n\nTry another search or /cancel.`)
       await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
       return true
     }
@@ -2057,7 +2054,7 @@ async function compatibleReceiptProjects(receipt: any, feeType: FeeType) {
   const compatible = []
   for (const project of projects) {
     const config = projectFeeConfig(project)
-    if (config.chain !== receipt.chain || !config.quoteAssets.includes(receipt.asset)) continue
+    if (!projectAcceptsReceipt(project, receipt)) continue
     if (feeType === "daily_trading") {
       if (!config.dailyTradingFeeEnabled) continue
       const scheduled = await db.collection("revenueFeeEvents").findOne({ sourceKey: `daily:${receipt.date}:${project._id}` })
@@ -2853,22 +2850,19 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   }
   if (area === "fee" && action === "project") {
     const fee = await assignFeeProject(id, extra)
-    const activeFeeId = String(fee._id || id)
-    if (fee.status === "awaiting_asset") {
-      const project = await db.collection("opsProjects").findOne({ _id: fee.projectId })
-      const assets = projectFeeConfig(project).quoteAssets
-      return workflowReply(`${formatFeeExpectation(fee)}\n\nWhich quote asset was cashed out?`, assets.map((asset) => [{ text: asset, callback_data: `fee:asset:${activeFeeId}:${asset}` }]))
-    }
-    return workflowReply(`${formatFeeExpectation(fee)}\n\nConfirm this expectation before matching wallet receipts.`, [[{ text: "✅ Confirm expectation", callback_data: `fee:confirm:${activeFeeId}` }]])
+    const view = await feeWorkflowView(fee)
+    return workflowReply(view.text, view.buttons)
   }
   if (area === "fee" && action === "asset") {
     const fee = await setFeeQuoteAsset(id, extra)
-    return workflowReply(`${formatFeeExpectation(fee)}\n\nConfirm this expectation before matching wallet receipts.`, [[{ text: "✅ Confirm expectation", callback_data: `fee:confirm:${id}` }]])
+    const view = await feeWorkflowView(fee)
+    return workflowReply(view.text, view.buttons)
   }
-  if (area === "fee" && action === "confirm") {
-    const fee = await confirmFeeExpectation(id, telegramId)
+  if (area === "fee" && (action === "confirm" || action === "receipts")) {
+    const fee = action === "confirm" ? await confirmFeeExpectation(id, telegramId) : await proposeReceiptMatch(id)
     if (!fee) return workflowReply("Fee entry was not found.")
-    return workflowReply(fee.status === "match_proposed" ? `${formatFeeExpectation(fee)}\n\nI found ${fee.proposedReceiptIds.length} receipt(s) that add up to the expected fee.` : `${formatFeeExpectation(fee)}\n\nNo exact receipt combination is available yet. I’ll keep it waiting.`, fee.status === "match_proposed" ? [[{ text: "✅ Accept receipt match", callback_data: `fee:match:${id}` }]] : [])
+    const view = await feeWorkflowView(fee)
+    return workflowReply(view.text, view.buttons)
   }
   if (area === "fee" && action === "match") {
     const fee = await acceptReceiptMatch(id, telegramId)
@@ -3481,11 +3475,12 @@ export async function POST(req: NextRequest) {
       if (ok && telegramId) {
         const context = await botPermissions(telegramId, chatId)
         if (!(await requireCapability(token, context, "finance"))) return NextResponse.json({ ok: true })
-        const created = await createForwardedFeeEvent({ chatId, messageId: Number(message.message_id), text, telegramId, messageDate: new Date(forwardedDateMs) })
+        const previousWorkflow = await takeState(telegramId, chatId)
+        if (previousWorkflow?.action === "fee_project_search") await clearState(telegramId)
+        const created = await createForwardedFeeEvent({ chatId, messageId: Number(message.message_id), text, telegramId, messageDate: new Date(forwardedDateMs), originIdentity: forwardOriginIdentity(message) })
         const fee = created.fee
-        if (created.duplicate) await sendMessage(token, chatId, "This forwarded message is already in Revenue Inbox.")
-        else if (!fee.feeType) await sendMessage(token, chatId, `I saved the message but could not classify the fee. Choose the type:`, [[{ text: "Liquidation", callback_data: `fee:type:${fee._id}:liquidation` }], [{ text: "Daily trading", callback_data: `fee:type:${fee._id}:daily_trading` }, { text: "Launch / TGE cash", callback_data: `fee:type:${fee._id}:launch` }], [{ text: "Dev allocation", callback_data: `fee:type:${fee._id}:dev_allocation` }]])
-        else await sendMessage(token, chatId, `${formatFeeExpectation(fee)}\n\nChoose the existing project:`, await feeProjectButtons(String(fee._id)))
+        const view = await feeWorkflowView(fee)
+        await sendMessage(token, chatId, `${created.duplicate ? "This cashout is already recorded; continuing its existing entry.\n\n" : ""}${view.text}`, view.buttons)
       }
       return NextResponse.json({ ok: true })
     }

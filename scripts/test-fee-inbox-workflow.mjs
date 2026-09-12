@@ -20,12 +20,14 @@ const membershipId = `codex-fee-membership-${telegramId}`
 const profileId = `codex-fee-profile-${telegramId}`
 const projectId = `codex-fee-project-${telegramId}`
 const feeId = `codex-fee-event-${telegramId}`
+const receiptIds = [`codex-fee-receipt-a-${telegramId}`, `codex-fee-receipt-b-${telegramId}`]
 let server
 
 function credentials() {
   const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY
   if (!url || !key) throw new Error("Supabase service credentials are required for the Fee Inbox workflow test.")
+  if (new URL(url).hostname !== "ozkaxwdrbvsimmrrjaox.supabase.co") throw new Error("Fee workflow test is restricted to the configured test database, never production.")
   return { url, key, headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json" } }
 }
 
@@ -50,9 +52,11 @@ async function documents(collections) {
 async function cleanup() {
   const { url, key } = credentials()
   const headers = { apikey: key, Authorization: `Bearer ${key}` }
-  const rows = await documents(["revenueFeeEvents", "opsProjects", "opsChatProfiles", "guardMembers", "guardChatMembers", "opsBotLogs", "opsBotStates"])
+  const rows = await documents(["revenueFeeEvents", "revenueReceipts", "opsProjects", "opsChatProfiles", "opsHostedGroups", "guardMembers", "guardChatMembers", "opsBotLogs", "opsBotStates"])
   const ids = rows.filter((row) => {
-    if ([memberId, membershipId, profileId, projectId, feeId].includes(row.id)) return true
+    if ([memberId, membershipId, profileId, projectId, feeId, ...receiptIds].includes(row.id)) return true
+    if (String(row.data?.telegram?.chatId || "") === telegramChatId) return true
+    if (row.collection === "opsHostedGroups" && row.data?.chatId === telegramChatId) return true
     return Number(row.data?.telegramId) === telegramId || String(row.data?.telegramChatId || "") === telegramChatId
   }).map((row) => row.id)
   for (const id of ids) {
@@ -132,13 +136,13 @@ try {
 
   const assigned = await sendBotLabUpdate(config, { callbackData: `fee:project:${feeId}:${projectId}`, messageId })
   assertEditedOnly(assigned, messageId, "Choosing the project")
-  assert.match(responseText(assigned), /Confirm this expectation/)
+  assert.match(responseText(assigned), /Confirm these fee details/)
   assert.match(responseText(assigned), /Expected USD:.*\$1,000/s)
 
   const confirmed = await sendBotLabUpdate(config, { callbackData: `fee:confirm:${feeId}`, messageId })
   assertEditedOnly(confirmed, messageId, "Confirming the fee expectation")
-  assert.match(responseText(confirmed), /No exact receipt combination is available yet/)
-  assert.match(responseText(confirmed), /keep it waiting/)
+  assert.match(responseText(confirmed), /Waiting for a matching receipt or batch/)
+  assert.match(buttonText(confirmed), /Search receipts/)
 
   const rows = await documents(["revenueFeeEvents"])
   const fee = rows.find((row) => row.id === feeId)?.data
@@ -147,7 +151,55 @@ try {
   assert.equal(fee?.feeType, "launch")
   assert.equal(fee?.quoteAsset, "SOL")
 
-  console.log("PASS: Fee Inbox classification edits one card from type through confirmation and leaves no intermediary bot messages.")
+  // Replay the reported sequence: receipts first, cashout forward later, then
+  // project search, repeat forward, and a single two-receipt proposal.
+  for (let i = 0; i < receiptIds.length; i += 1) {
+    const value = [213.497478, 210.375758][i]
+    await upsertDocument("revenueReceipts", receiptIds[i], {
+      date: "2026-09-12", chain: "solana", walletRole: "revenue", direction: "incoming", asset: "USDC",
+      tokenAddress: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", amount: value, amountUsd: value,
+      status: "unclassified", allocations: [], transactionHash: `lab-signature-${i}`, eventKey: `lab-${receiptIds[i]}`,
+      blockTime: `2026-09-12T15:${i ? "51:22" : "50:52"}.000Z`, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    })
+  }
+  const forwardInput = {
+    text: "Cashout Summary:\nA total of 8,502 USDC was withdrawn from the MM balance.\n8,000 USDC was sent here via Husher.\n502 USDC was taken for the 5% liquidation + privacy swap fee.",
+    forwardOrigin: { type: "hidden_user", sender_user_name: "Bands test", date: Math.floor(new Date("2026-09-12T15:51:31Z").getTime() / 1000) },
+  }
+  const forwarded = await sendBotLabUpdate(config, { ...forwardInput, messageId: 820 })
+  const sourceRows = await documents(["revenueFeeEvents"])
+  const forwardedFee = sourceRows.find((row) => row.data?.telegram?.messageId === 820 && row.data?.telegram?.chatId === telegramChatId)
+  assert.ok(forwardedFee, responseText(forwarded))
+  const forwardedId = forwardedFee.id
+  await sendBotLabUpdate(config, { callbackData: `fee:search:${forwardedId}`, messageId: 821 })
+  const wrongAsset = await sendBotLabUpdate(config, { text: "Fee Flow Project", messageId: 822 })
+  assert.match(responseText(wrongAsset), /is active, but accepts SOL revenue, not USDC/)
+  const projectRows = await documents(["opsProjects"])
+  await upsertDocument("opsProjects", projectId, { ...projectRows.find((row) => row.id === projectId).data, acceptedRevenueAssets: ["SOL", "USDC"] })
+  const retriedForward = await sendBotLabUpdate(config, { ...forwardInput, messageId: 823 })
+  assert.match(responseText(retriedForward), /already recorded/)
+  assert.match(buttonText(retriedForward), /Fee Flow Project/)
+  const selectedProject = await sendBotLabUpdate(config, { callbackData: `fee:project:${forwardedId}:${projectId}`, messageId: 824 })
+  assert.match(responseText(selectedProject), /425.1 USDC/)
+  const proposed = await sendBotLabUpdate(config, { callbackData: `fee:confirm:${forwardedId}`, messageId: 824 })
+  assertEditedOnly(proposed, 824, "Proposing the receipt batch")
+  assert.match(responseText(proposed), /423.873236 USDC/)
+  assert.match(responseText(proposed), /1.226764 USDC/)
+  assert.match(responseText(proposed), /30 seconds/)
+  assert.match(buttonText(proposed), /Accept 2 receipts as one fee/)
+  const repeatedProposal = await sendBotLabUpdate(config, { ...forwardInput, messageId: 825 })
+  assert.match(buttonText(repeatedProposal), /Accept 2 receipts as one fee/)
+  const accepted = await sendBotLabUpdate(config, { callbackData: `fee:match:${forwardedId}`, messageId: 824 })
+  assert.match(responseText(accepted), /Fee verified and ready for payroll/)
+  const repeatedAccepted = await sendBotLabUpdate(config, { ...forwardInput, messageId: 826 })
+  assert.match(responseText(repeatedAccepted), /Status:.*confirmed/)
+  assert.doesNotMatch(buttonText(repeatedAccepted), /Confirm expectation|Accept .*receipts|Choose/)
+  const finalRows = await documents(["revenueFeeEvents", "revenueReceipts"])
+  assert.equal(finalRows.filter((row) => row.data?.telegram?.chatId === telegramChatId).length, 1)
+  assert.equal(finalRows.find((row) => row.id === forwardedId)?.data.matchedReceiptIds.length, 2)
+  assert.ok(finalRows.filter((row) => receiptIds.includes(row.id)).every((row) => row.data.status === "allocated" && row.data.allocations.length === 1))
+
+  console.log("PASS: Fee Inbox card editing, honest project-search errors, multi-asset project selection, repeated forwards, and two-receipt batch acceptance. All Telegram calls were captured, not sent.")
 } finally {
   await cleanup().catch((error) => console.error(`Cleanup warning: ${error instanceof Error ? error.message : String(error)}`))
   stopBotLabServer(server)
