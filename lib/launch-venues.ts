@@ -10,6 +10,13 @@ export type OperationalLaunchVenue = {
 
 const EXTRA_OPERATIONAL_VENUES: OperationalLaunchVenue[] = [
   {
+    id: "stonks",
+    chainId: "sol",
+    name: "Stonks",
+    symbol: "SOL",
+    calculatorSupported: false,
+  },
+  {
     id: "uni-rh-v4",
     chainId: "rh",
     name: "Uniswap V4",

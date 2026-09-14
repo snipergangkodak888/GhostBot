@@ -30,7 +30,7 @@ import { calculateLaunchQuote, defaultMmLiquidity, formatLaunchQuote, getLaunchA
 import { botPermissionDeniedMessage, canCollaborateOnLaunchDraft, canEditLaunchSchedule, canOpenTraderSchedule, canUseBotCapability, getBotPermissionContext, isLaunchDraftAction, type BotCapability, type BotPermissionContext } from "@/lib/bot-permissions"
 import { createGuardEnrollmentLink, guardEnrollmentTokenFromText, guardEnrollmentUrl, handleGuardBotMembershipUpdate, handleGuardChatMemberUpdate, recordGuardChatMember, revokeGuardEnrollmentLinks, syncTelegramChatAdministrators, verifyAndRedeemGuardEnrollment } from "@/lib/guard-enrollment"
 import { activateScheduledProject, activationLifecycleFields, cancelScheduledProject, cleanLaunchProjectName, confirmNoProjectReferrer, confirmStandardProjectFees, deactivateActiveProject, projectActivationReadiness, projectLaunchAt, projectLaunchDateKey, projectLaunchTimingStatus, rescheduleProject, setTentativeProjectLaunchDate } from "@/lib/project-lifecycle"
-import { formatLaunchSetupReview, launchChainButtons, launchChainConfig, launchChainIdForProject, launchMethodButtons, launchQuoteButtons, launchSetupButtons, launchSetupReady, launchVenueButtons, launchVenueSelection } from "@/lib/launch-setup"
+import { formatLaunchSetupReview, launchChainButtons, launchChainConfig, launchChainIdForProject, launchMethodButtons, launchProjectChainChanges, launchQuoteButtons, launchSetupButtons, launchSetupReady, launchVenueButtons, launchVenueSelection } from "@/lib/launch-setup"
 import { parseCustomQuoteTokenInput, resolveCustomQuoteToken } from "@/lib/custom-quote-token"
 import { launchMethodLabel, normalizeLaunchMethod } from "@/lib/launch-method"
 import { ghostBotOrganicChannelUrl, normalizeOrganicTicker, organicChannelCompletionMessage, organicChannelTitle, SUMO_TRADE_BOT_USERNAME, sumoBotChannelUrl, sumoSubscribeCommand, validOrganicTicker, validSumoProfileId } from "@/lib/organic-channel-setup"
@@ -1164,6 +1164,7 @@ async function showCalendarLaunchEditor(token: string, chatId: number | string, 
     ? []
     : [[{ text: "Change launch timing", callback_data: `calendar:timing:${id}:${scheduleVersion}` }]]
   buttons.push([{ text: "Change project name", callback_data: `calendar:name:${id}:${scheduleVersion}` }])
+  buttons.push([{ text: "Change chain", callback_data: `calendar:chain:${id}:${scheduleVersion}` }])
   buttons.push([{ text: "Change launch venue / DEX", callback_data: `calendar:venue:${id}:${scheduleVersion}` }])
   buttons.push([{ text: "Add note", callback_data: `calendar:addnote:${id}:${scheduleVersion}` }])
   if (scheduled) buttons.push([{ text: "Cancel launch", callback_data: `lifecycle:cancel:${id}:${scheduleVersion}` }])
@@ -1175,6 +1176,26 @@ async function showCalendarLaunchEditor(token: string, chatId: number | string, 
     `Notes\n${noteLines.length ? noteLines.join("\n") : "No notes yet."}`,
   ].filter(Boolean).join("\n\n")
   return showLaunchSetupPicker(token, chatId, messageId, text, buttons)
+}
+
+async function showCalendarLaunchChainPicker(token: string, chatId: number | string, project: any, messageId?: number | null) {
+  const id = String(project._id)
+  const version = Number(project.scheduleVersion || 0)
+  return showLaunchSetupPicker(token, chatId, messageId, `Choose the chain for ${project.name}:\n\nChanging chains uses the new chain’s native quote token. Choose a matching launchpad next.`, [
+    ...LAUNCH_CHAINS.map((chain) => [{ text: chain.name, callback_data: `calendar:setchain:${id}:${chain.id}~${version}` }]),
+    [{ text: "Back", callback_data: `calendar:launch:${id}:${version}` }],
+  ])
+}
+
+async function showCalendarLaunchVenuePicker(token: string, chatId: number | string, project: any, messageId?: number | null, notice = "") {
+  const chainId = launchChainIdForProject(project.chain || project.revenueChain)
+  if (!chainId) return showCalendarLaunchChainPicker(token, chatId, project, messageId)
+  const id = String(project._id)
+  const version = Number(project.scheduleVersion || 0)
+  return showLaunchSetupPicker(token, chatId, messageId, `${notice ? `${notice}\n\n` : ""}Choose the launch venue / DEX for ${project.name}:`, [
+    ...operationalVenuesForChain(chainId).map((venue) => [{ text: venue.name, callback_data: `calendar:setvenue:${id}:${venue.id}~${version}` }]),
+    [{ text: "Back", callback_data: `calendar:launch:${id}:${version}` }],
+  ])
 }
 
 async function acknowledgeTentativeLaunches(token: string, chatId: number | string, telegramId: number, dateKey: string, messageId?: number | null) {
@@ -2425,20 +2446,38 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       return
     }
 
-    if (action === "venue") {
+    if (action === "chain" || action === "venue") {
       const project = await db.collection("opsProjects").findOne({ _id: id })
       const scheduleVersion = Number(extra || 0)
       if (!project || String(project.status || "") === "inactive" || Number(project.scheduleVersion || 0) !== scheduleVersion) {
         return editOrSendWorkflowMessage(token, chatId, messageId, "This launch was already updated. Open /calendar for the latest version.")
       }
-      const chainId = launchChainIdForProject(project.chain || project.revenueChain)
-      if (!chainId) return workflowReply("⚠️ Set the project chain before choosing its launch venue / DEX.")
-      const venueButtons: InlineButton[][] = operationalVenuesForChain(chainId).map((venue) => [{
-        text: venue.name,
-        callback_data: `calendar:setvenue:${id}:${venue.id}~${scheduleVersion}`,
-      }])
-      venueButtons.push([{ text: "Back", callback_data: `calendar:launch:${id}:${scheduleVersion}` }])
-      return showLaunchSetupPicker(token, chatId, messageId, `Choose the launch venue / DEX for ${project.name}:`, venueButtons)
+      return action === "chain"
+        ? showCalendarLaunchChainPicker(token, chatId, project, messageId)
+        : showCalendarLaunchVenuePicker(token, chatId, project, messageId)
+    }
+
+    if (action === "setchain") {
+      const [chainId, rawVersion] = String(extra || "").split("~")
+      const scheduleVersion = Number(rawVersion || 0)
+      const project = await db.collection("opsProjects").findOne({ _id: id })
+      const chain = LAUNCH_CHAINS.find((item) => item.id === chainId)
+      if (!project || !chain || String(project.status || "") === "inactive" || Number(project.scheduleVersion || 0) !== scheduleVersion) {
+        return workflowReply("That chain selection is no longer available. Open /calendar and try again.")
+      }
+      const changes = launchProjectChainChanges(project, chain.id)
+      if (!changes) return workflowReply("That chain is not available.")
+      if (launchChainIdForProject(project.chain || project.revenueChain) === chain.id) {
+        return showCalendarLaunchVenuePicker(token, chatId, project, messageId)
+      }
+      const now = new Date()
+      const result = await db.collection("opsProjects").updateOne(
+        { _id: id, status: project.status, scheduleVersion: project.scheduleVersion },
+        { $set: { ...changes, scheduleVersion: scheduleVersion + 1, launchChainUpdatedAt: now, launchChainUpdatedByTelegramId: telegramId, updatedAt: now } },
+      )
+      const updated = await db.collection("opsProjects").findOne({ _id: id })
+      if (!result.matchedCount || !updated || updated.chain !== changes.chain) return workflowReply("⚠️ This launch was updated while you were editing it. Open /calendar and try again.")
+      return showCalendarLaunchVenuePicker(token, chatId, updated, messageId, `Chain updated to ${chain.name}.`)
     }
 
     if (action === "setvenue") {

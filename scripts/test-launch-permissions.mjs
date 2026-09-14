@@ -170,6 +170,68 @@ function assertTimingCard() {
   assert.match(buttonWithText('Change launch timing'), /^calendar:timing:/)
 }
 
+// Calendar chain edits recover blank-chain launches and preserve unrelated settings.
+const chainProjectId = 'chain-launch'
+const chainProject = () => db.collection('opsProjects').findOne({ _id: chainProjectId })
+await db.collection('opsProjects').insertOne({
+  ...payload, _id: chainProjectId, status: 'scheduled', scheduleVersion: 1,
+  chain: '', quoteToken: '', launchVenue: '', launchVenueLabel: '',
+  notes: 'Keep this note', dailyTradingFeeEnabled: false, launchFeeUsd: 1250,
+})
+await callback(memberId, `calendar:launch:${chainProjectId}:1`)
+assert.ok(buttonWithText('Change chain'))
+assert.match(await callback(memberId, buttonWithText('Change launch venue / DEX')), /Choose the chain/)
+const selectSolana = buttonWithText('Solana')
+assert.match(await callback(memberId, selectSolana), /Chain updated to Solana/)
+assert.equal(messages.at(-1).messageId, 100, 'Chain changes must edit the existing card')
+assert.equal((await chainProject()).chain, 'solana')
+assert.equal((await chainProject()).revenueChain, 'solana')
+assert.equal((await chainProject()).quoteToken, 'SOL')
+assert.deepEqual((await chainProject()).acceptedRevenueAssets, ['SOL', 'USDC'])
+assert.match(await callback(memberId, buttonWithText('Stonks')), /Solana\/Stonks/)
+const stonksProject = await chainProject()
+assert.equal(stonksProject.launchVenue, 'stonks')
+assert.equal(stonksProject.launchVenueLabel, 'Stonks')
+assert.equal(stonksProject.launchFundingAsset, 'SOL')
+assert.equal(stonksProject.launchAt, payload.launchAt)
+assert.equal(stonksProject.notes, 'Keep this note')
+assert.equal(stonksProject.dailyTradingFeeEnabled, false)
+assert.equal(stonksProject.launchFeeUsd, 1250)
+assert.match(await callback(memberId, selectSolana), /no longer available/)
+assert.deepEqual(await chainProject(), stonksProject, 'Old chain buttons must not change the project')
+
+// Selecting the current chain keeps custom quotes and multi-asset revenue settings.
+await db.collection('opsProjects').updateOne({ _id: chainProjectId }, { $set: {
+  quoteToken: 'CUSTOM', quoteAssets: ['CUSTOM'], quoteTokenAddress: 'original-contract', quoteTokenDecimals: 6,
+  acceptedRevenueAssets: ['CUSTOM', 'SOL', 'USDC'],
+} })
+const customChainProject = await chainProject()
+await callback(dmId, `calendar:chain:${chainProjectId}:${customChainProject.scheduleVersion}`, dmId)
+await callback(dmId, buttonWithText('Solana'), dmId)
+assert.deepEqual(await chainProject(), customChainProject)
+await callback(memberId, `calendar:chain:${chainProjectId}:${customChainProject.scheduleVersion}`)
+assert.match(await callback(memberId, buttonWithText('BNB Chain')), /Chain updated to BNB Chain/)
+assert.equal(lastButtons().some(button => button.text === 'Stonks'), false)
+const bnbProject = await chainProject()
+assert.equal(bnbProject.chain, 'bnb')
+assert.equal(bnbProject.launchVenue, '')
+assert.equal(bnbProject.launchVenueLabel, '')
+assert.equal(bnbProject.quoteToken, 'BNB')
+assert.equal(bnbProject.quoteTokenAddress, '')
+assert.equal(bnbProject.quoteTokenDecimals, null)
+assert.deepEqual(bnbProject.acceptedRevenueAssets, ['BNB', 'USDC'])
+assert.equal(bnbProject.launchAt, payload.launchAt)
+assert.match(await callback(memberId, `calendar:setvenue:${chainProjectId}:stonks~${bnbProject.scheduleVersion}`), /no longer available/)
+assert.match(await callback(memberId, `calendar:setchain:${chainProjectId}:invalid~${bnbProject.scheduleVersion}`), /no longer available/)
+assert.match(await callback(memberId, `calendar:setchain:${chainProjectId}:sol~${bnbProject.scheduleVersion}`, memberId), /launch scheduling access/)
+assert.deepEqual(await chainProject(), bnbProject)
+await db.collection('opsProjects').updateOne({ _id: chainProjectId }, { $set: { status: 'inactive' } })
+assert.match(await callback(memberId, `calendar:setchain:${chainProjectId}:sol~${bnbProject.scheduleVersion}`), /no longer available/)
+assert.equal((await chainProject()).chain, 'bnb')
+const venues = load('lib/launch-venues.ts')
+assert.equal(venues.operationalLaunchVenue('stonks').calculatorSupported, false)
+assert.equal(load('lib/project-lifecycle.ts').inferLaunchConfiguration('Mcdonalds on Stonks').launchVenue, 'stonks')
+
 await timingReply('/calendar 2030-09-09')
 await callback(memberId, buttonWithText('Open launches'))
 const launchButton = lastButtons().find(button => button.callback_data.startsWith(`calendar:launch:${timingProjectId}:`))
@@ -330,4 +392,4 @@ assert.equal((await access.getTeamAccess(memberId)).member.launchDmAccess, true)
 assert.equal((await access.getTeamAccess(memberId)).member.accessRole, 'member')
 assert.equal(rows.get('opsPermissionAudit').at(-1).actor, 'test-admin')
 assert.equal((await adminRoute.POST({ json: async () => ({ action: 'update-member-launch-dm-access', id: 'member-2', enabled: 'true' }) })).status, 400)
-console.log('PASS: shared drafts, calendar/reminder timing edits, TBD, stale schedules, chat isolation, launch DMs, financial denials, revocation, and admin-only access changes.')
+console.log('PASS: shared drafts, calendar chain/venue edits, Stonks, calendar/reminder timing edits, TBD, stale schedules, chat isolation, launch DMs, financial denials, revocation, and admin-only access changes.')

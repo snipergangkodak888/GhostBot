@@ -4,12 +4,14 @@ import { LAUNCH_METHODS, launchMethodLabel, normalizeLaunchMethod } from "@/lib/
 import { projectActivationReadiness } from "@/lib/project-lifecycle"
 import { formatTeamDateTime, TEAM_TIME_ZONE } from "@/lib/team-timezone"
 import { cleanQuoteTokenAddress, cleanQuoteTokenDecimals } from "@/lib/custom-quote-token"
+import { DEFAULT_CHAIN_ASSETS } from "@/lib/revenue-projects"
+import type { RevenueChain } from "@/lib/revenue-types"
 
 export type LaunchSetupButton = { text: string; callback_data: string }
 
 export const LAUNCH_QUOTE_TOKENS = ["SOL", "ETH", "BNB", "USDC", "USDT"] as const
 
-const REVENUE_CHAIN_BY_LAUNCH_CHAIN: Record<LaunchChainId, string> = {
+const REVENUE_CHAIN_BY_LAUNCH_CHAIN: Record<LaunchChainId, RevenueChain> = {
   sol: "solana",
   eth: "ethereum",
   bsc: "bnb",
@@ -38,6 +40,27 @@ export function launchChainConfig(chainId: LaunchChainId) {
     chainLabel: chain?.name || chainId,
     venues,
     nativeQuoteToken: venues[0]?.symbol || (chainId === "sol" ? "SOL" : chainId === "bsc" ? "BNB" : "ETH"),
+  }
+}
+
+export function launchProjectChainChanges(project: any, chainId: LaunchChainId) {
+  const config = launchChainConfig(chainId)
+  if (!config.chain) return null
+  const previousChain = launchChainIdForProject(project.chain || project.revenueChain)
+  if (previousChain === chainId) return { chain: config.chain, revenueChain: config.chain }
+  const venue = operationalLaunchVenue(project.launchVenue)
+  const matchingVenue = venue?.chainId === chainId ? venue : null
+  return {
+    chain: config.chain,
+    revenueChain: config.chain,
+    launchVenue: matchingVenue?.id || "",
+    launchVenueLabel: matchingVenue?.name || "",
+    launchFundingAsset: matchingVenue?.symbol || "",
+    quoteToken: config.nativeQuoteToken,
+    quoteAssets: [config.nativeQuoteToken],
+    acceptedRevenueAssets: [...DEFAULT_CHAIN_ASSETS[config.chain]],
+    quoteTokenAddress: "",
+    quoteTokenDecimals: null,
   }
 }
 

@@ -330,6 +330,8 @@ Pending launch drafts in a configured Launch Chat are shared: any active Guard m
 
 To change a scheduled launch, use `/calendar` (or `/calendar tomorrow`) → **Open launches** → choose the launch → **Change launch timing**. Enter natural language such as `3 PM ET`, `tomorrow at noon`, `same time tomorrow`, or `TBD`. This uses the same timing flow as launch reminders: a time alone keeps the launch day, a day alone keeps an existing time, and a TBD launch asks for the time if needed. Saving or cancelling returns to the launch details. Launches already marked Active cannot be rescheduled from this flow.
 
+The same launch editor offers **Change chain**, followed by a matching launchpad / DEX picker. If the chain is missing, **Change launch venue / DEX** opens the chain picker first. Switching chains resets the quote token and accepted revenue assets to the new chain’s defaults and clears an incompatible venue or token contract; it keeps launch timing, notes, referrer, and fee settings. Solana venues include Stonks for scheduling (without a launch calculator model).
+
 Run one of these commands inside each Telegram group. The caller must be both a GhostBot admin and a Telegram group administrator:
 
 - `/setchat launch` — launch schedule, launch calculator, natural-language launch changes, and chat-specific reminders; enables the morning launch schedule.
