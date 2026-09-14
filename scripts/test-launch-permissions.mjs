@@ -170,6 +170,61 @@ function assertTimingCard() {
   assert.match(buttonWithText('Change launch timing'), /^calendar:timing:/)
 }
 
+// Completing either readiness step must leave the other step on the same card.
+const feeButton = '✅ Use standard $1K launch + $500/day fees'
+for (const [first, user, sourceChat] of [['refnone', memberId, chatId], ['fees', dmId, dmId]]) {
+  const projectId = `readiness-${first}`
+  const project = () => db.collection('opsProjects').findOne({ _id: projectId })
+  await db.collection('opsProjects').insertOne({
+    ...payload, _id: projectId, status: 'scheduled', scheduleVersion: 7,
+    launchAt: '2026-09-01T18:00:00.000Z', referrerStatus: 'pending', feeConfigurationConfirmed: false,
+  })
+  assert.match(await callback(user, `lifecycle:ontime:${projectId}:7`, sourceChat), /before activation/)
+  assert.ok(buttonWithText(feeButton))
+  assert.ok(buttonWithText('Confirm no referrer'))
+  const firstButton = buttonWithText(first === 'refnone' ? 'Confirm no referrer' : feeButton)
+  assert.match(await callback(user, firstButton, sourceChat), /Still needed/)
+  assert.equal(messages.length, 1)
+  assert.equal(messages[0].messageId, 100, 'Readiness steps must update the existing card')
+  assert.equal((await project()).status, 'scheduled', 'One remaining step must prevent activation')
+  assert.equal((await project()).feeConfigurationConfirmed, first === 'fees')
+  assert.equal((await project()).referrerStatus, first === 'refnone' ? 'none' : 'pending')
+  assert.equal(lastButtons().length, 1, 'Only the remaining readiness action should be shown')
+  const remaining = buttonWithText(first === 'refnone' ? feeButton : 'Confirm no referrer')
+  assert.ok(remaining.endsWith(':7'), 'Continuation must carry the current schedule version')
+  assert.match(await callback(user, remaining, sourceChat), /is Active/)
+  assert.equal(messages[0].messageId, 100)
+  assert.equal((await project()).actualLaunchAt, '2026-09-01T18:00:00.000Z')
+  assert.equal(lastButtons().length, 0)
+  assert.match(await callback(user, remaining, sourceChat), /already active/)
+  assert.equal(rows.get('opsProjectLifecycleEvents').filter(row => row.projectId === projectId && row.action === 'activated').length, 1)
+}
+
+// A setup reminder without an activation request must offer explicit activation next.
+const readyProjectId = 'readiness-no-intent'
+await db.collection('opsProjects').insertOne({
+  ...payload, _id: readyProjectId, status: 'scheduled', scheduleVersion: 3,
+  launchAt: '2026-09-01T18:00:00.000Z', referrerStatus: 'pending',
+})
+assert.match(await callback(memberId, `lifecycle:refnone:${readyProjectId}:3`), /ready to activate/)
+assert.equal((await db.collection('opsProjects').findOne({ _id: readyProjectId })).status, 'scheduled')
+assert.ok(buttonWithText('✅ Launched on schedule'))
+const launchNow = buttonWithText('✅ Launched now')
+assert.match(await callback(memberId, launchNow), /is Active/)
+assert.equal(messages[0].messageId, 100)
+
+// Continuation buttons retain stale-schedule protection.
+const staleProjectId = 'readiness-stale'
+await db.collection('opsProjects').insertOne({
+  ...payload, _id: staleProjectId, status: 'scheduled', scheduleVersion: 1,
+  launchAt: '2026-09-01T18:00:00.000Z', referrerStatus: 'pending', feeConfigurationConfirmed: false,
+})
+await callback(memberId, `lifecycle:refnone:${staleProjectId}:1`)
+const staleFeeButton = buttonWithText(feeButton)
+await db.collection('opsProjects').updateOne({ _id: staleProjectId }, { $set: { scheduleVersion: 2 } })
+assert.match(await callback(memberId, staleFeeButton), /schedule was updated/)
+assert.equal((await db.collection('opsProjects').findOne({ _id: staleProjectId })).feeConfigurationConfirmed, false)
+
 // Calendar chain edits recover blank-chain launches and preserve unrelated settings.
 const chainProjectId = 'chain-launch'
 const chainProject = () => db.collection('opsProjects').findOne({ _id: chainProjectId })
@@ -392,4 +447,4 @@ assert.equal((await access.getTeamAccess(memberId)).member.launchDmAccess, true)
 assert.equal((await access.getTeamAccess(memberId)).member.accessRole, 'member')
 assert.equal(rows.get('opsPermissionAudit').at(-1).actor, 'test-admin')
 assert.equal((await adminRoute.POST({ json: async () => ({ action: 'update-member-launch-dm-access', id: 'member-2', enabled: 'true' }) })).status, 400)
-console.log('PASS: shared drafts, calendar chain/venue edits, Stonks, calendar/reminder timing edits, TBD, stale schedules, chat isolation, launch DMs, financial denials, revocation, and admin-only access changes.')
+console.log('PASS: shared drafts, readiness continuation in both orders, calendar chain/venue edits, Stonks, calendar/reminder timing edits, TBD, stale schedules, chat isolation, launch DMs, financial denials, revocation, and admin-only access changes.')
