@@ -859,7 +859,7 @@ function launchTargetPrompt(metric: LaunchTargetMetric, venueName: string) {
 async function sendLaunchCalculatorStart(token: string, chatId: number | string, telegramId: number, messageId?: number | null) {
   await clearState(telegramId)
   return editOrSendWorkflowMessage(token, chatId, messageId, "🚀 Launch capital calculator\n\nChoose the blockchain for this launch:", [
-    ...LAUNCH_CHAINS.map((chain) => [{ text: chain.name, callback_data: `launch:chain:${chain.id}` }]),
+    ...LAUNCH_CHAINS.filter((chain) => padsForChain(chain.id).length > 0).map((chain) => [{ text: chain.name, callback_data: `launch:chain:${chain.id}` }]),
     [{ text: "⬅️ Back", callback_data: "main:menu" }],
   ])
 }
@@ -1110,7 +1110,8 @@ function calendarLaunchLocation(project: any) {
       : chain === "bnb" ? "BNB Chain"
         : chain === "ethereum" ? "Ethereum"
           : chain === "base" ? "Base"
-            : "Chain TBD"
+            : chain === "arc" ? "Arc"
+              : "Chain TBD"
   const venue = (operationalLaunchVenue(project.launchVenue)?.name || String(project.launchVenueLabel || ""))
     ?.replace(/^Uniswap\s+/i, "Uni ")
     .replace(/\s*\(full range\)$/i, "")

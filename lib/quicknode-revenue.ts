@@ -8,6 +8,11 @@ const EVM_REVENUE_WALLET = String(process.env.REVENUE_EVM_WALLET || "").trim().t
 const SOLANA_REVENUE_WALLET = String(process.env.REVENUE_SOLANA_WALLET || "").trim()
 const SOLANA_TREASURY_WALLET = String(process.env.REVENUE_SOLANA_TREASURY_WALLET || "").trim()
 const ERC20_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+// Arc mainnet emits every native/USDC movement here at 18 decimals. The
+// six-decimal ERC-20 USDC event is a mirror, not another payment.
+// https://docs.arc.io/arc/references/usdc-system-events
+export const ARC_USDC_SYSTEM_EMITTER = "0xfffffffffffffffffffffffffffffffffffffffe"
+export const ARC_USDC_CONTRACT = "0x3600000000000000000000000000000000000000"
 
 export type RevenueTokenMetadata = { asset: string; decimals: number }
 export type RevenueTokenRegistry = Partial<Record<RevenueChain, Record<string, RevenueTokenMetadata>>>
@@ -72,6 +77,8 @@ export function cleanWebhookChain(value: unknown): RevenueChain | null {
     "bnb-smart-chain": "bnb",
     robinhood: "robinhood",
     "robinhood-mainnet": "robinhood",
+    arc: "arc",
+    "arc-mainnet": "arc",
     sol: "solana",
     solana: "solana",
     "solana-mainnet": "solana",
@@ -274,6 +281,14 @@ function normalizeEvmTemplatePayload(payload: any, chain: RevenueChain, walletRo
   let rejected = 0
 
   for (const transaction of asArray(payload?.matchingTransactions)) {
+    // Only the canonical system logs are accounting evidence on Arc. Using
+    // transaction.value as well would duplicate native sends and miss internal
+    // contract sends; failed transactions can also carry a nonzero value.
+    if (chain === "arc") {
+      const hash = String(transaction?.hash || transaction?.transactionHash || "").toLowerCase()
+      if (integer(transaction?.value) && !asArray(payload?.matchingReceipts).some((receipt) => String(receipt?.transactionHash || "").toLowerCase() === hash)) rejected += 1
+      continue
+    }
     const value = integer(transaction?.value)
     const match = evmDirection(wallet, transaction?.from, transaction?.to)
     const transactionHash = String(transaction?.hash || transaction?.transactionHash || "").trim()
@@ -299,29 +314,46 @@ function normalizeEvmTemplatePayload(payload: any, chain: RevenueChain, walletRo
   }
 
   for (const receipt of asArray(payload?.matchingReceipts)) {
-    if (integer(receipt?.status) === BigInt(0)) {
+    if (integer(receipt?.status) === BigInt(0) || (chain === "arc" && integer(receipt?.status) !== BigInt(1))) {
       rejected += 1
       continue
     }
     let sawTransfer = false
+    let sawArcMirror = false
+    let sawArcSystem = false
     const logs = asArray(receipt?.logs)
     for (let logPosition = 0; logPosition < logs.length; logPosition += 1) {
       const log = logs[logPosition]
       const topics = asArray(log?.topics)
       if (String(topics[0] || "").toLowerCase() !== ERC20_TRANSFER_TOPIC || topics.length !== 3) continue
+      if (log?.removed === true) continue
       sawTransfer = true
       const match = evmDirection(wallet, topicAddress(topics[1]), topicAddress(topics[2]))
       if (!match) continue
+      if (chain === "arc" && topicAddress(topics[1]) === topicAddress(topics[2])) continue
       const transactionHash = String(log?.transactionHash || receipt?.transactionHash || "").trim()
       const tokenAddress = normalizedAddress(log?.address, chain)
-      const metadata = tokenMetadata(chain, tokenAddress, projectRegistry)
+      if (chain === "arc" && tokenAddress === ARC_USDC_CONTRACT) {
+        sawArcMirror = true
+        continue
+      }
+      const isArcSystem = chain === "arc" && tokenAddress === ARC_USDC_SYSTEM_EMITTER
+      const metadata = isArcSystem ? { asset: "USDC", decimals: 18 } : tokenMetadata(chain, tokenAddress, projectRegistry)
       const rawAmount = integer(log?.data)
       const amount = rawAmount == null || !metadata ? null : scaledInteger(rawAmount, metadata.decimals)
-      const eventIndex = integerNumber(log?.logIndex) ?? logPosition
+      const logIndex = integerNumber(log?.logIndex)
+      // Arc uses this canonical log index for retry-safe receipt identity.
+      // Array positions are not stable if a provider sends a truncated payload.
+      if (chain === "arc" && (logIndex == null || logIndex < 0)) {
+        rejected += 1
+        continue
+      }
+      const eventIndex = logIndex ?? logPosition
       if (!wallet || !transactionHash || !tokenAddress || !metadata || rawAmount == null || rawAmount <= BigInt(0) || amount == null || amount <= 0) {
         rejected += 1
         continue
       }
+      if (isArcSystem) sawArcSystem = true
       receipts.push(receiptInput({
         chain,
         walletRole,
@@ -330,14 +362,17 @@ function normalizeEvmTemplatePayload(payload: any, chain: RevenueChain, walletRo
         transactionHash,
         eventIndex,
         blockNumber: log?.blockNumber ?? receipt?.blockNumber ?? null,
-        blockTime: timeValue(log),
+        blockTime: timeValue(log) || timeValue(receipt),
         asset: metadata.asset,
-        tokenAddress,
+        tokenAddress: isArcSystem ? null : tokenAddress,
         decimals: metadata.decimals,
         amount,
         raw: { receipt: { from: receipt?.from, to: receipt?.to, status: receipt?.status }, log },
       }))
     }
+    // A truncated provider payload must be audited, not credited using the
+    // mirror: a later complete delivery would otherwise credit it twice.
+    if (sawArcMirror && !sawArcSystem) rejected += 1
     if (!sawTransfer) rejected += 1
   }
 
@@ -529,6 +564,7 @@ export function normalizeQuickNodeRevenuePayload(payload: any, chainInput?: unkn
     const normalized = normalizeEvmTemplatePayload(payload, chain, walletRole, projectRegistry)
     return { chain, walletRole, ...normalized, receipts: classifyDeterministicInternalMovements(normalized.receipts) }
   }
+  if (chain === "arc") return { chain, walletRole, receipts: [] as ReceiptInput[], rejected: eventItems(payload).length }
   const items = eventItems(payload)
   const receipts = items.map((item, index) => itemReceipt(item, chain, walletRole, index, projectRegistry)).filter(Boolean) as ReceiptInput[]
   return { chain, walletRole, receipts: classifyDeterministicInternalMovements(receipts), rejected: items.length - receipts.length }

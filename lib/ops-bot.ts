@@ -700,7 +700,7 @@ function launchProjectName(text: string, projects: any[]) {
     /\b(?:schedule|set|move|reschedule)\s+(.{1,80}?)\s+(?:for\s+)?(?:a\s+)?launch\b/i,
     /^(?:please\s+)?(?:add|put|schedule|set)\s+(?:the\s+)?(?:project\s+)?(.{1,80}?)\s+(?:project\s+)?launch\b/i,
     /^(.{1,80}?)\s+(?:launch|launches|launching)\b/i,
-    /^(?:please\s+)?(?:(?:add|put|schedule|set)\s+)?(.{1,80}?)\s+(?:on\s+)?(?:pump\.?fun|pump\s+fun|flap|four\.?meme|four\s+meme|aerodrome|pons(?:\s+v2)?|uniswap|meteora|raydium|robinhood(?:\s+chain)?|solana|ethereum|base|bnb|bsc|binance\s+smart\s+chain)\b/i,
+    /^(?:please\s+)?(?:(?:add|put|schedule|set)\s+)?(.{1,80}?)\s+(?:on\s+)?(?:pump\.?fun|pump\s+fun|flap|four\.?meme|four\s+meme|aerodrome|pons(?:\s+v2)?|uniswap|uni\s*v3|argus|meteora|raydium|robinhood(?:\s+chain)?|arc(?:\s+chain)?|solana|ethereum|base|bnb|bsc|binance\s+smart\s+chain)\b/i,
     /\blaunch(?:\s+(?:for|of))?\s+(.{1,80}?)(?=\s+(?:today|tomorrow|tonight|next|on|at)\b|$)/i,
   ]
   for (const pattern of patterns) {

@@ -4,11 +4,13 @@ export type OperationalLaunchVenue = {
   id: string
   chainId: LaunchChainId
   name: string
-  symbol: "SOL" | "ETH" | "BNB"
+  symbol: "SOL" | "ETH" | "BNB" | "USDC"
   calculatorSupported: boolean
 }
 
 const EXTRA_OPERATIONAL_VENUES: OperationalLaunchVenue[] = [
+  { id: "uni-arc-v3", chainId: "arc", name: "Uniswap V3", symbol: "USDC", calculatorSupported: false },
+  { id: "argus", chainId: "arc", name: "Argus", symbol: "USDC", calculatorSupported: false },
   {
     id: "stonks",
     chainId: "sol",

@@ -19,8 +19,9 @@ const tentativeProjectName = `Tentative${suffix}`
 const renamedTentativeProjectName = `Renamed${suffix}`
 const customQuoteProjectName = `CustomQuote${suffix}`
 const wizardProjectName = `WizardLaunch${suffix}`
+const arcProjectName = `ArcLaunch${suffix}`
 const parsedProjectName = `Pathelous${suffix}`
-const testProjectNames = new Set([projectName, tentativeProjectName, renamedTentativeProjectName, customQuoteProjectName, wizardProjectName])
+const testProjectNames = new Set([projectName, tentativeProjectName, renamedTentativeProjectName, customQuoteProjectName, wizardProjectName, arcProjectName])
 const aaplAddress = "0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9"
 const launchChatId = String(-Math.abs(config.chatId))
 const launchProfileId = `codex-launch-profile-${telegramId}`
@@ -54,6 +55,7 @@ function supabaseCredentials() {
   const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY
   if (!url || !key) throw new Error("Supabase service credentials are required for the launch workflow test.")
+  if (new URL(url).hostname !== "ozkaxwdrbvsimmrrjaox.supabase.co") throw new Error("Launch workflow tests may only use the isolated test database.")
   return { url, key, headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json" } }
 }
 
@@ -363,6 +365,21 @@ try {
   if (customProject.launchVenue !== "pons" || customProject.chain !== "robinhood" || customProject.quoteToken !== "AAPL" || customProject.quoteTokenAddress !== aaplAddress || customProject.quoteTokenDecimals !== 18) {
     throw new Error(`Custom-quote fields were not stored correctly: ${JSON.stringify(customProject)}`)
   }
+
+  const arcDraft = await sendBotLabUpdate(config, { text: `/schedulelaunch ${arcProjectName} on Arc univ3 launch tomorrow at 4:10 PM ET - sumo` })
+  if (!responseText(arcDraft).includes(`Project name: <b>${arcProjectName}</b>`)) throw new Error(`Arc launch name was not parsed cleanly: ${responseText(arcDraft)}`)
+  if (!responseText(arcDraft).includes("Quote token: <b>USDC</b>") || !responseText(arcDraft).includes("Uniswap V3")) throw new Error(`Arc launch setup did not select USDC and Uniswap V3: ${responseText(arcDraft)}`)
+  const arcNoRef = await sendBotLabUpdate(config, { callbackData: callbackStartingWith(arcDraft, "launchsetup:noref:"), messageId: arcDraft.messages?.[0]?.messageId })
+  const arcCreate = callbackStartingWith(arcNoRef, "launchsetup:create:")
+  if (!arcCreate) throw new Error(`Arc launch review not ready: ${responseText(arcNoRef)}`)
+  await sendBotLabUpdate(config, { callbackData: arcCreate, messageId: arcNoRef.messages?.[0]?.messageId })
+  const arcProject = await lookupTestProject(arcProjectName)
+  if (!arcProject || arcProject.chain !== "arc" || arcProject.quoteToken !== "USDC" || arcProject.launchVenue !== "uni-arc-v3") throw new Error("Arc calendar project was not saved with the correct chain, quote and venue.")
+  const arcVenueDraft = await sendBotLabUpdate(config, { text: `/schedulelaunch ArgusDraft${suffix} on Argus launch tomorrow at 5 PM ET - sumo` })
+  if (!responseText(arcVenueDraft).includes("Chain: <b>Arc</b>") || !responseText(arcVenueDraft).includes("Argus")) throw new Error(`Argus launch setup did not infer Arc: ${responseText(arcVenueDraft)}`)
+  const arcCancel = callbackStartingWith(arcVenueDraft, "launchsetup:cancel:")
+  if (arcCancel) await sendBotLabUpdate(config, { callbackData: arcCancel, messageId: arcVenueDraft.messages?.[0]?.messageId })
+  console.log("PASS: Arc/USDC launch creation and Argus venue selection.")
 
   console.log(text)
   console.log(tentativeCreatedText)

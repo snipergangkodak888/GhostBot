@@ -14,6 +14,7 @@ const CHAIN_BY_LAUNCH_CHAIN = {
   bsc: "bnb",
   base: "base",
   rh: "robinhood",
+  arc: "arc",
 } as const
 
 function validDate(value: unknown) {
@@ -77,6 +78,7 @@ export function cleanLaunchProjectName(value: unknown) {
 
 export function cleanLaunchProjectNameFromRequest(value: unknown, request: unknown) {
   let cleaned = cleanLaunchProjectName(value)
+  const original = cleaned
   const config = inferLaunchConfiguration(request)
   if (!config.launchVenue || !cleaned) return cleaned
   const venue = OPERATIONAL_LAUNCH_VENUES.find((pad) => pad.id === config.launchVenue)
@@ -86,6 +88,7 @@ export function cleanLaunchProjectNameFromRequest(value: unknown, request: unkno
     venue?.id === "pumpfun" ? "pump fun" : "",
     venue?.id === "fourmeme" ? "four meme" : "",
     venue?.id === "aero" ? "aerodrome" : "",
+    ...(venue?.id.includes("-v3") ? ["univ3", "uni v3"] : []),
     config.chain,
     config.chain === "solana" ? "solana" : "",
     config.chain === "bnb" ? "bsc" : "",
@@ -98,7 +101,7 @@ export function cleanLaunchProjectNameFromRequest(value: unknown, request: unkno
     if (!next || next === cleaned) break
     cleaned = next
   }
-  return cleanLaunchProjectName(cleaned)
+  return cleanLaunchProjectName(cleaned !== original ? cleaned.replace(/\s+on$/i, "") : cleaned)
 }
 
 export function inferLaunchConfiguration(text: unknown) {
@@ -108,10 +111,13 @@ export function inferLaunchConfiguration(text: unknown) {
     : /\b(?:bnb|bsc|binance smart chain|bnb chain)\b/i.test(raw) ? "bnb"
       : /\bbase\b/i.test(raw) ? "base"
         : /\brobinhood(?: chain)?\b/i.test(raw) ? "robinhood"
-          : /\b(?:ethereum|mainnet)\b/i.test(raw) ? "ethereum"
-            : ""
+          : /\barc(?: chain| mainnet)?\b/i.test(raw) ? "arc"
+            : /\b(?:ethereum|mainnet)\b/i.test(raw) ? "ethereum"
+              : ""
   const venue = OPERATIONAL_LAUNCH_VENUES.find((pad) => {
+    if (explicitChain && CHAIN_BY_LAUNCH_CHAIN[pad.chainId] !== explicitChain) return false
     const aliases = [pad.id, pad.name]
+    if (pad.id.includes("-v3")) aliases.push("univ3", "uni v3", "uniswap v3")
     if (pad.id === "pumpfun") aliases.push("pump fun")
     if (pad.id === "aero") aliases.push("aerodrome")
     if (pad.id === "fourmeme") aliases.push("four meme")

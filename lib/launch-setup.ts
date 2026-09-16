@@ -17,6 +17,7 @@ const REVENUE_CHAIN_BY_LAUNCH_CHAIN: Record<LaunchChainId, RevenueChain> = {
   bsc: "bnb",
   base: "base",
   rh: "robinhood",
+  arc: "arc",
 }
 
 function escapeHtml(value: unknown) {
@@ -176,6 +177,7 @@ export function launchQuoteTokensForChain(chain: unknown) {
   const chainId = launchChainIdForProject(chain)
   if (chainId === "sol") return ["SOL", "USDC", "USDT"] as const
   if (chainId === "bsc") return ["BNB", "USDC", "USDT"] as const
+  if (chainId === "arc") return ["USDC"] as const
   if (["eth", "base", "rh"].includes(String(chainId || ""))) return ["ETH", "USDC", "USDT"] as const
   return LAUNCH_QUOTE_TOKENS
 }

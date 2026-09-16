@@ -36,10 +36,27 @@ Create one signed wallet webhook/stream per network. Point each delivery at the 
 - `/api/webhooks/quicknode/revenue?chain=bnb`
 - `/api/webhooks/quicknode/revenue?chain=robinhood`
 - `/api/webhooks/quicknode/revenue?chain=solana`
+- `/api/webhooks/quicknode/revenue?chain=arc` (`arc-mainnet`, chain ID 5042)
 
 Filter EVM activity to `REVENUE_EVM_WALLET` and Solana activity to `REVENUE_SOLANA_WALLET`. Configure the same HMAC secret in QuickNode and `QUICKNODE_WEBHOOK_SECRET`. Production rejects unsigned or stale deliveries.
 
 The normalizer accepts a single event or an array under `data`, `result`, or `events`. Each transfer should contain transaction hash/signature, from, to, amount (or raw amount plus decimals), asset symbol, block time, and event/log/instruction index. Unknown payload shapes are retained in the webhook delivery audit and are not counted as revenue.
+
+### Arc mainnet
+
+Arc uses the same EVM revenue wallet, QuickNode `evmWalletFilter` template, and signed delivery secret. Native USDC has **18 decimals**, while its ERC-20 interface has **6 decimals**. They represent one balance, not two assets.
+
+After deployment, `node scripts/setup-arc-webhook.mjs` checks for an existing listener; add `--apply` to create one only when absent. Supply `QUICKNODE_API_KEY`, `QUICKNODE_WEBHOOK_SECRET`, `REVENUE_EVM_WALLET`, and `REVENUE_WEBHOOK_BASE_URL` through the environment. The script refuses to overwrite a conflicting listener and checks that the deployed endpoint advertises Arc support. It never prints secrets. Do not commit these variables or store the management key in the runtime app.
+
+For Arc, only complete `matchingReceipts` from the wallet template are supported. Successful receipt logs from the EIP-7708 system emitter `0xfffffffffffffffffffffffffffffffffffffffe` are the canonical USDC movements. They cover both native sends and ERC-20 sends (including internal contract transfers). The mirrored `Transfer` from `0x3600000000000000000000000000000000000000` and transaction `value` are not credited again. Failed, removed, incomplete, and unknown-shaped deliveries cannot create revenue; rejected payloads remain in the existing delivery audit. Gas is not a transfer event and does not become incoming revenue.
+
+USDC is valued at the existing accounting convention of $1 per unit. Classification, split-receipt matching, dust suppression, internal consolidation review, reconciliation, and payroll import use the existing workflow. This does not automatically classify privacy bridges or execute payments. History before listener activation is not automatically backfilled.
+
+Arc launch scheduling supports **Uniswap V3** (`uni-arc-v3`) and **Argus** (`argus`), with USDC as the default quote. These are calendar/setup venues, not capital-calculator models. Natural-language requests support `Arc univ3`, `Arc Uniswap V3`, and `Argus`; explicit chain selection prevents selecting another chain's Uniswap venue. No database migration is needed for the document-backed project records.
+
+Validation: `npm run arc:test` exercises deterministic normalization and launch setup; `npm run arc:test -- --live` additionally reads current Arc mainnet logs and checks actual system-event receipts without moving funds or saving revenue. `npm run bot:test:launch` exercises scheduling in the isolated test database only.
+
+References: [Arc USDC system events](https://docs.arc.io/arc/references/usdc-system-events), [Arc contract addresses](https://docs.arc.io/arc/references/contract-addresses), [Arc RPC endpoints](https://docs.arc.io/arc/references/rpc-endpoints).
 
 The QuickNode management API key is needed only to create/manage streams or webhooks. It is not used by the running app and must not be committed. Rotate any key that has been pasted into chat before production setup.
 

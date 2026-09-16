@@ -1,4 +1,4 @@
-export const REVENUE_CHAINS = ["ethereum", "base", "bnb", "robinhood", "solana"] as const
+export const REVENUE_CHAINS = ["ethereum", "base", "bnb", "robinhood", "solana", "arc"] as const
 
 export type RevenueChain = (typeof REVENUE_CHAINS)[number]
 

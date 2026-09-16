@@ -19,6 +19,8 @@ const memberId = `codex-fee-member-${telegramId}`
 const membershipId = `codex-fee-membership-${telegramId}`
 const profileId = `codex-fee-profile-${telegramId}`
 const projectId = `codex-fee-project-${telegramId}`
+const arcProjectId = `codex-fee-arc-project-${telegramId}`
+const arcReceiptId = `codex-fee-arc-receipt-${telegramId}`
 const feeId = `codex-fee-event-${telegramId}`
 const receiptIds = [`codex-fee-receipt-a-${telegramId}`, `codex-fee-receipt-b-${telegramId}`]
 let server
@@ -54,7 +56,8 @@ async function cleanup() {
   const headers = { apikey: key, Authorization: `Bearer ${key}` }
   const rows = await documents(["revenueFeeEvents", "revenueReceipts", "opsProjects", "opsChatProfiles", "opsHostedGroups", "guardMembers", "guardChatMembers", "opsBotLogs", "opsBotStates"])
   const ids = rows.filter((row) => {
-    if ([memberId, membershipId, profileId, projectId, feeId, ...receiptIds].includes(row.id)) return true
+    if ([memberId, membershipId, profileId, projectId, arcProjectId, arcReceiptId, feeId, ...receiptIds].includes(row.id)) return true
+    if (row.data?.projectId === arcProjectId) return true
     if (String(row.data?.telegram?.chatId || "") === telegramChatId) return true
     if (row.collection === "opsHostedGroups" && row.data?.chatId === telegramChatId) return true
     return Number(row.data?.telegramId) === telegramId || String(row.data?.telegramChatId || "") === telegramChatId
@@ -199,7 +202,24 @@ try {
   assert.equal(finalRows.find((row) => row.id === forwardedId)?.data.matchedReceiptIds.length, 2)
   assert.ok(finalRows.filter((row) => receiptIds.includes(row.id)).every((row) => row.data.status === "allocated" && row.data.allocations.length === 1))
 
-  console.log("PASS: Fee Inbox card editing, honest project-search errors, multi-asset project selection, repeated forwards, and two-receipt batch acceptance. All Telegram calls were captured, not sent.")
+  const now = new Date().toISOString()
+  await upsertDocument("opsProjects", arcProjectId, { name: "Arc Fee Flow", status: "active", chain: "arc", quoteToken: "USDC", acceptedRevenueAssets: ["USDC"], createdAt: now, updatedAt: now })
+  await upsertDocument("revenueReceipts", arcReceiptId, { date: "2026-09-16", chain: "arc", walletRole: "revenue", direction: "incoming", asset: "USDC", decimals: 18, tokenAddress: null, amount: 425.1, amountUsd: 425.1, status: "unclassified", allocations: [], transactionHash: "0xarc-lab", eventKey: arcReceiptId, createdAt: now, updatedAt: now })
+  const arcPicker = await sendBotLabUpdate(config, { callbackData: `receipt:type:${arcReceiptId}:dev_allocation`, messageId: 850 })
+  assert.match(buttonText(arcPicker), /Arc Fee Flow/)
+  assert.match(responseText(arcPicker), /USDC.*Arc/)
+  const arcReview = await sendBotLabUpdate(config, { callbackData: `receipt:project:${arcProjectId}`, messageId: 850 })
+  assert.match(responseText(arcReview), /Confirm revenue classification/)
+  const arcConfirmed = await sendBotLabUpdate(config, { callbackData: `receipt:confirm:${arcReceiptId}`, messageId: 850 })
+  assert.doesNotMatch(responseText(arcConfirmed), /not supported|not available|failed|error/i)
+  const arcRows = await documents(["revenueFeeEvents", "revenueReceipts"])
+  assert.equal(arcRows.find((row) => row.id === arcReceiptId)?.data.status, "allocated")
+  const arcFee = arcRows.find((row) => row.collection === "revenueFeeEvents" && row.data?.projectId === arcProjectId)?.data
+  assert.equal(arcFee?.status, "confirmed")
+  assert.equal(arcFee?.feeType, "dev_allocation")
+  assert.equal(arcFee?.recognizedUsd, 425.1)
+
+  console.log("PASS: Fee Inbox card editing, honest project-search errors, multi-asset project selection, repeated forwards, two-receipt batch acceptance, and Arc receipt-first classification. All Telegram calls were captured, not sent.")
 } finally {
   await cleanup().catch((error) => console.error(`Cleanup warning: ${error instanceof Error ? error.message : String(error)}`))
   stopBotLabServer(server)

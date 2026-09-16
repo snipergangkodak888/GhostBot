@@ -9,6 +9,7 @@ import { reconcileConsolidationReceipt } from "@/lib/revenue-consolidation"
 import { markConsolidationCandidateNotified, recordPotentialConsolidation, releaseConsolidationCandidateNotificationClaim } from "@/lib/revenue-consolidation-candidates"
 import { valueRevenueReceipt } from "@/lib/revenue-pricing"
 import { isRevenueReceiptDust, revenueNotificationMinimumUsd } from "@/lib/revenue-dust"
+import { REVENUE_CHAINS } from "@/lib/revenue-types"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -132,5 +133,5 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET() {
-  return NextResponse.json({ ok: true, service: "quicknode-revenue-webhook" })
+  return NextResponse.json({ ok: true, service: "quicknode-revenue-webhook", supportedChains: REVENUE_CHAINS })
 }

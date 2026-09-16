@@ -25,6 +25,7 @@
     "bot:test:lifecycle": "node ./scripts/test-natural-time-parser.mjs && node ./scripts/test-reminder-parser.mjs && node ./scripts/test-project-lifecycle.mjs && node ./scripts/test-launch-lifecycle-cron.mjs",
     "bot:test:daily-subscriptions": "node ./scripts/test-daily-update-subscriptions.mjs",
     "revenue:test": "node ./scripts/test-revenue-automation.mjs",
+    "arc:test": "node ./scripts/test-arc-integration.mjs",
     "dev:cron": "node ./scripts/dev-cron.mjs",
     "db:init": "node ./scripts/init-db.mjs",
     "seed:july-payroll": "node ./scripts/seed-july-payroll.mjs",

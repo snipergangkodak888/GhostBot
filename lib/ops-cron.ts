@@ -325,7 +325,8 @@ export async function processTentativeLaunchTimingFollowups(token: string, now: 
           : chain === "bnb" ? "BNB Chain"
             : chain === "ethereum" ? "Ethereum"
               : chain === "base" ? "Base"
-                : "Chain TBD"
+                : chain === "arc" ? "Arc"
+                  : "Chain TBD"
       const venue = (operationalLaunchVenue(project.launchVenue)?.name || String(project.launchVenueLabel || ""))
         ?.replace(/^Uniswap\s+/i, "Uni ")
         .replace(/\s*\(full range\)$/i, "")

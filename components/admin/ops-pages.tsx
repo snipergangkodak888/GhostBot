@@ -595,12 +595,12 @@ export function AdminProjectsPage() {
               <p className="mt-1 text-xs text-white/45">The bot only matches receipts to this existing project. It never creates projects from forwarded messages.</p>
             </div>
             <div className="grid gap-3 md:grid-cols-2">
-              <Field label="Revenue chain"><Select value={form.chain} onChange={(e) => setForm({ ...form, chain: e.target.value })}><option value="">Not configured</option><option value="ethereum">Ethereum Mainnet</option><option value="base">Base</option><option value="bnb">BNB Smart Chain</option><option value="robinhood">Robinhood Chain</option><option value="solana">Solana</option></Select></Field>
-              <Field label="Project quote token"><Input value={form.quoteToken} onChange={(e) => setForm({ ...form, quoteToken: e.target.value.toUpperCase() })} placeholder={form.chain === "solana" ? "SOL" : "ETH"} /></Field>
+              <Field label="Revenue chain"><Select value={form.chain} onChange={(e) => setForm({ ...form, chain: e.target.value })}><option value="">Not configured</option><option value="ethereum">Ethereum Mainnet</option><option value="base">Base</option><option value="bnb">BNB Smart Chain</option><option value="robinhood">Robinhood Chain</option><option value="solana">Solana</option><option value="arc">Arc</option></Select></Field>
+              <Field label="Project quote token"><Input value={form.quoteToken} onChange={(e) => setForm({ ...form, quoteToken: e.target.value.toUpperCase() })} placeholder={form.chain === "solana" ? "SOL" : form.chain === "arc" ? "USDC" : "ETH"} /></Field>
               <Field label="Custom quote token CA"><Input value={form.quoteTokenAddress} onChange={(e) => setForm({ ...form, quoteTokenAddress: e.target.value.trim() })} placeholder={form.chain === "solana" ? "Mint address (optional)" : "0x… (optional)"} /></Field>
             </div>
             <div className="mt-3">
-              <Field label="Accepted revenue assets"><Input value={form.acceptedRevenueAssets} onChange={(e) => setForm({ ...form, acceptedRevenueAssets: e.target.value.toUpperCase() })} placeholder={form.chain === "solana" ? "SOL, USDC" : form.chain === "bnb" ? "BNB, USDC" : "ETH, USDC"} /></Field>
+              <Field label="Accepted revenue assets"><Input value={form.acceptedRevenueAssets} onChange={(e) => setForm({ ...form, acceptedRevenueAssets: e.target.value.toUpperCase() })} placeholder={form.chain === "arc" ? "USDC" : form.chain === "solana" ? "SOL, USDC" : form.chain === "bnb" ? "BNB, USDC" : "ETH, USDC"} /></Field>
               <p className="mt-1 text-xs text-white/45">Comma-separated assets this project can cash out on its chain. This does not change its trading pair. Leave blank to use the quote token.</p>
             </div>
             <div className="mt-3 grid gap-3 md:grid-cols-3">

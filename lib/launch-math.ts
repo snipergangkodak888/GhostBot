@@ -3,7 +3,7 @@
  * curve-lab-math.js modules. Amounts use whole quote assets and whole tokens.
  */
 
-export type LaunchChainId = "sol" | "eth" | "bsc" | "base" | "rh"
+export type LaunchChainId = "sol" | "eth" | "bsc" | "base" | "rh" | "arc"
 export type LaunchPadType = "curve" | "amm"
 
 export type LaunchPad = {
@@ -28,6 +28,7 @@ export const LAUNCH_CHAINS: Array<{ id: LaunchChainId; name: string }> = [
   { id: "eth", name: "Ethereum" },
   { id: "base", name: "Base" },
   { id: "rh", name: "Robinhood Chain" },
+  { id: "arc", name: "Arc" },
 ]
 
 // These reserve values are carried over from the supplied simulator.

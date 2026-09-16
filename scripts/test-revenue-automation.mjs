@@ -14,7 +14,7 @@ function loadTypeScriptModule(path, overrides = {}) {
   const localRequire = (id) => {
     if (Object.hasOwn(overrides, id)) return overrides[id]
     if (id === "@/lib/revenue-types") return {
-      REVENUE_CHAINS: ["ethereum", "base", "bnb", "robinhood", "solana"],
+      REVENUE_CHAINS: ["ethereum", "base", "bnb", "robinhood", "solana", "arc"],
       REVENUE_WALLET_ROLES: ["revenue", "treasury"],
       isGlobalRevenueFeeType: (value) => ["fee_rebate", "sumo_ref_claim"].includes(String(value || "")),
     }

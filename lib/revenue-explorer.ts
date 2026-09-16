@@ -5,6 +5,7 @@ const EXPLORER_TX_BASE: Record<RevenueChain, string> = {
   base: "https://basescan.org/tx/",
   bnb: "https://bscscan.com/tx/",
   robinhood: "https://robinhoodchain.blockscout.com/tx/",
+  arc: "https://explorer.arc.io/tx/",
   solana: "https://solscan.io/tx/",
 }
 
