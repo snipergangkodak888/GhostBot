@@ -157,11 +157,38 @@ function rowToDoc(row: StoredRow) {
   return { ...clone(row.data), _id: row.id }
 }
 
-async function fetchRows(collection: string): Promise<StoredRow[]> {
+const PAGED_REVENUE_COLLECTIONS = new Set(["revenueReceipts", "revenueFeeEvents", "quicknodeWebhookDeliveries"])
+const REVENUE_SCALAR_LOOKUPS = new Set(["eventKey", "nonce", "walletRole", "chain", "asset", "date", "status", "sourceKey", "projectId", "feeType", "consolidationBatchId"])
+
+async function fetchRows(collection: string, filter: Filter = {}): Promise<StoredRow[]> {
   if (!supabaseConfig.url || (!supabaseConfig.hasServiceRoleKey && !supabaseConfig.hasAnonKey)) {
     return []
   }
 
+  if (PAGED_REVENUE_COLLECTIONS.has(collection)) {
+    // Apply known scalar predicates before Supabase's response cap. These
+    // collections outgrow one page; client-side filtering alone loses recent
+    // receipts and breaks retry checks. Other collections keep their behavior.
+    const pageSize = 500
+    const params = new URLSearchParams({ collection: `eq.${collection}`, select: "collection,id,data,created_at,updated_at", order: "id.asc", limit: String(pageSize) })
+    for (const [field, value] of Object.entries(filter)) {
+      if (field === "_id" && (typeof value === "string" || value instanceof ObjectId)) params.set("id", `eq.${normalizeId(value)}`)
+      else if (REVENUE_SCALAR_LOOKUPS.has(field) && ["string", "number", "boolean"].includes(typeof value)) params.set(`data->>${field}`, `eq.${String(value)}`)
+    }
+    const rows: StoredRow[] = []
+    let after = ""
+    for (;;) {
+      const pageParams = new URLSearchParams(params)
+      if (after) pageParams.append("id", `gt.${after}`)
+      const page = await supabaseRest<StoredRow[]>(`${DOCUMENTS_TABLE}?${pageParams}`)
+      rows.push(...page)
+      if (page.length < pageSize) break
+      const next = page[page.length - 1].id
+      if (!next || next <= after) throw new Error("Revenue pagination did not advance")
+      after = next
+    }
+    return rows
+  }
   return supabaseRest<StoredRow[]>(
     `${DOCUMENTS_TABLE}?collection=eq.${encodeURIComponent(collection)}&select=collection,id,data,created_at,updated_at`
   )
@@ -247,7 +274,7 @@ class SupabaseCollection {
   constructor(private readonly name: string) {}
 
   private async docs(filter: Filter = {}) {
-    const rows = await fetchRows(this.name)
+    const rows = await fetchRows(this.name, filter)
     return rows.map(rowToDoc).filter((doc) => matchesFilter(doc, filter))
   }
 

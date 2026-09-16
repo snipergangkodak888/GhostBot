@@ -28,7 +28,16 @@ const expected = { name: "GhostBot Revenue - Arc", network: "arc-mainnet", desti
 if (existing) {
   const details = await request(`/${encodeURIComponent(existing.id)}`)
   const hook = details.data || details
-  const wallets = hook.templateArgs?.wallets || []
+  let wallets = hook.templateArgs?.wallets || []
+  // QuickNode converts inline wallet arrays into managed KV lists on creation.
+  // https://www.quicknode.com/docs/key-value-store/rest-api/getting-started
+  if (hook.templateArgs?.walletsListName) {
+    const response = await fetch(`https://api.quicknode.com/kv/rest/v1/lists/${encodeURIComponent(hook.templateArgs.walletsListName)}`, { headers: { "x-api-key": key }, signal: AbortSignal.timeout(15000) })
+    if (!response.ok) throw new Error(`QuickNode wallet-list verification returned HTTP ${response.status}; no changes made.`)
+    const list = await response.json()
+    if (list.cursor || !Array.isArray(list.data?.items)) throw new Error("Unexpected/multi-page wallet list; no changes made.")
+    wallets = list.data.items
+  }
   if (hook.templateId !== "evmWalletFilter" || wallets.length !== 1 || String(wallets[0]).toLowerCase() !== wallet || hook.destination_attributes?.url !== destination.href) throw new Error("Existing Arc webhook configuration differs; it was not modified.")
   if (hook.destination_attributes?.security_token && hook.destination_attributes.security_token !== secret) throw new Error("Existing Arc webhook has a different signing secret; it was not modified.")
   console.log(JSON.stringify({ id: hook.id, network: hook.network, status: hook.status, result: "already-configured" }))

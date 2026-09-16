@@ -602,6 +602,7 @@ export async function saveRevenueReceipt(input: Omit<RevenueReceipt, "_id" | "cr
   const now = iso()
   const receipt = {
     ...input,
+    _id: createHash("sha256").update(`receipt:${input.eventKey}`).digest("hex").slice(0, 24),
     asset: String(input.asset || "").toUpperCase(),
     wallet: String(input.wallet || ""),
     transactionHash: String(input.transactionHash || ""),
@@ -612,7 +613,12 @@ export async function saveRevenueReceipt(input: Omit<RevenueReceipt, "_id" | "cr
     createdAt: now,
     updatedAt: now,
   }
-  const result = await db.collection(RECEIPTS).insertOne(receipt)
+  const result = await db.collection(RECEIPTS).insertOneIfAbsent(receipt)
+  if (!result.inserted) {
+    const prior = await db.collection(RECEIPTS).findOne({ _id: result.insertedId })
+    if (!prior) throw new Error("Existing receipt could not be loaded after duplicate delivery")
+    return { receipt: prior as RevenueReceipt, duplicate: true }
+  }
   const saved = { ...receipt, _id: String(result.insertedId) } as RevenueReceipt
 
   const waiting = await db.collection(FEES).find({ status: "awaiting_receipt", chain: saved.chain, quoteAsset: saved.asset }).toArray()

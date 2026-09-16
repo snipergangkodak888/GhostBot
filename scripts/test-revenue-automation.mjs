@@ -617,6 +617,16 @@ const batchService = loadTypeScriptModule("lib/revenue-service.ts", {
   "@/lib/revenue-payroll": revenuePayroll, "@/lib/revenue-allocations": allocations,
 })
 const forwardParams = { chatId: -123, messageId: 5282, text: cashoutText, messageDate: new Date("2026-09-12T15:51:31Z"), originIdentity: "hidden:Bands" }
+const incomingArc = { eventKey: "arc-concurrent-delivery", chain: "arc", asset: "USDC", amount: 500, amountUsd: 500, walletRole: "revenue", direction: "incoming", status: "unclassified", allocations: [], transactionHash: "0xarc", wallet: evmWallet }
+const concurrentReceipts = await Promise.all([batchService.saveRevenueReceipt(incomingArc), batchService.saveRevenueReceipt(incomingArc)])
+assert.equal(concurrentReceipts.filter((entry) => !entry.duplicate).length, 1)
+assert.equal(concurrentReceipts[0].receipt._id, concurrentReceipts[1].receipt._id)
+await batchDb.collection("revenueReceipts").updateOne({ _id: concurrentReceipts[0].receipt._id }, { $set: { status: "allocated", allocations: [{ feeEventId: "arc-existing", amount: 500 }] } })
+const allocatedRetry = await batchService.saveRevenueReceipt(incomingArc)
+assert.equal(allocatedRetry.duplicate, true)
+assert.equal(allocatedRetry.receipt.status, "allocated")
+assert.equal(allocatedRetry.receipt.allocations.length, 1)
+await batchDb.collection("revenueReceipts").deleteOne({ _id: concurrentReceipts[0].receipt._id })
 const [firstForward, repeatedForward] = await Promise.all([
   batchService.createForwardedFeeEvent(forwardParams),
   batchService.createForwardedFeeEvent({ ...forwardParams, messageId: 5288 }),
