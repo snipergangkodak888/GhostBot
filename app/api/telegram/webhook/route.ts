@@ -1151,11 +1151,6 @@ function launchReadinessButtons(project: any): InlineButton[][] {
   const version = Number(project.scheduleVersion || 0)
   const readiness = projectActivationReadiness(project)
   const buttons: InlineButton[][] = []
-  if (readiness.ready) {
-    if (projectLaunchAt(project)) buttons.push([{ text: "✅ Launched on schedule", callback_data: `lifecycle:ontime:${id}:${version}` }])
-    buttons.push([{ text: "✅ Launched now", callback_data: `lifecycle:now:${id}:${version}` }])
-    return buttons
-  }
   if (readiness.missing.includes("fee configuration") && readiness.chain && readiness.quoteToken) {
     buttons.push([{ text: "✅ Use standard $1K launch + $500/day fees", callback_data: `lifecycle:fees:${id}:${version}` }])
   }
@@ -2768,7 +2763,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       if (result.alreadyActive) return editOrSendWorkflowMessage(token, chatId, messageId, `✅ ${(result.project as any).name} is already active.`)
       if (result.activated) return editOrSendWorkflowMessage(token, chatId, messageId, `✅ ${(result.project as any).name} is Active\nDaily trading fees begin ${result.dailyFeeStartDate}.`)
       const readiness = result.readiness
-      return editOrSendWorkflowMessage(token, chatId, messageId, readiness.ready ? "✅ Fee setup confirmed. This launch is ready to activate." : `Fee setup confirmed. Still needed: ${readiness.missing.join(", ")}.`, launchReadinessButtons(result.project))
+      return editOrSendWorkflowMessage(token, chatId, messageId, readiness.ready ? "✅ Fee setup confirmed. Launch setup is complete." : `Fee setup confirmed. Still needed: ${readiness.missing.join(", ")}.`, launchReadinessButtons(result.project))
     }
     if (action === "refnone") {
       const result = await confirmNoProjectReferrer(id, telegramId, scheduleVersion)
@@ -2776,7 +2771,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       if (result.alreadyActive) return editOrSendWorkflowMessage(token, chatId, messageId, `✅ ${(result.project as any).name} is already active.`)
       if (result.activated) return editOrSendWorkflowMessage(token, chatId, messageId, `✅ ${(result.project as any).name} is Active\nDaily trading fees begin ${result.dailyFeeStartDate}.`)
       const readiness = result.readiness
-      return editOrSendWorkflowMessage(token, chatId, messageId, readiness.ready ? "✅ No referrer confirmed. This launch is ready to activate." : `No referrer confirmed. Still needed: ${readiness.missing.join(", ")}.`, launchReadinessButtons(result.project))
+      return editOrSendWorkflowMessage(token, chatId, messageId, readiness.ready ? "✅ No referrer confirmed. Launch setup is complete." : `No referrer confirmed. Still needed: ${readiness.missing.join(", ")}.`, launchReadinessButtons(result.project))
     }
   }
 

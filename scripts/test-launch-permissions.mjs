@@ -200,18 +200,36 @@ for (const [first, user, sourceChat] of [['refnone', memberId, chatId], ['fees',
   assert.equal(rows.get('opsProjectLifecycleEvents').filter(row => row.projectId === projectId && row.action === 'activated').length, 1)
 }
 
-// A setup reminder without an activation request must offer explicit activation next.
-const readyProjectId = 'readiness-no-intent'
-await db.collection('opsProjects').insertOne({
-  ...payload, _id: readyProjectId, status: 'scheduled', scheduleVersion: 3,
-  launchAt: '2026-09-01T18:00:00.000Z', referrerStatus: 'pending',
-})
-assert.match(await callback(memberId, `lifecycle:refnone:${readyProjectId}:3`), /ready to activate/)
-assert.equal((await db.collection('opsProjects').findOne({ _id: readyProjectId })).status, 'scheduled')
-assert.ok(buttonWithText('✅ Launched on schedule'))
-const launchNow = buttonWithText('✅ Launched now')
-assert.match(await callback(memberId, launchNow), /is Active/)
-assert.equal(messages[0].messageId, 100)
+// Ordinary setup edits must never offer launch confirmation, regardless of timing.
+for (const [timing, fields] of [
+  ['future', { launchAt: new Date(Date.now() + 86400000).toISOString() }],
+  ['overdue', { launchAt: new Date(Date.now() - 86400000).toISOString(), activationOverdue: true }],
+  ['tentative', { launchAt: null, launchDate: null, tentativeLaunchDate: '2030-09-09', launchTimingStatus: 'tentative' }],
+]) {
+  for (const first of ['refnone', 'fees']) {
+    const projectId = `readiness-no-intent-${timing}-${first}`
+    const project = () => db.collection('opsProjects').findOne({ _id: projectId })
+    await db.collection('opsProjects').insertOne({
+      ...payload, ...fields, _id: projectId, status: 'scheduled', scheduleVersion: 3,
+      referrerStatus: 'pending', feeConfigurationConfirmed: false,
+    })
+    assert.match(await callback(memberId, `lifecycle:${first}:${projectId}:3`), /Still needed/)
+    const remaining = buttonWithText(first === 'refnone' ? feeButton : 'Confirm no referrer')
+    const completedText = await callback(memberId, remaining)
+    assert.match(completedText, /Launch setup is complete/)
+    assert.doesNotMatch(completedText, /ready to activate|is Active/)
+    assert.equal(messages.length, 1)
+    assert.equal(messages[0].messageId, 100)
+    assert.equal((await project()).status, 'scheduled')
+    assert.equal(Boolean((await project()).pendingActivationIntent), false)
+    assert.equal(lastButtons().some(button => /^lifecycle:(ontime|now):/.test(button.callback_data)), false)
+    assert.equal(rows.get('opsProjectLifecycleEvents').filter(row => row.projectId === projectId && row.action === 'activated').length, 0)
+    assert.equal(buttonWithText('Open launch'), `calendar:launch:${projectId}:3`)
+    await callback(memberId, buttonWithText('Open launch'))
+    assert.ok(buttonWithText('Change launch timing'))
+    assert.equal(messages[0].messageId, 100)
+  }
+}
 
 // Continuation buttons retain stale-schedule protection.
 const staleProjectId = 'readiness-stale'
