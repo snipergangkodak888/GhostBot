@@ -1,9 +1,21 @@
 import { NextResponse } from 'next/server'
+import { cookies } from 'next/headers'
+import { verifyAdminToken } from '@/lib/auth'
+import { getTelegramBotToken } from '@/lib/telegram-bot'
+import { isLocalWebhookSetupRequest, telegramWebhookSecret } from '@/lib/telegram-webhook-auth'
 
 const TELEGRAM_API = 'https://api.telegram.org'
 
+async function canConfigure(req: Request) {
+  if (isLocalWebhookSetupRequest(req)) return true
+  const token = cookies().get('admin_token')?.value
+  if (!token) return false
+  try { return (await verifyAdminToken(token)).role === 'admin' } catch { return false }
+}
+
 export async function POST(req: Request) {
-  const token = process.env.TELEGRAM_BOT_TOKEN
+  if (!await canConfigure(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const token = await getTelegramBotToken()
   if (!token) {
     return NextResponse.json({ ok: false, error: 'Missing TELEGRAM_BOT_TOKEN' }, { status: 500 })
   }
@@ -14,17 +26,19 @@ export async function POST(req: Request) {
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url: webhook, allowed_updates: ['message', 'callback_query', 'pre_checkout_query', 'chat_member', 'my_chat_member'] })
+    body: JSON.stringify({ url: webhook, secret_token: telegramWebhookSecret(token), allowed_updates: ['message', 'callback_query', 'pre_checkout_query', 'chat_member', 'my_chat_member'], drop_pending_updates: false }),
+    signal: AbortSignal.timeout(15000),
   })
   const data = await res.json().catch(() => ({}))
-  return NextResponse.json({ ok: true, data, webhook })
+  return NextResponse.json({ ok: res.ok && data.ok === true, data, webhook }, { status: res.ok && data.ok === true ? 200 : 502 })
 }
 
-export async function DELETE() {
-  const token = process.env.TELEGRAM_BOT_TOKEN
+export async function DELETE(req: Request) {
+  if (!await canConfigure(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const token = await getTelegramBotToken()
   if (!token) return NextResponse.json({ ok: false, error: 'Missing TELEGRAM_BOT_TOKEN' }, { status: 500 })
   const url = `${TELEGRAM_API}/bot${token}/deleteWebhook`
-  const res = await fetch(url)
+  const res = await fetch(url, { method: 'POST', signal: AbortSignal.timeout(15000) })
   const data = await res.json().catch(() => ({}))
-  return NextResponse.json({ ok: true, data })
+  return NextResponse.json({ ok: res.ok && data.ok === true, data }, { status: res.ok && data.ok === true ? 200 : 502 })
 }

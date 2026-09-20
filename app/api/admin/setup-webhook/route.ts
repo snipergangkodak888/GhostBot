@@ -2,12 +2,14 @@ import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { verifyAdminToken } from '@/lib/auth'
 import { getTelegramBotToken } from '@/lib/telegram-bot'
+import { telegramWebhookSecret } from '@/lib/telegram-webhook-auth'
 
 async function requireAdmin() {
   const token = cookies().get('admin_token')?.value
   if (!token) return null
   try {
-    return await verifyAdminToken(token)
+    const admin = await verifyAdminToken(token)
+    return admin.role === 'admin' ? admin : null
   } catch {
     return null
   }
@@ -55,9 +57,11 @@ export async function POST(req: NextRequest) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           url: webhookUrl,
+          secret_token: telegramWebhookSecret(botToken),
           allowed_updates: ['message', 'callback_query', 'pre_checkout_query', 'chat_member', 'my_chat_member'],
           drop_pending_updates: false
-        })
+        }),
+        signal: AbortSignal.timeout(15000),
       }
     )
 

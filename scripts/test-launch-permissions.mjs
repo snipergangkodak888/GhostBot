@@ -10,6 +10,8 @@ import ts from 'typescript'
 const rows = new Map()
 const reads = []
 const messages = []
+const reportJobs = []
+let reportWorkerRuns = 0
 let nextId = 1
 const clone = (value) => structuredClone(value)
 const matches = (row, query) => Object.entries(query).every(([key, value]) => {
@@ -56,6 +58,10 @@ const db = { collection(name) {
 
 const overrides = {
   'server-only': {},
+  '@/lib/launch-report-jobs': {
+    queueLaunchReport: async input => { reportJobs.push(input); return { job: { ...input, status: 'queued' }, duplicate: false } },
+    runLaunchReportJobs: async () => { reportWorkerRuns++; return { ok: true, processed: 0 } },
+  },
   '@/lib/db': { getDb: async () => db },
   '@/lib/telegram-user-client': {},
   '@/lib/trader-schedule-image': {},
@@ -63,6 +69,7 @@ const overrides = {
   '@/lib/ops-sheets': { createDefaultSheetsForProject: async () => {} },
   '@/lib/telegram-bot': {
     isTelegramCaptureActive: () => false,
+    getTelegramBotToken: async () => 'test-bot-token',
     getTelegramBotUsername: () => 'test_bot',
     sendTelegramMessage: async (_token, chatId, text, options) => { messages.push({ chatId, text, options }); return nextId++ },
     editTelegramMessage: async (_token, chatId, messageId, text, options) => { messages.push({ chatId, messageId, text, options }); return true },
@@ -103,6 +110,9 @@ const permissions = load('lib/bot-permissions.ts')
 const access = load('lib/team-access.ts')
 const ops = load('lib/ops-bot.ts')
 const webhook = load('app/api/telegram/webhook/route.ts', '\nexport { handleCallback, processState, routeText, getLaunchSetupAction, aiPermissionPolicy };')
+assert.equal((await webhook.POST({ headers: new Headers(), json: async () => { throw new Error('An unauthenticated update must never be parsed') } })).status, 401)
+const webhookSecret = load('lib/telegram-webhook-auth.ts').telegramWebhookSecret('test-bot-token')
+assert.equal((await webhook.POST({ headers: new Headers({ 'x-telegram-bot-api-secret-token': webhookSecret }), json: async () => ({}) })).status, 200)
 const req = { nextUrl: new URL('http://localhost:3000/api/telegram/webhook'), headers: new Headers({ host: 'localhost:3000', 'x-forwarded-proto': 'http' }) }
 const chatId = -100
 const memberId = 2
@@ -159,15 +169,36 @@ async function timingReply(text, user = memberId, sourceChat = chatId) {
   await webhook.routeText('test', sourceChat, user, text, req, Date.now(), { message_id: 101, chat: { id: sourceChat } })
   return messages.map(message => message.text).join('\n')
 }
-// The client report launcher preserves both chat capability and admin restrictions.
-assert.match(await timingReply('/launchmath', memberId), /available to Ghost admins/)
-assert.equal(lastButtons().some(button => button.url), false)
-assert.match(await timingReply('/launchmath', adminId, -200), /Launch functions are not available/)
-assert.equal(lastButtons().some(button => button.url), false)
+// Reports use shared math for all active team members, without admin/finance access.
+for (const [user, sourceChat] of [[memberId, chatId], [memberId, memberId], [adminId, -200], [dmId, dmId]]) {
+  assert.match(await timingReply('/launchmath', user, sourceChat), /Ghost Launch Math/)
+  assert.ok(lastButtons().some(button => button.callback_data === 'lm:group:solana'))
+  assert.equal(lastButtons().some(button => button.url), false, 'No admin login needed for team reports')
+}
 await db.collection('opsBotStates').updateOne({ telegramId: adminId }, { $set: { action: 'ai', chatId: String(chatId) } }, { upsert: true })
-assert.match(await timingReply('/launchmath@test_bot', adminId), /Sign in with your Ghost admin account/)
-assert.equal(lastButtons().find(button => button.text === 'Open Launch Math')?.url, 'http://localhost:3000/admin/launch-math')
-assert.equal(await db.collection('opsBotStates').findOne({ telegramId: adminId }), null, 'Opening reports must clear a pending text workflow')
+assert.match(await timingReply('/launchmath@test_bot', adminId), /Ghost Launch Math/)
+assert.equal(await db.collection('opsBotStates').findOne({ telegramId: adminId }), null)
+assert.match(await timingReply('/launchcalc', memberId), /Ghost Launch Math/)
+assert.match(await timingReply('📊 Launch Math', memberId), /Ghost Launch Math/)
+assert.match(await callback(memberId, 'launch:metric:supply:pumpfun'), /Ghost Launch Math/, 'Retired calculator buttons cannot send old wallet budgets')
+assert.match(await callback(memberId, 'lm:group:solana'), /Where will the token launch/)
+assert.match(await callback(memberId, 'lm:review:pumpfun:compare'), /125 aged wallets/)
+assert.ok(buttonWithText('📊 Generate image'))
+assert.match(await callback(memberId, buttonWithText('📊 Generate image')), /Preparing your Pump.fun/)
+assert.equal(reportJobs.length, 1)
+assert.deepEqual(reportJobs[0], { chatId, telegramId: memberId, messageId: 100, selection: { modelId: 'pumpfun', liquidity: 'compare' } })
+assert.equal(reportWorkerRuns, 1)
+const newMenuId = await webhook.handleCallback('test', chatId, memberId, 'lm:home', req, { message_id: 100, chat: { id: chatId } })
+assert.ok(newMenuId > 0 && newMenuId !== 100, 'New report creates a new menu identity, allowing fresh figures for the same venue')
+assert.equal(messages.at(-1).messageId, undefined, 'New report must not recycle the completed status card')
+assert.match(await callback(memberId, 'lm:generate:not-real:compare'), /Ghost Launch Math/)
+assert.equal(reportJobs.length, 1, 'Tampered callbacks cannot create a job')
+for (const sourceChat of [-999, -400]) {
+  if (sourceChat === -400) await db.collection('opsChatProfiles').insertOne({ chatId: String(sourceChat), profile: 'finance', status: 'active' })
+  assert.match(await callback(memberId, 'lm:generate:pumpfun:compare', sourceChat), /active Ghost teammates/)
+}
+assert.match(await callback(999, 'lm:generate:pumpfun:compare'), /active Ghost teammates/)
+assert.equal(reportJobs.length, 1, 'Unknown members and disallowed chats cannot queue reports')
 async function editTiming(user = memberId, sourceChat = chatId) {
   const project = await timingProject()
   await callback(user, `calendar:launch:${project._id}:${project.scheduleVersion}`, sourceChat)
@@ -452,6 +483,9 @@ assert.equal((await access.getTeamAccess(dmId)).member.accessRole, 'member')
 await access.updateGuardMemberLaunchDmAccess(`member-${dmId}`, true, 'test-admin')
 await access.deactivateGuardMember(`member-${dmId}`)
 const deactivated = await permissions.getBotPermissionContext({ telegramId: dmId, chatId: dmId })
+assert.equal(permissions.canUseLaunchReports(deactivated), false)
+assert.match(await callback(dmId, 'lm:generate:pumpfun:compare', dmId), /active Ghost teammates/)
+assert.equal(reportJobs.length, 1, 'Revoked members cannot queue reports')
 assert.equal(permissions.canEditLaunchSchedule(deactivated), false)
 assert.equal(permissions.canUseBotCapability(deactivated, 'launch'), false)
 assert.equal(permissions.canUseBotCapability(await permissions.getBotPermissionContext({ telegramId: 999, chatId }), 'launch'), false)

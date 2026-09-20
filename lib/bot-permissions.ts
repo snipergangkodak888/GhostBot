@@ -62,6 +62,13 @@ export function canUseBotCapability(context: BotPermissionContext, capability: B
   return CHAT_CAPABILITIES[context.profile].includes(capability)
 }
 
+// Read-only launch estimates are available to every active teammate. This does
+// not grant scheduling, trading, financial-data or administrator permissions.
+export function canUseLaunchReports(context: BotPermissionContext) {
+  if (!context.capture && context.allowed !== true) return false
+  return !context.isGroup || ['launch', 'trade', 'management'].includes(context.profile || '')
+}
+
 // The scheduler is collaboratively editable by active Guard members, but only
 // when the request originates from the configured Management Chat. It is kept
 // separate from the broader management capability, which remains admin-only.

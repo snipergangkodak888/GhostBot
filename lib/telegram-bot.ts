@@ -89,6 +89,7 @@ export async function telegramApi(token: string, method: string, body: Record<st
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
   }).catch((error) => {
     console.error(`[telegram] ${method} network error:`, error instanceof Error ? error.message : error)
     return null
@@ -301,6 +302,7 @@ export async function sendTelegramDocument(
   png: Buffer,
   caption?: string,
   filename = "ghost-payroll-report.png",
+  options: TelegramMessageOptions = {},
 ) {
   if (isTelegramCaptureActive()) {
     captureTelegramCall("sendDocument", {
@@ -308,6 +310,7 @@ export async function sendTelegramDocument(
       caption: caption || "",
       filename,
       byte_length: png.byteLength,
+      ...(options.replyMarkup ? { reply_markup: options.replyMarkup } : {}),
     })
     return true
   }
@@ -315,6 +318,7 @@ export async function sendTelegramDocument(
   form.append("chat_id", String(chatId))
   form.append("document", new Blob([new Uint8Array(png)], { type: "image/png" }), filename)
   if (caption) form.append("caption", caption.slice(0, 1024))
+  if (options.replyMarkup) form.append("reply_markup", JSON.stringify(options.replyMarkup))
 
   const response = await fetch(`${TELEGRAM_API}/bot${token}/sendDocument`, {
     method: "POST",

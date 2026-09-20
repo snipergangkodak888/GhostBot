@@ -27,7 +27,7 @@ import { LAUNCH_CHAINS, launchPad, padsForChain, type LaunchChainId } from "@/li
 import { operationalLaunchVenue, operationalVenuesForChain } from "@/lib/launch-venues"
 import { dailyProjectReviewButtons, dailyProjectReviewId, dailyProjectReviewText, type DailyProjectReviewRecord } from "@/lib/daily-project-review"
 import { calculateLaunchQuote, defaultMmLiquidity, formatLaunchQuote, getLaunchAssetPrice, parseLaunchNumber, type LaunchTargetMetric } from "@/lib/launch-calculator"
-import { botPermissionDeniedMessage, canCollaborateOnLaunchDraft, canEditLaunchSchedule, canOpenTraderSchedule, canUseBotCapability, getBotPermissionContext, isLaunchDraftAction, type BotCapability, type BotPermissionContext } from "@/lib/bot-permissions"
+import { botPermissionDeniedMessage, canCollaborateOnLaunchDraft, canEditLaunchSchedule, canOpenTraderSchedule, canUseBotCapability, canUseLaunchReports, getBotPermissionContext, isLaunchDraftAction, type BotCapability, type BotPermissionContext } from "@/lib/bot-permissions"
 import { createGuardEnrollmentLink, guardEnrollmentTokenFromText, guardEnrollmentUrl, handleGuardBotMembershipUpdate, handleGuardChatMemberUpdate, recordGuardChatMember, revokeGuardEnrollmentLinks, syncTelegramChatAdministrators, verifyAndRedeemGuardEnrollment } from "@/lib/guard-enrollment"
 import { activateScheduledProject, activationLifecycleFields, cancelScheduledProject, cleanLaunchProjectName, confirmNoProjectReferrer, confirmStandardProjectFees, deactivateActiveProject, projectActivationReadiness, projectLaunchAt, projectLaunchDateKey, projectLaunchTimingStatus, rescheduleProject, setTentativeProjectLaunchDate } from "@/lib/project-lifecycle"
 import { formatLaunchSetupReview, launchChainButtons, launchChainConfig, launchChainIdForProject, launchMethodButtons, launchProjectChainChanges, launchQuoteButtons, launchSetupButtons, launchSetupReady, launchVenueButtons, launchVenueSelection } from "@/lib/launch-setup"
@@ -41,6 +41,10 @@ import { addDays, scheduleDateKey, scheduleWeekStart } from "@/lib/trader-schedu
 import { formatCurrentTraderShift, formatMyTraderShifts, formatTraderShiftDay, shiftCommandButtons } from "@/lib/trader-schedule-telegram"
 import { renderPublishedTraderSchedulePng } from "@/lib/trader-schedule-image"
 
+import { launchMathHomeView, launchMathGroupView, launchMathReviewView, launchMathProgressView, launchMathErrorView, parseLaunchMathCallback, type LaunchMathView } from "@/lib/launch-reports/telegram"
+import { queueLaunchReport, runLaunchReportJobs } from "@/lib/launch-report-jobs"
+import { isTelegramWebhookRequest } from "@/lib/telegram-webhook-auth"
+
 type InlineButton = { text: string; callback_data?: string; url?: string; web_app?: { url: string } }
 
 function hasTelegramHtml(text: string) {
@@ -52,7 +56,7 @@ function replyKeyboard() {
     keyboard: [
       [{ text: "🏠 Home" }, { text: "📁 Projects" }],
       [{ text: "📈 Profit" }, { text: "💸 Payroll" }],
-      [{ text: "📅 Calendar" }, { text: "🚀 Launch Calc" }],
+      [{ text: "📅 Calendar" }, { text: "📊 Launch Math" }],
       [{ text: "🔔 Reminders" }, { text: "📝 Notes" }],
       [{ text: "🧠 AI" }],
     ],
@@ -169,8 +173,8 @@ async function setBotCommands(token: string) {
       { command: "addlaunch", description: "Add a launch step by step" },
       { command: "schedulelaunch", description: "Create a launch with guided setup" },
       { command: "organicsetup", description: "Set up organic trade notifications" },
-      { command: "launchcalc", description: "Build a client launch-capital quote" },
-      { command: "launchmath", description: "Admin: open client launch reports" },
+      { command: "launchcalc", description: "Create a launch funding report image" },
+      { command: "launchmath", description: "Choose a venue and get a report image" },
       { command: "reminders", description: "Manage reminders" },
       { command: "setreminder", description: "Set a reminder in natural language" },
       { command: "payroll", description: "Manage payroll" },
@@ -215,8 +219,8 @@ function helpMessage() {
     "➕ /addlaunch - add a launch step by step",
     "🗓️ /schedulelaunch - create a launch with guided setup",
     "📣 /organicsetup TICKER - set up organic trade notifications",
-    "🚀 /launchcalc - build a launch-capital quote",
-    "📊 /launchmath - admin client launch reports",
+    "📊 /launchmath - choose a venue and get a report image",
+    "🚀 /launchcalc - same simple report flow",
     "🔔 /reminders",
     "⏰ /setreminder WWR injection today at 8 PM ET",
     "💸 /payroll",
@@ -475,6 +479,7 @@ const GROUP_MENU_TEXTS = new Set([
   "📅 Calendar",
   "🟠 Calendar",
   "🚀 Launch Calc",
+  "📊 Launch Math",
   "🔔 Reminders",
   "📝 Notes",
   "🧠 AI",
@@ -1434,6 +1439,13 @@ async function processState(token: string, chatId: number | string, telegramId: 
     return true
   }
 
+  if (String(state.action || "").startsWith("launch_calc")) {
+    await clearState(telegramId)
+    const view = launchMathHomeView()
+    await sendMessage(token, chatId, canUseLaunchReports(context) ? view.text : "Open a DM with GhostBot to create a launch report.", canUseLaunchReports(context) ? view.replyMarkup.inline_keyboard : undefined)
+    return true
+  }
+
   const stateCapability: BotCapability = String(state.action || "").startsWith("launch_calc") || String(state.action || "").startsWith("launch_setup") || String(state.action || "").startsWith("add_launch_wizard") || String(state.action || "").startsWith("organic_setup") || state.action === "schedule_launch_request" || state.action === "reschedule_launch" || state.action === "tentative_launch_day" || state.action === "add_launch_note" || state.action === "rename_launch"
     ? "launch"
     : ["add_project", "edit_project", "add_reminder", "reminder_audience", "timezone_for_manual_reminder", "timezone_for_reminder"].includes(String(state.action || ""))
@@ -2245,6 +2257,39 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   const callbackMessageId = Number(callbackMessage?.message_id || 0) || null
   const workflowReply = (text: string, buttons: InlineButton[][] = []) => editOrSendWorkflowMessage(token, chatId, callbackMessageId, text, buttons)
   const context = await botPermissions(telegramId, chatId)
+  if (area === "lm" || area === "launch") {
+    if (!canUseLaunchReports(context)) return sendMessage(token, chatId, "Launch reports are available to active Ghost teammates. Open a DM with me, or use a configured Launch, Trade or Management chat.")
+    await clearState(telegramId)
+    const show = async (view: LaunchMathView) => {
+      if (callbackMessageId && !callbackMessage?.document && !callbackMessage?.photo) {
+        await editTelegramMessage(token, chatId, callbackMessageId, view.text, { replyMarkup: view.replyMarkup })
+        return callbackMessageId
+      }
+      return sendTelegramMessage(token, chatId, view.text, { replyMarkup: view.replyMarkup })
+    }
+    const choice = area === "launch" ? { action: "home" as const } : parseLaunchMathCallback(data)
+    if (!choice) return show(launchMathHomeView())
+    if (choice.action === "home") {
+      const view = launchMathHomeView()
+      return sendTelegramMessage(token, chatId, view.text, { replyMarkup: view.replyMarkup })
+    }
+    if (choice.action === "group") return show(launchMathGroupView(choice.group))
+    if (choice.action === "review" || callbackMessage?.document || callbackMessage?.photo) return show(launchMathReviewView(choice.selection))
+    if (!callbackMessageId) return show(launchMathReviewView(choice.selection))
+    try {
+      await show(launchMathProgressView(choice.selection))
+      const { job, duplicate } = await queueLaunchReport({ chatId, telegramId, messageId: callbackMessageId, selection: choice.selection })
+      if (duplicate && job.status === "complete") return show({ text: "This report has already been sent below. Choose New report for fresh figures.", replyMarkup: { inline_keyboard: [[{ text: "New report", callback_data: "lm:home" }]] } })
+      if (duplicate && job.messageId !== callbackMessageId) return show({ text: "Another report is already being prepared in this chat. It will appear here shortly.", replyMarkup: { inline_keyboard: [[{ text: "New report", callback_data: "lm:home" }]] } })
+      // The persisted job is recoverable by the internal worker after a restart.
+      // Do not hold Telegram's webhook open during protocol/RPC calculations.
+      void runLaunchReportJobs().catch(error => console.error('[launch-reports] Worker wake failed', { error: error instanceof Error ? error.message : 'Unknown error' }))
+      return
+    } catch (error) {
+      console.error('[launch-reports] Could not queue report', { modelId: choice.selection.modelId, error: error instanceof Error ? error.message : 'Unknown error' })
+      return show(launchMathErrorView(choice.selection))
+    }
+  }
   const callbackCapability: BotCapability | null = area === "launch" || area === "lifecycle" || area === "launchsetup" || area === "organic" || area === "calendar" || area === "tentative"
     ? "launch"
     : ["reminder", "reminders", "reminderto", "eod"].includes(area)
@@ -3353,15 +3398,11 @@ async function routeText(token: string, chatId: number | string, telegramId: num
     await clearState(telegramId)
     return startOrganicChannelSetup(token, chatId, telegramId, String(organicSetupCommand[1] || ""))
   }
-  if (text === "🚀 Launch Calc" || isBotCommand(text, "launchcalc")) {
-    if (!(await requireCapability(token, context, "launch"))) return
-    return sendLaunchCalculatorStart(token, chatId, telegramId)
-  }
-  if (isBotCommand(text, "launchmath")) {
-    if (!(await requireCapability(token, context, "launch"))) return
-    if (context.role !== "admin") return sendMessage(token, chatId, "⛔ Client launch reports are available to Ghost admins.")
+  if (text === "🚀 Launch Calc" || text === "📊 Launch Math" || isBotCommand(text, "launchcalc", "launchmath")) {
+    if (!canUseLaunchReports(context)) return sendMessage(token, chatId, "Launch reports are available to active Ghost teammates. Open a DM with me, or use a configured Launch, Trade or Management chat.")
     await clearState(telegramId)
-    return sendMessage(token, chatId, "📊 Open Ghost Launch Math to choose a launch model, review assumptions, and export a client report.\n\nSign in with your Ghost admin account to continue.", [[{ text: "Open Launch Math", url: `${appBaseUrl(req)}/admin/launch-math` }]])
+    const view = launchMathHomeView()
+    return sendMessage(token, chatId, view.text, view.replyMarkup.inline_keyboard)
   }
   if (aiCommand !== null) {
     const policy = aiPermissionPolicy(context)
@@ -3468,6 +3509,7 @@ export async function POST(req: NextRequest) {
   const token = await getTelegramBotToken()
   if (!token) return NextResponse.json({ error: "Telegram bot token missing" }, { status: 500 })
 
+  if (!isTelegramCaptureActive() && !isTelegramWebhookRequest(req, token)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   const update = await req.json().catch(() => ({}))
   if (update.chat_member) {
     await handleGuardChatMemberUpdate(update.chat_member).catch((error) => {

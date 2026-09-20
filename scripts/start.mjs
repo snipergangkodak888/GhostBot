@@ -16,6 +16,21 @@ const reminderIntervalMs = Math.max(5_000, Number(process.env.REMINDER_CRON_INTE
 const revenueIntervalMs = Math.max(60_000, Number(process.env.REVENUE_CRON_INTERVAL_MS || 5 * 60_000) || 5 * 60_000)
 let reminderTickActive = false
 let revenueTickActive = false
+let launchReportTickActive = false
+
+async function runLaunchReportTick() {
+  if (launchReportTickActive) return
+  launchReportTickActive = true
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/cron/launch-reports`, {
+      method: "POST", headers: { "x-ghostbot-internal-cron": internalCronKey },
+      signal: AbortSignal.timeout(120_000),
+    })
+    if (!response.ok) console.error(`[launch-report-worker] HTTP ${response.status}`)
+  } catch (error) {
+    console.error("[launch-report-worker] Run failed:", error instanceof Error ? error.message : error)
+  } finally { launchReportTickActive = false }
+}
 
 async function runLaunchTick() {
   try {
@@ -73,6 +88,7 @@ async function runRevenueTick() {
   }
 }
 
+const launchReportInterval = setInterval(runLaunchReportTick, 10_000)
 const initial = setTimeout(runLaunchTick, 15_000)
 const interval = setInterval(runLaunchTick, 5 * 60_000)
 const organicInitial = setTimeout(runOrganicChannelTick, 20_000)
@@ -84,6 +100,7 @@ const revenueInitial = setTimeout(runRevenueTick, 30_000)
 const revenueInterval = setInterval(runRevenueTick, revenueIntervalMs)
 
 function stop(signal) {
+  clearInterval(launchReportInterval)
   clearTimeout(initial)
   clearInterval(interval)
   clearTimeout(organicInitial)
@@ -98,6 +115,7 @@ function stop(signal) {
 process.on("SIGTERM", () => stop("SIGTERM"))
 process.on("SIGINT", () => stop("SIGINT"))
 child.on("exit", (code, signal) => {
+  clearInterval(launchReportInterval)
   clearTimeout(initial)
   clearInterval(interval)
   clearTimeout(organicInitial)

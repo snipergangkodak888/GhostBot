@@ -1,18 +1,31 @@
 # Ghost Launch Math
 
-Ghost Launch Math creates client launch-funding reports from the supplied AMM calculations. The web builder, Telegram entry point and command-line generator share one calculation engine and the same Ghost rendering. A new report automatically retrieves supported protocol settings and current conversion prices; clients do not need to enter an opening tick, curve constant or quote table.
+Ghost Launch Math creates client launch-funding reports from the supplied AMM calculations. The web builder, Telegram image flow and command-line generator share one calculation engine and the same Ghost rendering. A new report automatically retrieves supported protocol settings and current conversion prices; clients do not need to enter an opening tick, curve constant or quote table.
 
 The builder ships through Ghost's existing application deployment at `/admin/launch-math`. The earlier example images and delivery archive were cleared; research evidence remains available.
 
 ## Everyday workflow
 
 1. Sign in as a Ghost administrator and open **Launch Math** at `/admin/launch-math`.
-2. Choose the launchpad or DEX, client/report name and supply-control targets. For a configurable pool, choose the initial liquidity amounts to compare.
-3. Review the number of aged wallets, executing buyers, operating allowances and any creator-controlled tax or allocation choices. These are launch decisions rather than protocol research inputs.
-4. Generate the report. Ghost retrieves the selected protocol's supported live configuration and prices, calculates ordered buys, and records the sources and observation times.
-5. Review the funding table, scope notes and unavailable rows, then export **PNG**, **CSV** or **JSON**. An export uses the configuration captured when that report was generated.
+2. Choose the launchpad or DEX. A client name is optional. The standard supply comparisons, 125 aged wallets and venue operating allowances are already included.
+3. For a new pool, keep the displayed standard liquidity comparison or tap a single pool amount. This is the money supplied before token purchases.
+4. Tap **Generate report**. Ghost retrieves supported current protocol settings and prices, then scrolls to the results. Progress appears beside the button; failed requests have a visible retry action.
+5. Tap **Download image** to share the report. CSV and JSON are also available. Exports use the configuration captured when the report was generated.
 
-The Telegram command `/launchmath` opens the builder for an administrator with launch access. The web page still requires the normal administrator login. The command does not send a report to clients, buy wallets or execute a launch, and the existing launch workflow remains available separately.
+**Customize report · optional** contains report titles, different supply percentages, the wallet count, saved setups and imports. **Advanced launch settings · optional** contains allocation, taxes, operating allowances and technical settings. Most reports need neither section. Defaults describe the named launch profile, not every launch mode or network offered by that brand.
+
+Each supply percentage is the share of total token supply held after purchases, including any retained allocation in the setup. FDV is the value of all tokens at the modeled price after purchases. Total funding includes launch funding and the aged-wallet budget; pool liquidity and unused reserves remain assets. These definitions also appear beside the web results.
+
+## Quick reports in Telegram
+
+1. Open the internal Ghost bot and send `/launchmath`, or tap **Launch Math**. `/launchcalc` opens the same flow.
+2. Choose **Solana**, **BNB**, **Robinhood** or **DEX examples**, then choose a venue.
+3. Keep the displayed standard settings and tap **Generate image**. Pool examples also let you choose from the standard liquidity amounts.
+4. Ghost checks current settings, calculates the report and returns a shareable image in the same conversation. If a request fails, use the retry button.
+
+The bot uses the same standard supply comparisons, 125-wallet default and fixed wallet prices as the web tool. There are no curve constants, opening ticks or quote tables to enter. For a client name or a custom setup, use the web builder.
+
+This flow is available to active enrolled team members in direct messages or configured launch, trade and management groups. The detailed web builder retains the normal administrator login. Queued report jobs and duplicate protection prevent repeat taps or webhook delivery from starting the same job twice. Generating a report does not buy wallets or execute a launch; the existing launch workflow remains separate.
 
 Saved setups in the builder belong to that browser. Export settings as JSON for a portable copy, then import the file when preparing another report. Changing the inputs requires generating a new report before exporting its results. Technical source details are available for audit; they are not part of the normal client input workflow.
 
@@ -87,6 +100,12 @@ Existing files are protected. Choose a new output folder or explicitly supply `-
 
 The original supplied `amm-math` folder is unchanged. Byte-identical report-side copies are under `lib/launch-reports/amm-math`; the source manifest, adapters, refreshers, funding policy and rendering live outside that math directory, in `lib/launch-reports`. The engine preserves integer accounting and ordered buys. PNGs are deterministic renderings of the calculated table.
 
-Run `npm run typecheck:launch` and `npm run launch:test` for the scoped checks. The suite covers numerical behavior, captured protocol responses, automatic preparation, API access controls, exports and CLI round trips. The Telegram entry-point checks also run in `node scripts/test-launch-permissions.mjs`.
+Run `npm run typecheck:launch` and `npm run launch:test` for the scoped checks. The suite covers numerical behavior, captured protocol responses, automatic preparation, API access controls, exports and CLI round trips. Telegram permission checks also run in `node scripts/test-launch-permissions.mjs`. The report flow uses the shared calculation and PNG rendering functions; it does not use the previous standalone launch calculator.
+
+Run `npm run bot:test:launch-reports` for menu, permissions, duplicate handling, delivery retries, webhook authentication and worker recovery checks. These tests capture outgoing Telegram calls; they do not message the team. `npm run launch:test:live` checks all 16 catalog entries against current public sources, verifies exact funding totals and renders every PNG into a temporary directory. The September 20, 2026 check passed all 127 default scenarios; availability remains dependent on the public sources at generation time.
+
+Telegram generation is stored in the existing document database as `launchReportJobs`. The application wakes the worker immediately and its internal ten-second poll recovers queued work after a restart. Conditional database updates prevent concurrent workers from claiming the same job. Failed image delivery reuses the saved report; an unconfirmed delivery asks the user to check the chat before retrying. A fresh report uses a new menu and current inputs. The worker checks team access both before calculation and before delivery.
+
+Production webhook requests require Telegram's secret header. Both webhook setup routes register the derived credential; a deployment introducing this requirement must first register it with the existing webhook destination while preserving pending updates. The setup routes require administrator authentication in production.
 
 Detailed protocol evidence is in [Four.meme native research](launch-math-four-native.md) and [EVM launch research](launch-reports-research-evm.md).
