@@ -7,6 +7,7 @@ import { launchReportCsv, renderLaunchReportPng, renderLaunchReportSvg } from '@
 import { GHOST_WALLET_PRICING, GHOST_PRICING_VERSION } from '@/lib/launch-reports/pricing'
 import manifest from '@/lib/launch-reports/source-manifest.json'
 import { prepareLaunchReport } from '@/lib/launch-reports/prepare'
+import { isLaunchReportOriginAllowed } from '@/lib/launch-reports/request-origin'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -25,12 +26,18 @@ export async function GET() {
 
 export async function POST(req: Request) {
   if (!(await authorized())) return NextResponse.json({ error: 'Admin sign-in required.' }, { status: 401, headers })
-  if (req.headers.get('origin') && req.headers.get('origin') !== new URL(req.url).origin) return NextResponse.json({ error: 'Use the Ghost report builder to generate reports.' }, { status: 403, headers })
+  if (!isLaunchReportOriginAllowed(req)) {
+    console.warn('[launch-reports] Request rejected', { code: 'origin_mismatch', origin: req.headers.get('origin'), destination: new URL(req.url).origin })
+    return NextResponse.json({ error: 'This page could not be verified. Reload Ghost and try again.', code: 'origin_mismatch' }, { status: 403, headers })
+  }
+  const started = Date.now()
+  let modelId: string | undefined
   try {
     if (Number(req.headers.get('content-length') || 0) > 262144) throw new Error('Configuration exceeds 256 KB.')
     const text = await req.text()
     if (Buffer.byteLength(text) > 262144) throw new Error('Configuration exceeds 256 KB.')
     const body = JSON.parse(text)
+    if (typeof body.request?.modelId === 'string') modelId = body.request.modelId.slice(0, 50)
     const format = body.format || 'json'
     if (!['json', 'csv', 'svg', 'png'].includes(format)) throw new Error('Choose JSON, CSV, SVG or PNG.')
     const request = body.refresh === true ? await prepareLaunchReport(body.request) : body.request
@@ -41,6 +48,7 @@ export async function POST(req: Request) {
     const mime = { png: 'image/png', svg: 'image/svg+xml', csv: 'text/csv; charset=utf-8' }[format as 'png' | 'svg' | 'csv']
     return new NextResponse(content, { headers: { ...headers, 'Content-Type': mime, 'Content-Disposition': `attachment; filename="${filename}.${format}"`, 'X-Content-Type-Options': 'nosniff' } })
   } catch (error) {
+    console.error('[launch-reports] Generation failed', { modelId, elapsedMs: Date.now() - started, error: error instanceof Error ? error.message : 'Unknown error' })
     return NextResponse.json({ error: error instanceof Error ? error.message : 'Could not calculate this configuration.' }, { status: 400, headers })
   }
 }

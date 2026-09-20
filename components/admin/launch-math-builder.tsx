@@ -12,6 +12,28 @@ const number = (value: number | null | undefined, digits = 2) => value == null |
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value))
 const download = (blob: Blob, filename: string) => { const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000) }
 
+async function requestData<T>(url: string, init: RequestInit, read: (response: Response) => Promise<T>, timeoutMs = 90_000): Promise<T> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await fetch(url, { ...init, signal: controller.signal, credentials: 'include' })
+    if (!response.ok) {
+      if (response.status === 401) throw new Error('Your Ghost session has expired. Sign in again, then retry.')
+      const body = await response.json().catch(() => null)
+      const message = typeof body?.error === 'string' ? body.error.slice(0, 500) : ''
+      throw new Error(message || (response.status >= 500 ? 'Ghost could not finish the request. Please try again in a moment.' : `The request could not be completed (${response.status}). Please try again.`))
+    }
+    return await read(response)
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error(`The request timed out after ${Math.round(timeoutMs / 1000)} seconds. Please try again.`)
+    if (error instanceof TypeError) throw new Error('Could not reach Ghost. Check your connection and try again.')
+    throw error
+  } finally { clearTimeout(timeout) }
+}
+const readJson = async <T,>(response: Response): Promise<T> => {
+  try { return await response.json() } catch { throw new Error('Ghost returned an unexpected response. Please reload the page and try again.') }
+}
+
 export function LaunchMathBuilder() {
   const [catalog, setCatalog] = useState<Catalog | null>(null)
   const [draft, setDraft] = useState<LaunchReportRequest | null>(null)
@@ -23,25 +45,50 @@ export function LaunchMathBuilder() {
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [generationError, setGenerationError] = useState('')
+  const [exportError, setExportError] = useState('')
+  const [generationSeconds, setGenerationSeconds] = useState(0)
   const [useLiveSettings, setUseLiveSettings] = useState(true)
   const upload = useRef<HTMLInputElement>(null)
+  const generationFeedback = useRef<HTMLDivElement>(null)
+  const reportHeading = useRef<HTMLDivElement>(null)
+  const generating = useRef(false)
+
+  function showReport() {
+    reportHeading.current?.focus({ preventScroll: true })
+    reportHeading.current?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' })
+  }
 
   function load(request: LaunchReportRequest, rates = catalog?.pricing) {
     const next = clone(request)
     const fixedPrice = rates?.[next.operations.currencySymbol.toUpperCase()]
     if (fixedPrice) next.operations.agedWalletUnitAmount = fixedPrice
     setDraft(next); setTargets(next.targetsPct.join(', ')); setLiquidity(next.liquidityAmounts?.join(', ') || '')
-    setTerms(JSON.stringify(next.terms, null, 2)); setReport(null); setError(''); setNotice('')
+    setTerms(JSON.stringify(next.terms, null, 2)); setReport(null); setError(''); setNotice(''); setGenerationError(''); setExportError('')
   }
   useEffect(() => {
     let active = true
-    fetch('/api/admin/launch-reports', { credentials: 'include' }).then(async response => {
-      const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Unable to load launch models.')
+    requestData('/api/admin/launch-reports', {}, readJson<Catalog>, 30_000).then(data => {
       if (active) { setCatalog(data); load(data.presets.pumpfun, data.pricing) }
     }).catch(e => { if (active) setError(e.message) })
     try { const values = JSON.parse(localStorage.getItem(STORAGE) || '[]'); if (Array.isArray(values)) setSaved(values) } catch { /* A bad saved draft never prevents a fresh report. */ }
     return () => { active = false }
   }, [])
+  useEffect(() => {
+    if (busy !== 'generate') return
+    setGenerationSeconds(0)
+    const timer = setInterval(() => setGenerationSeconds(value => value + 1), 1000)
+    return () => clearInterval(timer)
+  }, [busy])
+  useEffect(() => {
+    setGenerationError(''); setExportError('')
+  }, [draft, targets, liquidity, terms, useLiveSettings])
+  useEffect(() => { if (report) showReport() }, [report])
+  useEffect(() => {
+    if (!generationError) return
+    generationFeedback.current?.focus({ preventScroll: true })
+    generationFeedback.current?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'nearest' })
+  }, [generationError])
 
   function request(): LaunchReportRequest {
     if (!draft) throw new Error('Choose a launch model.')
@@ -56,6 +103,7 @@ export function LaunchMathBuilder() {
   try { current = request() } catch { /* Errors appear on Generate or import. */ }
   const changed = !!report && JSON.stringify(current) !== JSON.stringify(report.request)
   const model = catalog?.models.find(m => m.id === draft?.modelId)
+  const reportNeedsLiquidity = catalog?.models.find(m => m.id === report?.modelId)?.requiresLiquidity
   const validRows = report?.rows.filter(r => r.status === 'ok') || []
   const reportNotes = report ? [...new Set([...report.warnings, ...report.rows.flatMap(r => r.warnings)])] : []
   const displayedOperations = draft?.fundingConversion?.nativeOperations || draft?.operations
@@ -71,30 +119,30 @@ export function LaunchMathBuilder() {
   }
 
   async function generate() {
-    setBusy('generate'); setError(''); setNotice('')
+    if (generating.current || busy) return
+    generating.current = true
+    setBusy('generate'); setError(''); setNotice(''); setGenerationError(''); setExportError(''); setReport(null)
     try {
-      const response = await fetch('/api/admin/launch-reports', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ request: request(), refresh: useLiveSettings }), credentials: 'include' })
-      const body = await response.json(); if (!response.ok) throw new Error(body.error || 'Unable to calculate report.')
+      const body = await requestData('/api/admin/launch-reports', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ request: request(), refresh: useLiveSettings }) }, readJson<{ report: LaunchReport }>)
+      if (!body?.report?.request || !Array.isArray(body.report.rows)) throw new Error('The report was incomplete. Please try again.')
       load(body.report.request)
       setReport(body.report)
-    } catch (e) { setError(e instanceof Error ? e.message : 'Check the launch settings.') } finally { setBusy('') }
+    } catch (e) { setGenerationError(e instanceof Error ? e.message : 'Check the launch settings and try again.') } finally { generating.current = false; setBusy('') }
   }
   async function exportReport(format: 'png' | 'svg' | 'csv' | 'json') {
     if (!report || changed) return
     if (format === 'json') { download(new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' }), `ghost-${report.modelId}-report.json`); return }
-    setBusy(format); setError('')
+    setBusy(format); setError(''); setExportError('')
     try {
-      const response = await fetch('/api/admin/launch-reports', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ request: report.request, format }), credentials: 'include' })
-      if (!response.ok) throw new Error((await response.json()).error || 'Export failed.')
-      download(await response.blob(), `ghost-${report.modelId}-report.${format}`)
-    } catch (e) { setError(e instanceof Error ? e.message : 'Export failed.') } finally { setBusy('') }
+      const blob = await requestData('/api/admin/launch-reports', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ request: report.request, format }) }, response => response.blob(), 60_000)
+      download(blob, `ghost-${report.modelId}-report.${format}`)
+    } catch (e) { setExportError(e instanceof Error ? e.message : 'Export failed. Please try again.') } finally { setBusy('') }
   }
   async function refreshPrice() {
     if (!draft) return
     const symbol = draft.quote.symbol; setBusy('price'); setError('')
     try {
-      const response = await fetch(`/api/admin/launch-reports/price?symbol=${encodeURIComponent(symbol)}`, { credentials: 'include' })
-      const data = await response.json(); if (!response.ok) throw new Error(data.error)
+      const data = await requestData(`/api/admin/launch-reports/price?symbol=${encodeURIComponent(symbol)}`, {}, readJson<{ price: string; asOf: string; source: string }>, 30_000)
       setDraft(d => d?.quote.symbol === symbol ? { ...d, quote: { ...d.quote, usdPrice: data.price, priceAsOf: data.asOf, priceSource: data.source } } : d)
       setNotice(`Updated ${symbol}/USD price. Generate again to use it.`)
     } catch (e) { setError(e instanceof Error ? e.message : 'Could not update price.') } finally { setBusy('') }
@@ -108,16 +156,17 @@ export function LaunchMathBuilder() {
   }
   async function importSetup(file?: File) {
     if (!file) return
+    setBusy('import'); setError('')
     try {
       if (file.size > 10 * 1024 * 1024) throw new Error('Report files must be smaller than 10 MB.')
       const parsed = JSON.parse(await file.text()); const value = parsed.request || parsed
       if (value.schemaVersion !== 1 || !catalog?.presets[value.modelId] || !value.operations || !value.quote || !value.base || !Array.isArray(value.targetsPct)) throw new Error('Choose an exported Ghost launch settings file.')
       const fixed = catalog.pricing[value.operations.currencySymbol?.toUpperCase()]
       if (fixed) value.operations.agedWalletUnitAmount = fixed
-      const checked = await fetch('/api/admin/launch-reports', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ request: value, refresh: value.operations.currencySymbol !== value.quote.symbol }) })
-      const result = await checked.json(); if (!checked.ok) throw new Error(result.error || 'Invalid settings file.')
+      const result = await requestData('/api/admin/launch-reports', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ request: value, refresh: value.operations.currencySymbol !== value.quote.symbol }) }, readJson<{ report: LaunchReport }>)
+      if (!result?.report?.request) throw new Error('The imported settings could not be checked. Please try again.')
       load(result.report.request); setNotice('Settings imported. Fixed wallet rates use the current Ghost pricing policy.')
-    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to import this file.') }
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to import this file.') } finally { setBusy('') }
     if (upload.current) upload.current.value = ''
   }
 
@@ -139,9 +188,14 @@ export function LaunchMathBuilder() {
           <div className="lm-pair"><label>Aged wallets<input type="number" min="0" max="1000" value={displayedOperations!.agedWalletCount} onChange={e => operation('agedWalletCount', Number(e.target.value))} /></label><div className="lm-wallet-total"><small>Wallet budget</small><strong>{number(displayedOperations!.agedWalletCount * Number(displayedOperations!.agedWalletUnitAmount))} {displayedOperations!.currencySymbol}</strong></div></div>
           {!fixedPrice && <p className="lm-help">This setup uses an explicit wallet allowance. Select a native funding currency to apply Ghost’s fixed rates.</p>}
           <p className="lm-help">Launchpad settings and USD prices are fetched automatically when you generate a new analysis.</p>
-          <button className="lm-primary" disabled={!!busy} onClick={generate}>{busy === 'generate' ? <RefreshCw className="lm-spin" size={17} /> : <Calculator size={17} />} {busy === 'generate' ? 'Checking launch settings…' : 'Generate analysis'}<ArrowRight size={16} /></button>
+          <button className="lm-primary" disabled={!!busy} onClick={generate} aria-describedby="launch-generation-feedback">{busy === 'generate' ? <RefreshCw className="lm-spin" size={17} /> : <Calculator size={17} />} {busy === 'generate' ? 'Generating report…' : 'Generate report'}<ArrowRight size={16} /></button>
+          <div id="launch-generation-feedback" ref={generationFeedback} tabIndex={-1} className="lm-feedback" aria-live="polite" aria-atomic="true">
+            {busy === 'generate' && <div className="lm-progress" role="status"><strong>Checking live settings and calculating your report</strong><p>{generationSeconds < 10 ? 'This usually takes a few seconds.' : `Still working · ${generationSeconds} seconds. Some launchpads take longer to respond.`}</p></div>}
+            {generationError && <div className="lm-inline-error" role="alert"><strong>Report could not be generated</strong><p>{generationError}</p>{generationError.includes('session has expired') ? <a href="/admin/login">Sign in to Ghost</a> : <button onClick={generate} disabled={!!busy}>Try again</button>}</div>}
+            {report && !changed && <button className="lm-view-report" onClick={showReport}><Check size={15} />{validRows.length ? 'Report ready — view results' : 'View scenario details'}<ArrowRight size={15} /></button>}
+          </div>
         </div>
-        <div className="lm-panel"><div className="lm-panel-heading"><FileText size={17} /><h2>USD conversion</h2><button className="lm-icon" title="Refresh USD price" aria-label="Refresh USD price" disabled={!!busy} onClick={refreshPrice}><RefreshCw size={15} /></button></div><label>1 {draft.quote.symbol} in USD<input value={draft.quote.usdPrice || ''} placeholder="Optional — leave blank for native values" onChange={e => setDraft(d => d && ({ ...d, quote: { ...d.quote, usdPrice: e.target.value || undefined, priceSource: 'User-entered price', priceAsOf: new Date().toISOString() } }))} /></label><p className="lm-help">{draft.quote.usdPrice ? `${draft.quote.priceSource || 'User supplied'} · ${draft.quote.priceAsOf ? new Date(draft.quote.priceAsOf).toLocaleString() : 'Undated'}` : 'Wallet prices stay fixed. Only the USD equivalent changes.'}</p></div>
+        <details className="lm-panel lm-advanced"><summary>USD conversion · automatic<ChevronDown size={16} /></summary><div className="lm-panel-heading"><FileText size={17} /><h2>Exchange rate</h2><button className="lm-icon" title="Refresh USD price" aria-label="Refresh USD price" disabled={!!busy} onClick={refreshPrice}><RefreshCw size={15} /></button></div><label>1 {draft.quote.symbol} in USD<input value={draft.quote.usdPrice || ''} placeholder="Optional — leave blank for native values" onChange={e => setDraft(d => d && ({ ...d, quote: { ...d.quote, usdPrice: e.target.value || undefined, priceSource: 'User-entered price', priceAsOf: new Date().toISOString() } }))} /></label><p className="lm-help">{draft.quote.usdPrice ? `${draft.quote.priceSource || 'User supplied'} · ${draft.quote.priceAsOf ? new Date(draft.quote.priceAsOf).toLocaleString() : 'Undated'}` : 'The current USD price is included automatically when you generate.'}</p></details>
         <details className="lm-panel lm-advanced"><summary>Standard assumptions & launch settings<ChevronDown size={16} /></summary><p className="lm-help">Defaults are applied automatically. Review specialized launch settings or adjust an approved operating preset here.</p>
           <div className="lm-pair"><label>Token supply<input value={draft.base.supply} onChange={e => setDraft(d => d && ({ ...d, base: { ...d.base, supply: e.target.value } }))} /></label><label>Token decimals<input type="number" value={draft.base.decimals} onChange={e => setDraft(d => d && ({ ...d, base: { ...d.base, decimals: Number(e.target.value) } }))} /></label></div>
           <label>Token symbol<input value={draft.base.symbol} maxLength={16} onChange={e => setDraft(d => d && ({ ...d, base: { ...d.base, symbol: e.target.value } }))} /></label>
@@ -166,15 +220,30 @@ export function LaunchMathBuilder() {
         {saved.length > 0 && <div className="lm-panel"><h2>Saved setups</h2><p className="lm-help">Stored in this browser.</p>{saved.map(s => <div className="lm-saved" key={s.id}><button onClick={() => load(s.request)}>{s.name}</button><button className="lm-icon" aria-label={`Delete ${s.name}`} onClick={() => { const next = saved.filter(x => x.id !== s.id); setSaved(next); localStorage.setItem(STORAGE, JSON.stringify(next)) }}><Trash2 size={14} /></button></div>)}</div>}
       </fieldset><div className="lm-output">
         {!report ? <div className="lm-panel lm-empty"><div className="lm-empty-icon"><Calculator size={28} /></div><div className="lm-eyebrow">READY WHEN YOU ARE</div><h2>Build a client-ready launch report</h2><p>Choose a venue and supply targets. Ghost applies the standard wallet pricing and the model’s operating preset.</p><div className="lm-steps"><span><b>01</b> Configure</span><span><b>02</b> Review</span><span><b>03</b> Export</span></div><p className="lm-help">PNG for sharing · CSV for analysis · JSON for reproducibility</p></div> : <>
-          <div className="lm-panel lm-report-head"><div><div className="lm-eyebrow">CALCULATED REPORT</div><h2>{report.client || report.title}</h2><p>{catalog.models.find(m => m.id === report.modelId)?.label} · {validRows.length} calculated scenarios</p></div><div className="lm-exports">{(['png', 'csv', 'json'] as const).map(format => <button key={format} disabled={!!busy || changed || (format === 'png' && !validRows.length)} onClick={() => exportReport(format)}><Download size={14} />{format.toUpperCase()}</button>)}</div></div>
+          <div className="lm-panel lm-report-head" ref={reportHeading} tabIndex={-1}><div><div className="lm-eyebrow">CALCULATED REPORT</div><h2>{report.client || report.title}</h2><p>{catalog.models.find(m => m.id === report.modelId)?.label} · {validRows.length} calculated scenarios</p></div><div className="lm-exports">{(['png', 'csv', 'json'] as const).map(format => <button key={format} disabled={!!busy || changed || (format === 'png' && !validRows.length)} onClick={() => exportReport(format)}><Download size={14} />{busy === format ? 'Preparing…' : format === 'png' ? 'Download image' : format.toUpperCase()}</button>)}</div></div>
+          {exportError && <div className="lm-inline-error" role="alert"><strong>Download could not be prepared</strong><p>{exportError}</p></div>}
           {changed && <div className="lm-notice">Inputs changed. Generate the analysis again before exporting.</div>}
-          <div className="lm-panel lm-table-panel"><div className="lm-table-scroll"><table><thead><tr><th>Control</th>{model?.requiresLiquidity && <th>Initial liquidity</th>}<th>Phase</th><th>FDV {report.request.quote.usdPrice ? '(USD)' : `(${report.request.quote.symbol})`}</th><th>Launch funding</th><th>Aged wallets</th><th>Total {report.request.quote.symbol}</th></tr></thead><tbody>{report.rows.map(row => <tr key={row.id}><td><b>{row.targetPct}%</b></td>{row.status !== 'ok' ? <td className="lm-row-error" colSpan={model?.requiresLiquidity ? 6 : 5}>{row.error}</td> : <>{model?.requiresLiquidity && <td>{row.liquidity}</td>}<td><span className="lm-phase">{row.phase}</span></td><td>{report.request.quote.usdPrice ? '$' : ''}{number(report.request.quote.usdPrice ? row.fdvUsd : row.fdvQuote, 0)}</td><td>{number(Number(row.amounts?.funding))}</td><td>{number(Number(row.amounts?.agedWallets))}</td><td className="lm-total">{number(Number(row.amounts?.total))}{row.totalUsd != null && <small>≈ ${number(row.totalUsd, 0)}</small>}</td></>}</tr>)}</tbody></table></div></div>
+          <div className="lm-mobile-scenarios" aria-label="Launch funding scenarios">
+            {report.rows.map(row => <article className="lm-panel lm-scenario" key={row.id}>
+              <div className="lm-scenario-heading"><div><h3>{row.targetPct}% control</h3>{row.status === 'ok' && <p>{row.phase}</p>}</div>
+                {row.status === 'ok' && <div className="lm-scenario-total"><small>Total funding</small><strong>{number(Number(row.amounts?.total))} {report.request.quote.symbol}</strong>{row.totalUsd != null && <span>≈ ${number(row.totalUsd, 0)}</span>}</div>}
+              </div>
+              {row.status !== 'ok' ? <p className="lm-scenario-error">{row.error}</p> : <dl>
+                <div><dt>Starting FDV</dt><dd>{report.request.quote.usdPrice ? `$${number(row.fdvUsd, 0)}` : `${number(row.fdvQuote, 0)} ${report.request.quote.symbol}`}</dd></div>
+                {reportNeedsLiquidity && <div><dt>Initial liquidity</dt><dd>{row.liquidity} {report.request.quote.symbol}</dd></div>}
+                <div><dt>Launch funding</dt><dd>{number(Number(row.amounts?.funding))} {report.request.quote.symbol}</dd></div>
+                <div><dt>Aged wallets</dt><dd>{number(Number(row.amounts?.agedWallets))} {report.request.quote.symbol}</dd></div>
+              </dl>}
+            </article>)}
+          </div>
+          <div className="lm-panel lm-table-panel"><div className="lm-table-scroll"><table><thead><tr><th>Control</th>{reportNeedsLiquidity && <th>Initial liquidity</th>}<th>Phase</th><th>FDV {report.request.quote.usdPrice ? '(USD)' : `(${report.request.quote.symbol})`}</th><th>Launch funding</th><th>Aged wallets</th><th>Total {report.request.quote.symbol}</th></tr></thead><tbody>{report.rows.map(row => <tr key={row.id}><td><b>{row.targetPct}%</b></td>{row.status !== 'ok' ? <td className="lm-row-error" colSpan={reportNeedsLiquidity ? 6 : 5}>{row.error}</td> : <>{reportNeedsLiquidity && <td>{row.liquidity}</td>}<td><span className="lm-phase">{row.phase}</span></td><td>{report.request.quote.usdPrice ? '$' : ''}{number(report.request.quote.usdPrice ? row.fdvUsd : row.fdvQuote, 0)}</td><td>{number(Number(row.amounts?.funding))}</td><td>{number(Number(row.amounts?.agedWallets))}</td><td className="lm-total">{number(Number(row.amounts?.total))}{row.totalUsd != null && <small>≈ ${number(row.totalUsd, 0)}</small>}</td></>}</tr>)}</tbody></table></div></div>
           <div className="lm-panel"><h2>Included assumptions</h2><ul className="lm-assumptions">{report.assumptions.map((v, i) => <li key={i}>{v}</li>)}</ul>{reportNotes.length > 0 && <div className="lm-report-notes">{reportNotes.map((v, i) => <p key={i}>{v}</p>)}</div>}<div className="lm-report-stamp">Generated {new Date(report.generatedAt).toLocaleString()} · Saved inputs travel with the JSON report.</div></div>
         </>}
       </div></div>
     </>}
     <style jsx>{`
-      .launch-workbench{color:#eaf1fd;max-width:1680px;margin:auto;padding-bottom:40px}.lm-heading{display:flex;justify-content:space-between;align-items:center;gap:24px;margin:8px 0 26px}.lm-eyebrow{display:flex;align-items:center;gap:7px;color:#89b7ff;font-size:10px;letter-spacing:1.6px;font-weight:650}.lm-heading h1{font-size:32px;letter-spacing:-1px;font-weight:650;margin:8px 0}.lm-heading p,.lm-report-head p{color:#91a2bc;font-size:13px;margin:4px 0}.lm-top-actions,.lm-exports{display:flex;gap:8px;flex-wrap:wrap}.launch-workbench button{display:inline-flex;align-items:center;justify-content:center;gap:7px;border:1px solid #ffffff18;background:#ffffff06;color:#c2d2e9;border-radius:8px;padding:9px 12px;font-size:12px;cursor:pointer;transition:background .15s}.launch-workbench button:hover{background:#ffffff0e}.launch-workbench button:disabled{opacity:.4;cursor:default}.lm-pricing{display:flex;align-items:center;gap:32px;background:linear-gradient(110deg,#11284b,#0b172d);border:1px solid #2e568544;border-radius:12px;padding:19px 22px;margin-bottom:22px}.lm-pricing strong{display:block;font-size:13px;margin-top:6px}.lm-rate{padding-left:24px;border-left:1px solid #ffffff14}.lm-rate b{font-size:21px;letter-spacing:-.5px}.lm-rate b span{font-size:12px;font-weight:500;color:#acc3e4}.lm-rate small{display:block;font-size:10px;color:#8299b9;margin-top:3px}.lm-policy{font-size:9px;color:#7186a3;margin-left:auto}.lm-grid{display:grid;grid-template-columns:minmax(270px,330px) minmax(0,1fr);gap:22px;align-items:start}.lm-config{border:0;padding:0;margin:0;min-inline-size:0}.lm-config,.lm-output{display:flex;flex-direction:column;gap:16px;min-width:0}.lm-panel{border:1px solid #ffffff12;background:#0a1321e8;border-radius:12px;padding:20px}.lm-panel-heading{display:flex;align-items:center;gap:9px;color:#8bb8fa;margin-bottom:18px}.lm-panel h2{font-size:14px;font-weight:600;color:#e7effe;margin:0}.lm-panel-heading .lm-icon{margin-left:auto}.launch-workbench label{display:flex;flex-direction:column;gap:7px;color:#a9bad3;font-size:11px;margin:13px 0}.launch-workbench input,.launch-workbench select,.launch-workbench textarea{background:#070e19;color:#e0eafa;border:1px solid #ffffff18;border-radius:7px;padding:10px 11px;font-size:12px;width:100%;outline:none}.launch-workbench input:focus,.launch-workbench select:focus,.launch-workbench textarea:focus{border-color:#548fe1;box-shadow:0 0 0 2px #3385ff18}.launch-workbench select option,.launch-workbench optgroup{background:#0b1422;color:#dbe8ff}.lm-help{font-size:11px;line-height:1.65;color:#798fab;margin:8px 0}.lm-chips{display:flex;gap:5px;flex-wrap:wrap}.lm-chips button{padding:5px 8px;font-size:9px;color:#809fc8;border-color:#233854}.lm-pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}.lm-wallet-total{display:flex;flex-direction:column;justify-content:center;padding-top:16px}.lm-wallet-total small{font-size:10px;color:#7d93b1}.lm-wallet-total strong{color:#8ebdff;font-size:16px;margin-top:5px}.launch-workbench .lm-primary{width:100%;background:#216ee6;border:1px solid #4285ef;color:white;font-weight:600;padding:12px;margin-top:12px}.launch-workbench .lm-primary:hover{background:#2c7afa}.lm-primary svg:last-child{margin-left:auto}.lm-advanced summary{display:flex;justify-content:space-between;align-items:center;font-size:12px;font-weight:600;cursor:pointer;gap:10px}.lm-advanced textarea{font-family:monospace;font-size:10px;line-height:1.6}.launch-workbench .lm-check{flex-direction:row;align-items:center}.lm-check input{width:auto}.lm-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:510px;padding:50px;text-align:center;background:radial-gradient(ellipse at 50% 20%,#142a4933,transparent 70%),#0a1321e8}.lm-empty-icon{background:#1b3f701f;border:1px solid #325b8744;color:#91bfff;border-radius:15px;padding:20px;margin-bottom:24px}.lm-empty h2{font-size:23px;letter-spacing:-.4px;margin:12px 0}.lm-empty>p{font-size:13px;line-height:1.7;color:#889eba;max-width:410px}.lm-empty .lm-help{font-size:10px}.lm-steps{display:flex;gap:23px;font-size:11px;color:#9fb4d0;margin:27px 0}.lm-steps b{color:#578bd1;font-size:10px;margin-right:6px}.lm-alert,.lm-notice{padding:12px 16px;border-radius:9px;margin-bottom:16px;font-size:12px;line-height:1.6}.lm-alert{background:#8e39221c;border:1px solid #c77b5540;color:#e8b598}.lm-notice{display:flex;gap:8px;background:#18355a44;border:1px solid #386eaa44;color:#aacfff}.lm-report-head{display:flex;align-items:center;justify-content:space-between;gap:15px}.lm-report-head h2{font-size:21px;margin-top:8px}.lm-report-head p{font-size:11px;margin-top:8px}.lm-exports button{font-size:10px;padding:8px}.lm-table-panel{padding:0;overflow:hidden}.lm-table-scroll{overflow:auto}.launch-workbench table{width:100%;border-collapse:collapse;white-space:nowrap;font-size:12px}.launch-workbench th{color:#7f98bb;font-size:9px;font-weight:600;text-transform:uppercase;text-align:right;letter-spacing:.5px;background:#0c192b;padding:15px 13px}.launch-workbench td{padding:15px 13px;text-align:right;border-top:1px solid #ffffff08;font-variant-numeric:tabular-nums}.launch-workbench th:first-child,.launch-workbench td:first-child{text-align:left;padding-left:20px}.launch-workbench tbody tr:nth-child(even){background:#ffffff02}.launch-workbench .lm-total{background:#142b482e;color:#92c0ff;font-weight:600;font-size:14px}.lm-total small{display:block;color:#6688b7;font-weight:400;font-size:9px;margin-top:4px}.lm-phase{font-size:9px;color:#8ea8cc;background:#172a423b;padding:4px 6px;border-radius:4px}.launch-workbench .lm-row-error{font-size:11px;text-align:left;color:#ccac88;white-space:normal;min-width:240px;line-height:1.6}.lm-assumptions{padding-left:16px;color:#8da2be;font-size:11px;line-height:1.9;margin:12px 0}.lm-report-notes{border-top:1px solid #ffffff10;margin-top:15px;padding-top:10px}.lm-report-notes p{font-size:10px;line-height:1.65;color:#b4a780;margin:5px 0}.lm-report-stamp{font-size:9px;color:#536c8c;border-top:1px solid #ffffff0d;padding-top:13px;margin-top:16px}.lm-saved{display:flex;gap:8px;margin-top:7px}.lm-saved>button:first-child{flex:1;justify-content:flex-start;overflow:hidden;text-overflow:ellipsis;font-size:10px}.launch-workbench .lm-icon{padding:6px;background:transparent;border-color:transparent;flex-shrink:0}.lm-spin{animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:1150px){.lm-grid{grid-template-columns:280px minmax(0,1fr)}.lm-heading{align-items:flex-start;flex-direction:column;gap:12px}.lm-pricing{gap:18px;flex-wrap:wrap}.lm-policy{display:none}.lm-pricing>div:first-child{width:100%}.lm-rate{padding-left:0;border-left:none;padding-right:15px}}@media(max-width:800px){.launch-workbench input,.launch-workbench select,.launch-workbench textarea{font-size:16px}.lm-grid{grid-template-columns:1fr}.lm-empty{min-height:340px;padding:30px}.lm-pricing{gap:12px;padding:18px}.lm-heading h1{font-size:27px}.lm-report-head{align-items:flex-start;flex-direction:column}.lm-rate b{font-size:19px}}
+      .lm-mobile-scenarios{display:none}.lm-scenario-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}.lm-scenario h3{font-size:17px;font-weight:650;margin:0}.lm-scenario-heading p{font-size:10px;color:#8ea8cc;margin:5px 0 0;max-width:130px}.lm-scenario-total{text-align:right;overflow-wrap:anywhere}.lm-scenario-total small,.lm-scenario-total span{display:block;font-size:10px;color:#829cbe}.lm-scenario-total strong{display:block;color:#92c0ff;font-size:18px;margin:3px 0}.lm-scenario dl{display:grid;grid-template-columns:1fr 1fr;gap:14px 12px;border-top:1px solid #ffffff0c;margin:16px 0 0;padding-top:14px}.lm-scenario dt{font-size:10px;color:#8299b9}.lm-scenario dd{font-size:13px;margin:4px 0 0;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}.lm-scenario-error{color:#e8b598;font-size:12px;line-height:1.6;margin:12px 0 0}@media(max-width:800px){.lm-mobile-scenarios{display:flex;flex-direction:column;gap:12px}.lm-table-panel{display:none}.lm-exports button{min-height:44px;padding:10px 12px}}
+      .launch-workbench{color:#eaf1fd;max-width:1680px;margin:auto;padding-bottom:40px}.lm-heading{display:flex;justify-content:space-between;align-items:center;gap:24px;margin:8px 0 26px}.lm-eyebrow{display:flex;align-items:center;gap:7px;color:#89b7ff;font-size:10px;letter-spacing:1.6px;font-weight:650}.lm-heading h1{font-size:32px;letter-spacing:-1px;font-weight:650;margin:8px 0}.lm-heading p,.lm-report-head p{color:#91a2bc;font-size:13px;margin:4px 0}.lm-top-actions,.lm-exports{display:flex;gap:8px;flex-wrap:wrap}.launch-workbench button{display:inline-flex;align-items:center;justify-content:center;gap:7px;border:1px solid #ffffff18;background:#ffffff06;color:#c2d2e9;border-radius:8px;padding:9px 12px;font-size:12px;cursor:pointer;transition:background .15s}.launch-workbench button:hover{background:#ffffff0e}.launch-workbench button:disabled{opacity:.4;cursor:default}.lm-pricing{display:flex;align-items:center;gap:32px;background:linear-gradient(110deg,#11284b,#0b172d);border:1px solid #2e568544;border-radius:12px;padding:19px 22px;margin-bottom:22px}.lm-pricing strong{display:block;font-size:13px;margin-top:6px}.lm-rate{padding-left:24px;border-left:1px solid #ffffff14}.lm-rate b{font-size:21px;letter-spacing:-.5px}.lm-rate b span{font-size:12px;font-weight:500;color:#acc3e4}.lm-rate small{display:block;font-size:10px;color:#8299b9;margin-top:3px}.lm-policy{font-size:9px;color:#7186a3;margin-left:auto}.lm-grid{display:grid;grid-template-columns:minmax(270px,330px) minmax(0,1fr);gap:22px;align-items:start}.lm-config{border:0;padding:0;margin:0;min-inline-size:0}.lm-config,.lm-output{display:flex;flex-direction:column;gap:16px;min-width:0}.lm-panel{border:1px solid #ffffff12;background:#0a1321e8;border-radius:12px;padding:20px}.lm-panel-heading{display:flex;align-items:center;gap:9px;color:#8bb8fa;margin-bottom:18px}.lm-panel h2{font-size:14px;font-weight:600;color:#e7effe;margin:0}.lm-panel-heading .lm-icon{margin-left:auto}.launch-workbench label{display:flex;flex-direction:column;gap:7px;color:#a9bad3;font-size:11px;margin:13px 0}.launch-workbench input,.launch-workbench select,.launch-workbench textarea{background:#070e19;color:#e0eafa;border:1px solid #ffffff18;border-radius:7px;padding:10px 11px;font-size:12px;width:100%;outline:none}.launch-workbench input:focus,.launch-workbench select:focus,.launch-workbench textarea:focus{border-color:#548fe1;box-shadow:0 0 0 2px #3385ff18}.launch-workbench select option,.launch-workbench optgroup{background:#0b1422;color:#dbe8ff}.lm-help{font-size:11px;line-height:1.65;color:#798fab;margin:8px 0}.lm-chips{display:flex;gap:5px;flex-wrap:wrap}.lm-chips button{padding:5px 8px;font-size:9px;color:#809fc8;border-color:#233854}.lm-pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}.lm-wallet-total{display:flex;flex-direction:column;justify-content:center;padding-top:16px}.lm-wallet-total small{font-size:10px;color:#7d93b1}.lm-wallet-total strong{color:#8ebdff;font-size:16px;margin-top:5px}.launch-workbench .lm-primary{width:100%;background:#216ee6;border:1px solid #4285ef;color:white;font-weight:600;padding:12px;margin-top:12px}.launch-workbench .lm-primary:hover{background:#2c7afa}.lm-primary svg:last-child{margin-left:auto}.lm-advanced summary{display:flex;justify-content:space-between;align-items:center;font-size:12px;font-weight:600;cursor:pointer;gap:10px}.lm-advanced textarea{font-family:monospace;font-size:10px;line-height:1.6}.launch-workbench .lm-check{flex-direction:row;align-items:center}.lm-check input{width:auto}.lm-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:510px;padding:50px;text-align:center;background:radial-gradient(ellipse at 50% 20%,#142a4933,transparent 70%),#0a1321e8}.lm-empty-icon{background:#1b3f701f;border:1px solid #325b8744;color:#91bfff;border-radius:15px;padding:20px;margin-bottom:24px}.lm-empty h2{font-size:23px;letter-spacing:-.4px;margin:12px 0}.lm-empty>p{font-size:13px;line-height:1.7;color:#889eba;max-width:410px}.lm-empty .lm-help{font-size:10px}.lm-steps{display:flex;gap:23px;font-size:11px;color:#9fb4d0;margin:27px 0}.lm-steps b{color:#578bd1;font-size:10px;margin-right:6px}.lm-alert,.lm-notice{padding:12px 16px;border-radius:9px;margin-bottom:16px;font-size:12px;line-height:1.6}.lm-alert{background:#8e39221c;border:1px solid #c77b5540;color:#e8b598}.lm-notice{display:flex;gap:8px;background:#18355a44;border:1px solid #386eaa44;color:#aacfff}.lm-report-head{display:flex;align-items:center;justify-content:space-between;gap:15px}.lm-report-head h2{font-size:21px;margin-top:8px}.lm-report-head p{font-size:11px;margin-top:8px}.lm-exports button{font-size:10px;padding:8px}.lm-table-panel{padding:0;overflow:hidden}.lm-table-scroll{overflow:auto}.launch-workbench table{width:100%;border-collapse:collapse;white-space:nowrap;font-size:12px}.launch-workbench th{color:#7f98bb;font-size:9px;font-weight:600;text-transform:uppercase;text-align:right;letter-spacing:.5px;background:#0c192b;padding:15px 13px}.launch-workbench td{padding:15px 13px;text-align:right;border-top:1px solid #ffffff08;font-variant-numeric:tabular-nums}.launch-workbench th:first-child,.launch-workbench td:first-child{text-align:left;padding-left:20px}.launch-workbench tbody tr:nth-child(even){background:#ffffff02}.launch-workbench .lm-total{background:#142b482e;color:#92c0ff;font-weight:600;font-size:14px}.lm-total small{display:block;color:#6688b7;font-weight:400;font-size:9px;margin-top:4px}.lm-phase{font-size:9px;color:#8ea8cc;background:#172a423b;padding:4px 6px;border-radius:4px}.launch-workbench .lm-row-error{font-size:11px;text-align:left;color:#ccac88;white-space:normal;min-width:240px;line-height:1.6}.lm-assumptions{padding-left:16px;color:#8da2be;font-size:11px;line-height:1.9;margin:12px 0}.lm-report-notes{border-top:1px solid #ffffff10;margin-top:15px;padding-top:10px}.lm-report-notes p{font-size:10px;line-height:1.65;color:#b4a780;margin:5px 0}.lm-report-stamp{font-size:9px;color:#536c8c;border-top:1px solid #ffffff0d;padding-top:13px;margin-top:16px}.lm-saved{display:flex;gap:8px;margin-top:7px}.lm-saved>button:first-child{flex:1;justify-content:flex-start;overflow:hidden;text-overflow:ellipsis;font-size:10px}.launch-workbench .lm-icon{padding:6px;background:transparent;border-color:transparent;flex-shrink:0}.lm-feedback{outline:none;scroll-margin-top:100px}.lm-feedback:empty{display:none}.lm-progress,.lm-inline-error{margin-top:12px;padding:13px;border-radius:8px;font-size:12px;line-height:1.6}.lm-progress{background:#17325366;border:1px solid #37689f66;color:#b6d6ff}.lm-progress p,.lm-inline-error p{margin:5px 0 8px}.lm-inline-error{background:#80342122;border:1px solid #ca785477;color:#f1bc9e}.lm-inline-error a{color:#fff;text-decoration:underline}.lm-view-report{width:100%;margin-top:12px}.lm-report-head{scroll-margin-top:100px;outline:none}.lm-spin{animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:1150px){.lm-grid{grid-template-columns:280px minmax(0,1fr)}.lm-heading{align-items:flex-start;flex-direction:column;gap:12px}.lm-pricing{gap:18px;flex-wrap:wrap}.lm-policy{display:none}.lm-pricing>div:first-child{width:100%}.lm-rate{padding-left:0;border-left:none;padding-right:15px}}@media(max-width:800px){.launch-workbench input,.launch-workbench select,.launch-workbench textarea{font-size:16px}.lm-grid{grid-template-columns:1fr}.lm-empty{min-height:340px;padding:30px}.lm-pricing{gap:12px;padding:18px}.lm-heading h1{font-size:27px}.lm-report-head{align-items:flex-start;flex-direction:column}.lm-rate b{font-size:19px}}
     `}</style>
   </section>
 }

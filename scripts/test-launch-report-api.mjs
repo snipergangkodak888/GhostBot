@@ -68,6 +68,45 @@ try {
   const { report } = await jsonResponse.json()
   assert.equal(report.rows.length, 2)
   assert.ok(report.rows.every(row => row.status === 'ok' && row.totalUsd === null))
+  // The browser sees HTTPS while Railway forwards to Next's internal HTTP URL.
+  const proxiedPost = (extraHeaders = {}) => api.POST(new Request('http://0.0.0.0:8080/api/admin/launch-reports', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Host: 'ghost.test', Origin: 'https://ghost.test', 'X-Forwarded-Proto': 'https', ...extraHeaders },
+    body: JSON.stringify({ request }),
+  }))
+  assert.equal((await proxiedPost()).status, 200, 'Allow the actual public origin behind the HTTPS proxy')
+  assert.equal((await proxiedPost({ Origin: 'https://other.test', 'X-Forwarded-Host': 'other.test' })).status, 403, 'Forwarded host spoofing must not allow another origin')
+  assert.equal((await proxiedPost({ 'Sec-Fetch-Site': 'cross-site' })).status, 403)
+  assert.equal((await proxiedPost({ Origin: 'null' })).status, 403)
+  const oldDomain = process.env.RAILWAY_PUBLIC_DOMAIN
+  try {
+    process.env.RAILWAY_PUBLIC_DOMAIN = 'ghost.test'
+    assert.equal((await proxiedPost({ Host: 'internal.railway.local:8080' })).status, 200, 'Configured public domain wins over internal addresses')
+    assert.equal((await proxiedPost({ Host: 'other.test', Origin: 'https://other.test' })).status, 403)
+  } finally {
+    if (oldDomain === undefined) delete process.env.RAILWAY_PUBLIC_DOMAIN
+    else process.env.RAILWAY_PUBLIC_DOMAIN = oldDomain
+  }
+  const oldEnvironment = process.env.NODE_ENV
+  const oldAppUrl = process.env.APP_BASE_URL
+  try {
+    process.env.APP_BASE_URL = 'https://configured-public-tunnel.test'
+    process.env.NODE_ENV = 'development'
+    const localPost = (extraHeaders = {}) => api.POST(new Request('http://0.0.0.0:3000/api/admin/launch-reports', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Host: 'localhost:3000', Origin: 'http://localhost:3000', 'Sec-Fetch-Site': 'same-origin', ...extraHeaders },
+      body: JSON.stringify({ request }),
+    }))
+    assert.equal((await localPost()).status, 200, 'Development localhost works while public webhook/tunnel URLs remain configured')
+    assert.equal((await localPost({ Origin: 'http://localhost:3001' })).status, 403, 'Loopback access still requires the same port and origin')
+    assert.equal((await localPost({ Origin: 'https://other.test', 'X-Forwarded-Host': 'other.test' })).status, 403, 'Development must not trust forwarded host spoofing')
+    assert.equal((await localPost({ 'Sec-Fetch-Site': 'cross-site' })).status, 403)
+    process.env.NODE_ENV = 'production'
+    assert.equal((await localPost()).status, 403, 'Production does not gain a localhost exception to configured origins')
+  } finally {
+    if (oldEnvironment === undefined) delete process.env.NODE_ENV
+    else process.env.NODE_ENV = oldEnvironment
+    if (oldAppUrl === undefined) delete process.env.APP_BASE_URL
+    else process.env.APP_BASE_URL = oldAppUrl
+  }
   for (const format of ['csv', 'svg', 'png']) {
     const response = await post({ request, format })
     assert.equal(response.status, 200)
