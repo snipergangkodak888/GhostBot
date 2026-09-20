@@ -1,3 +1,4 @@
+import { fetchLaunchData } from './data-fetch'
 import { toFunctionSelector } from 'viem';
 import type { LaunchReportRequest } from './types';
 import { formatAmount } from './utils';
@@ -34,11 +35,11 @@ async function beginSnapshot() {
   const signal = AbortSignal.timeout(15_000);
   async function rpc(method: string, params: unknown[]): Promise<unknown> {
     const requestId = ++id;
-    const response = await fetch(RPC, {
+    const response = await fetchLaunchData(RPC, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: requestId, method, params }),
       signal, cache: 'no-store', redirect: 'error',
-    });
+    }, 'Robinhood launch settings');
     if (!response.ok) throw new Error(`Robinhood public RPC returned HTTP ${response.status}.`);
     const text = await response.text();
     if (text.length > 100_000) throw new Error('Robinhood public RPC response exceeded the expected size.');

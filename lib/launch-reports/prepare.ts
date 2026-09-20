@@ -1,3 +1,4 @@
+import { fetchLaunchData } from './data-fetch'
 import type { LaunchReportRequest } from './types'
 import { refreshLaunchTerms, supportedRefreshModels } from './refresh'
 import { validateRequest } from './engine'
@@ -7,7 +8,7 @@ import { getModelCatalog } from './catalog'
 
 async function spot(symbol: string) {
   if (!['SOL', 'ETH', 'BNB', 'USDC', 'USDT'].includes(symbol)) throw new Error('Select a supported quote currency or supply an explicit dated USD price.')
-  const response = await fetch(`https://api.coinbase.com/v2/prices/${symbol}-USD/spot`, { cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(10000) })
+  const response = await fetchLaunchData(`https://api.coinbase.com/v2/prices/${symbol}-USD/spot`, { cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(15000) }, 'USD price service')
   if (!response.ok) throw new Error(`Could not refresh ${symbol}/USD. Retry when the price service is available.`)
   const body = await response.json(), price = String(body.data?.amount || '')
   if (price.length > 120 || !/^\d+(\.\d+)?$/.test(price) || !Number.isFinite(Number(price)) || Number(price) <= 0) throw new Error('Price service returned an invalid quote.')

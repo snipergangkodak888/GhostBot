@@ -1,3 +1,4 @@
+import { fetchLaunchData } from './data-fetch'
 import { toFunctionSelector } from 'viem'
 
 const CHAINS = { robinhood: { id: 4663, rpc: 'https://rpc.mainnet.chain.robinhood.com' }, bsc: { id: 56, rpc: 'https://bsc-rpc.publicnode.com' } } as const
@@ -7,7 +8,7 @@ export async function createPinnedReader(chain: keyof typeof CHAINS) {
   const config = CHAINS[chain], signal = AbortSignal.timeout(20000)
   let id = 0
   async function rpc(method: string, params: unknown[]): Promise<any> {
-    const response = await fetch(config.rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }), cache: 'no-store', redirect: 'error', signal })
+    const response = await fetchLaunchData(config.rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }), cache: 'no-store', redirect: 'error', signal }, 'EVM launch settings')
     if (!response.ok) throw new Error(`Public ${chain} RPC returned HTTP ${response.status}`)
     const text = await response.text()
     if (text.length > 2_000_000) throw new Error('Public RPC response is unexpectedly large')

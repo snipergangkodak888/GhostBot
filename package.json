@@ -35,7 +35,7 @@
     "launch:report": "node scripts/launch-report.mjs",
     "launch:test": "node scripts/test-launch-reports.mjs && node scripts/test-launch-report-refresh.mjs && node scripts/test-launch-native-refresh.mjs && node scripts/test-launch-evm-refresh.mjs && node scripts/test-launch-report-four.mjs && node scripts/test-launch-report-prepare.mjs && node scripts/test-launch-report-api.mjs && node scripts/test-launch-report-cli.mjs",
     "typecheck:launch": "tsc -p tsconfig.launch-reports.json --pretty false",
-    "bot:test:launch-reports": "node scripts/test-launch-report-telegram.mjs && node scripts/test-launch-report-jobs.mjs && node scripts/test-launch-permissions.mjs && node scripts/test-telegram-webhook-auth.mjs",
+    "bot:test:launch-reports": "node scripts/test-launch-report-data.mjs && node scripts/test-launch-report-telegram.mjs && node scripts/test-launch-report-jobs.mjs && node scripts/test-launch-permissions.mjs && node scripts/test-telegram-webhook-auth.mjs",
     "launch:test:live": "node scripts/test-launch-report-live.mjs"
   },
   "dependencies": {

@@ -1,3 +1,4 @@
+import { fetchLaunchData } from './data-fetch'
 import { createHash } from 'node:crypto'
 import { keccak256, toHex } from 'viem'
 import type { LaunchReportRequest } from './types'
@@ -30,7 +31,7 @@ export async function refreshFourMemeTerms(request: LaunchReportRequest): Promis
   const observations: unknown[] = []
   async function rpc(method: string, params: unknown[]) {
     const payload = { jsonrpc: '2.0', id: ++id, method, params }
-    const response = await fetch(RPC, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload), cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(12000) })
+    const response = await fetchLaunchData(RPC, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload), cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(12000) }, 'Four.meme launch settings')
     if (!response.ok) throw new Error(`Four.meme public chain read returned HTTP ${response.status}`)
     const text = await response.text()
     if (text.length > 1_000_000) throw new Error('Four.meme chain response is too large')

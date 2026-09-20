@@ -44,7 +44,7 @@ export async function testRefresh() {
       assert(refreshed.terms._snapshot)
       assert(calculateLaunchReport(refreshed).rows.every(row => row.status === 'ok'))
     }
-    assert(urls.every(url => ['https://api.mainnet-beta.solana.com', 'https://api-v3.raydium.io/main/cpmm-config', 'https://www.stonkfun.xyz/api/public/v1/launchlab/pricing?quoteMint=So11111111111111111111111111111111111111112&mode=standard'].includes(url)))
+    assert(urls.every(url => ['https://solana-rpc.publicnode.com', 'https://api.mainnet-beta.solana.com', 'https://api-v3.raydium.io/main/cpmm-config', 'https://www.stonkfun.xyz/api/public/v1/launchlab/pricing?quoteMint=So11111111111111111111111111111111111111112&mode=standard'].includes(url)))
     const usdcInput = createDefaultRequest('pumpfun-custom'); usdcInput.targetsPct = [50, 79.3, 79.31, 80, 90]
     const usdcBefore = JSON.stringify(usdcInput), usdcPrepared = await prepareLaunchReport(usdcInput)
     assert.equal(JSON.stringify(usdcInput), usdcBefore)

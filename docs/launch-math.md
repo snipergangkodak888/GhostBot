@@ -70,7 +70,15 @@ Supply control includes an explicitly chosen retained allocation where the model
 
 ## Current reports and reproducible snapshots
 
-Normal generation refreshes protocol settings and supported USD prices. A failed public RPC, protocol response, price lookup or consistency check stops generation. Ghost does not silently replace a failed current lookup with old configuration. Retry once the source is available.
+Normal generation refreshes protocol settings and supported USD prices. Temporary throttling and server/network failures are retried; Solana reads also fail over to another provider. Telegram keeps a temporarily blocked calculation in its durable queue for up to three attempts and tells the requester that it is retrying. Invalid protocol layouts, changed account owners and consistency failures still stop generation immediately. Ghost does not substitute old settings when all live sources fail.
+
+### Production data connections
+
+Set `LAUNCH_REPORT_SOLANA_RPC_URL` in Railway to the authenticated Solana mainnet RPC URL from the existing QuickNode account. This is a server secret. `LAUNCH_REPORT_SOLANA_RPC_FALLBACK_URL` optionally supplies a second private provider; fixed PublicNode and Solana endpoints are final backups. The report and logs retain only a safe provider label, never a credential-bearing URL. Concurrent identical Solana reads share one request; completed results are not cached as current data. Provider cooldowns respect `Retry-After`.
+
+This RPC connection is separate from the existing QuickNode wallet webhooks: those push signed revenue/treasury transfers into `/api/webhooks/quicknode/revenue`, while Launch Math asks for current program settings. Adding the report connection does not alter wallet subscriptions or their signing secret.
+
+Report jobs retain attempt counts, scheduled retry times and sanitized failure details. Railway logs emit single-line `retry-scheduled`, `failed`, `delivery-failed` and `complete` events with the job ID and venue. A successful delivery records Telegram's message ID. Only failed live-data reads automatically retry; an uncertain image delivery never automatically resends and risks a duplicate.
 
 The exported JSON retains the full input configuration, pricing observations, source metadata, model version and exact raw amounts. It is the portable audit record. An explicit snapshot calculation uses those captured settings without network access; its original source dates continue to matter. A snapshot reproduces a prior calculation, not a promise that the old protocol settings remain current.
 

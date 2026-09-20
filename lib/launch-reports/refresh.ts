@@ -1,4 +1,6 @@
-/** Server-only, read-only public configuration refresh. Endpoints are fixed. */
+/** Server-only, read-only configuration refresh; connection overrides stay on the server. */
+import { fetchLaunchData } from './data-fetch'
+import { readSolanaLaunchAccounts } from './solana-data'
 import { createHash } from 'node:crypto'
 import type { LaunchReportRequest } from './types'
 import { validateRequest } from './engine'
@@ -11,7 +13,6 @@ import { refreshLetsCashTerms, refreshPoolsTerms } from './refresh-native-evm'
 import { refreshSushiTerms, refreshLunchTerms } from './refresh-evm'
 
 export const supportedRefreshModels = ['pumpfun', 'pumpfun-custom', 'stonkfun', 'raydium-cpmm', 'pons', 'letscash', 'pools-instant', 'launchlab', 'sushi-launchpad', 'lunch-v3', 'lunch-v4-tax', 'lunch-v4-rewards', 'fourmeme', 'flap'] as const
-const SOL_RPC = 'https://api.mainnet-beta.solana.com'
 const RAY_CONFIGS = 'https://api-v3.raydium.io/main/cpmm-config'
 const STONK_PRICING = 'https://www.stonkfun.xyz/api/public/v1/launchlab/pricing?quoteMint=So11111111111111111111111111111111111111112&mode=standard'
 const LAUNCHLAB_PROGRAM = 'LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj'
@@ -23,18 +24,13 @@ const STONK_ACCOUNTS = ['6s1xP3hpbAfFoNtUNF8mfHsjr2Bd97JxFJRWLbL6aHuX', '4E876qZ
 type JsonObject = Record<string, any>
 
 async function fetchJson(url: string, body?: JsonObject): Promise<JsonObject> {
-  const response = await fetch(url, { method: body ? 'POST' : 'GET', headers: body ? { 'content-type': 'application/json' } : undefined, ...(body ? { body: JSON.stringify(body) } : {}), cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(15000) })
+  const response = await fetchLaunchData(url, { method: body ? 'POST' : 'GET', headers: body ? { 'content-type': 'application/json' } : undefined, ...(body ? { body: JSON.stringify(body) } : {}), cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(15000) }, 'Launch configuration service')
   if (!response.ok) throw new Error(`Public configuration service returned HTTP ${response.status}; saved terms were not changed`)
   const text = await response.text()
   if (text.length > 1_000_000) throw new Error('Public configuration response exceeds the supported size')
   return JSON.parse(text)
 }
 
-async function accounts(addresses: string[]) {
-  const payload = await fetchJson(SOL_RPC, { jsonrpc: '2.0', id: 1, method: 'getMultipleAccounts', params: [addresses, { encoding: 'base64', commitment: 'finalized' }] })
-  if (payload.error || !Number.isSafeInteger(payload.result?.context?.slot) || !Array.isArray(payload.result?.value) || payload.result.value.length !== addresses.length) throw new Error('Solana configuration read failed; saved terms were not changed')
-  return payload.result as { context: { slot: number }; value: JsonObject[] }
-}
 
 function accountBytes(account: JsonObject, owner: string, discriminator: string, minimum: number): Buffer {
   if (!account || account.owner !== owner || !Array.isArray(account.data) || account.data[1] !== 'base64') throw new Error('Configuration account owner or encoding does not match the verified program')
@@ -85,11 +81,11 @@ function base58Bytes(value: string): Buffer {
 
 async function refreshPump(request: LaunchReportRequest): Promise<LaunchReportRequest> {
   if (request.quote.symbol !== 'SOL' || request.quote.decimals !== 9 || request.base.decimals !== 6 || request.base.supply !== '1000000000') throw new Error('Pump native refresh requires the standard SOL / 1-billion-token configuration')
-  const result = await accounts(PUMP_ACCOUNTS)
+  const result = await readSolanaLaunchAccounts(PUMP_ACCOUNTS)
   const tiers = decodePumpFeeTiers(result.value[0]), curve = decodePumpFeeTiers(result.value[1]), global = decodePumpGlobal(result.value[2])
   if (curve.length !== 1 || curve[0].lpFeeBps !== 0) throw new Error('Native curve fees changed to an unsupported tiered structure')
   const next = structuredClone(request), asOf = new Date().toISOString()
-  next.terms = { ...next.terms, initialVirtualQuoteReserves: global.virtualQuoteRaw.toString(), protocolFeeBps: curve[0].protocolFeeBps, creatorFeeBps: curve[0].creatorFeeBps, migrationFeeRaw: global.migrationFeeRaw.toString(), ammFeeTiers: tiers, _snapshot: { rpc: SOL_RPC, slot: result.context.slot, commitment: 'finalized', accounts: PUMP_ACCOUNTS, observedAt: asOf, responseSha256: snapshotHash(result), layoutSource: 'https://raw.githubusercontent.com/pump-fun/pump-public-docs/main/idl/pump_fees.json' } }
+  next.terms = { ...next.terms, initialVirtualQuoteReserves: global.virtualQuoteRaw.toString(), protocolFeeBps: curve[0].protocolFeeBps, creatorFeeBps: curve[0].creatorFeeBps, migrationFeeRaw: global.migrationFeeRaw.toString(), ammFeeTiers: tiers, _snapshot: { rpc: result.rpc, slot: result.context.slot, commitment: 'finalized', accounts: PUMP_ACCOUNTS, observedAt: asOf, responseSha256: snapshotHash({ context: result.context, value: result.value }), layoutSource: 'https://raw.githubusercontent.com/pump-fun/pump-public-docs/main/idl/pump_fees.json' } }
   next.termsSource = { kind: 'snapshot', label: `Pump native global and fee accounts, finalized Solana slot ${result.context.slot}`, url: 'https://pump.fun/docs/fees', asOf }
   return next
 }
@@ -97,7 +93,7 @@ async function refreshPump(request: LaunchReportRequest): Promise<LaunchReportRe
 async function refreshPumpUsdc(request: LaunchReportRequest): Promise<LaunchReportRequest> {
   if (request.quote.symbol !== 'USDC' || request.quote.decimals !== 6 || request.base.decimals !== 6 || request.base.supply !== '1000000000' || (request.terms.mint && request.terms.mint !== USDC_MINT)) throw new Error('Automatic non-SOL Pump settings currently cover standard USDC launches')
   if (request.terms.creatorFeeOverrideBps !== undefined) throw new Error('Pump creator overrides apply to exotic pairs; USDC uses the stable fee schedule')
-  const result = await accounts([...PUMP_ACCOUNTS, USDC_MINT])
+  const result = await readSolanaLaunchAccounts([...PUMP_ACCOUNTS, USDC_MINT])
   const tiers = decodePumpFeeTiers(result.value[0], 'stable'), curve = decodePumpFeeTiers(result.value[1], 'stable'), native = decodePumpGlobal(result.value[2])
   const global = accountBytes(result.value[2], PUMP_PROGRAM, 'a7e8e8b1c86c727f', 1045)
   const mint = result.value[3], mintData = Buffer.from(mint?.data?.[0] ?? '', 'base64')
@@ -105,7 +101,7 @@ async function refreshPumpUsdc(request: LaunchReportRequest): Promise<LaunchRepo
   if (mint?.owner !== 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' || mint?.data?.[1] !== 'base64' || mintData.length !== 82 || mintData[44] !== 6 || mintData[45] !== 1) throw new Error('The USDC mint does not match the verified token program and decimals')
   if (curve.length !== 1 || curve[0].lpFeeBps !== 0) throw new Error('USDC curve fees changed to an unsupported tiered structure')
   const next = structuredClone(request), asOf = new Date().toISOString()
-  next.terms = { ...next.terms, mint: USDC_MINT, tokenProgramId: mint.owner, registry: PUMP_ACCOUNTS[2], quoteSchedule: 'stable', initialVirtualQuoteReserves: global.readBigUInt64LE(1005).toString(), protocolFeeBps: curve[0].protocolFeeBps, creatorFeeBps: curve[0].creatorFeeBps, migrationFeeRaw: '0', nativeMigrationCostLamports: native.migrationFeeRaw.toString(), ammFeeTiers: tiers, _snapshot: { rpc: SOL_RPC, slot: result.context.slot, commitment: 'finalized', accounts: [...PUMP_ACCOUNTS, USDC_MINT], observedAt: asOf, responseSha256: snapshotHash(result), feeSchedule: 'USDC stableFeeTiers', layoutSource: 'https://raw.githubusercontent.com/pump-fun/pump-public-docs/main/idl/pump.json' } }
+  next.terms = { ...next.terms, mint: USDC_MINT, tokenProgramId: mint.owner, registry: PUMP_ACCOUNTS[2], quoteSchedule: 'stable', initialVirtualQuoteReserves: global.readBigUInt64LE(1005).toString(), protocolFeeBps: curve[0].protocolFeeBps, creatorFeeBps: curve[0].creatorFeeBps, migrationFeeRaw: '0', nativeMigrationCostLamports: native.migrationFeeRaw.toString(), ammFeeTiers: tiers, _snapshot: { rpc: result.rpc, slot: result.context.slot, commitment: 'finalized', accounts: [...PUMP_ACCOUNTS, USDC_MINT], observedAt: asOf, responseSha256: snapshotHash({ context: result.context, value: result.value }), feeSchedule: 'USDC stableFeeTiers', layoutSource: 'https://raw.githubusercontent.com/pump-fun/pump-public-docs/main/idl/pump.json' } }
   next.termsSource = { kind: 'snapshot', label: `Pump USDC registry, mint and stable fee accounts, finalized Solana slot ${result.context.slot}`, url: 'https://pump.fun/docs/fees', asOf }
   return next
 }
@@ -123,7 +119,7 @@ export function decodeStonkFees(globalAccount: JsonObject, platformAccount: Json
 
 async function refreshStonk(request: LaunchReportRequest): Promise<LaunchReportRequest> {
   if (request.quote.symbol !== 'SOL' || request.quote.decimals !== 9 || request.base.decimals !== 6 || request.terms.transferFee !== undefined) throw new Error('Automatic Stonkfun refresh supports standard untaxed SOL launches; other modes require their exact verified terms')
-  const [pricing, configs] = await Promise.all([fetchJson(STONK_PRICING), accounts(STONK_ACCOUNTS)])
+  const [pricing, configs] = await Promise.all([fetchJson(STONK_PRICING), readSolanaLaunchAccounts(STONK_ACCOUNTS)])
   const data = pricing.data
   if (data?.quote?.mint !== 'So11111111111111111111111111111111111111112' || data.quote.decimals !== 9 || data.curve?.programId !== LAUNCHLAB_PROGRAM || data.curve.configId !== STONK_ACCOUNTS[0] || data.platform?.standard !== STONK_ACCOUNTS[1] || data.curve.curveType !== 'ConstantCurve' || data.curve.baseDecimals !== 6 || data.modes?.standard?.transferFee !== null) throw new Error('Stonkfun pricing identity or launch structure changed; verify the new configuration before continuing')
   const fees = decodeStonkFees(configs.value[0], configs.value[1])
@@ -133,7 +129,7 @@ async function refreshStonk(request: LaunchReportRequest): Promise<LaunchReportR
   if (curve.virtualBase.toString() !== data.curve.derived?.virtualA || curve.virtualQuote.toString() !== data.curve.derived?.virtualB) throw new Error('Stonkfun virtual reserves disagree with the supplied LaunchLab derivation')
   const next = structuredClone(request), asOf = new Date().toISOString()
   next.base.supply = formatAmount(BigInt(terms.supply), 6)
-  next.terms = { ...terms, _snapshot: { pricingUrl: STONK_PRICING, pricingGeneratedAt: pricing.meta?.generatedAt, rpc: SOL_RPC, slot: configs.context.slot, commitment: 'finalized', accounts: STONK_ACCOUNTS, observedAt: asOf, responseSha256: snapshotHash({ pricing, configs }), layoutSource: 'https://github.com/raydium-io/raydium-sdk-V2/blob/master/src/raydium/launchpad/layout.ts' } }
+  next.terms = { ...terms, _snapshot: { pricingUrl: STONK_PRICING, pricingGeneratedAt: pricing.meta?.generatedAt, rpc: configs.rpc, slot: configs.context.slot, commitment: 'finalized', accounts: STONK_ACCOUNTS, observedAt: asOf, responseSha256: snapshotHash({ pricing, configs: { context: configs.context, value: configs.value } }), layoutSource: 'https://github.com/raydium-io/raydium-sdk-V2/blob/master/src/raydium/launchpad/layout.ts' } }
   next.termsSource = { kind: 'snapshot', label: `Stonkfun standard SOL pricing and LaunchLab fees, finalized Solana slot ${configs.context.slot}`, url: STONK_PRICING, asOf }
   return next
 }

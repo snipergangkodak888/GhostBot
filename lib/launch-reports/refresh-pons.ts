@@ -1,3 +1,4 @@
+import { fetchLaunchData } from './data-fetch'
 import { toFunctionSelector } from 'viem';
 import type { LaunchReportRequest } from './types';
 import { formatAmount } from './utils';
@@ -40,11 +41,11 @@ export async function refreshPonsTerms(request: LaunchReportRequest): Promise<La
   let requestId = 0;
   async function rpc(method: string, params: unknown[]): Promise<unknown> {
     const id = ++requestId;
-    const response = await fetch(RPC, {
+    const response = await fetchLaunchData(RPC, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id, method, params }), signal,
       cache: 'no-store', redirect: 'error',
-    });
+    }, 'Pons launch settings');
     if (!response.ok) throw new Error(`Pons public RPC returned HTTP ${response.status}.`);
     const body = await response.text();
     if (body.length > 100_000) throw new Error('Pons public RPC response exceeded the expected size.');

@@ -5,6 +5,7 @@ import { getTelegramBotToken, editTelegramMessage, isTelegramCaptureActive } fro
 import { createTelegramLaunchRequest, generateTelegramLaunchReport, renderTelegramLaunchReport, launchMathErrorView, type LaunchMathSelection } from './launch-reports/telegram'
 import type { LaunchReport } from './launch-reports/types'
 import { sendLaunchReportImage } from './launch-report-delivery'
+import { isLaunchDataUnavailable, launchDataErrorMessage } from './launch-reports/data-fetch'
 
 export const LAUNCH_REPORT_JOBS = 'launchReportJobs'
 type JobStatus = 'queued' | 'running' | 'sending' | 'complete' | 'failed' | 'cancelled'
@@ -13,6 +14,8 @@ export type LaunchReportJob = {
   selection: LaunchMathSelection; status: JobStatus; version: number
   createdAt: string; updatedAt: string; leaseUntil?: string
   report?: LaunchReport; deliveryUncertain?: boolean; deliveredMessageId?: number
+  attempts?: number; nextAttemptAt?: string | null
+  lastFailure?: { code: string; stage: string; at: string; message?: string; service?: string; httpStatus?: number }
 }
 type StoredJob = { id: string; data: LaunchReportJob }
 function path(filters: Record<string, string> = {}) {
@@ -40,7 +43,7 @@ export async function queueLaunchReport(params: { chatId: string | number; teleg
   const current = (await readJobs({ id: `eq.${id}`, limit: '1' }))[0]
   if (current) {
     if (current.status === 'failed' || current.status === 'cancelled') {
-      const retried = await transition(current, { status: 'queued', telegramId: params.telegramId, deliveryUncertain: false })
+      const retried = await transition(current, { status: 'queued', telegramId: params.telegramId, deliveryUncertain: false, attempts: 0, nextAttemptAt: null })
       return { job: retried || current, duplicate: !retried }
     }
     return { job: current, duplicate: true }
@@ -67,7 +70,7 @@ async function feedback(job: LaunchReportJob, token: string, reason: 'generation
   await editTelegramMessage(token, job.chatId, job.messageId, text, { replyMarkup: view.replyMarkup })
 }
 async function runJob(original: LaunchReportJob, token: string) {
-  let job = await transition(original, { status: 'running', leaseUntil: new Date(Date.now() + 180_000).toISOString() })
+  let job = await transition(original, { status: 'running', attempts: (original.attempts || 0) + 1, nextAttemptAt: null, leaseUntil: new Date(Date.now() + 180_000).toISOString() })
   if (!job) return
   try {
     const permission = await getBotPermissionContext({ telegramId: job.telegramId, chatId: job.chatId, capture: isTelegramCaptureActive() })
@@ -81,16 +84,31 @@ async function runJob(original: LaunchReportJob, token: string) {
     if (!job) return
     const delivery = await sendLaunchReportImage(token, job.chatId, result)
     if (delivery.status !== 'sent') {
-      const failed = await transition(job, { status: 'failed', deliveryUncertain: delivery.status === 'uncertain' })
+      const failed = await transition(job, { status: 'failed', deliveryUncertain: delivery.status === 'uncertain', lastFailure: { code: `TELEGRAM_${delivery.status.toUpperCase()}`, stage: 'sending', at: new Date().toISOString() } })
+      console.error('[launch-report-jobs]', JSON.stringify({ event: 'delivery-failed', jobId: job._id, modelId: job.selection.modelId, outcome: delivery.status }))
       if (failed) await feedback(failed, token, 'delivery')
       return
     }
     job = await transition(job, { status: 'complete', deliveredMessageId: delivery.messageId })
-    if (job) await editTelegramMessage(token, job.chatId, job.messageId, 'Your report is ready below. Open the PNG to view or share it.', { replyMarkup: { inline_keyboard: [[{ text: 'New report', callback_data: 'lm:home' }]] } })
+    if (job) {
+      console.info('[launch-report-jobs]', JSON.stringify({ event: 'complete', jobId: job._id, modelId: job.selection.modelId, attempt: job.attempts, deliveredMessageId: delivery.messageId }))
+      await editTelegramMessage(token, job.chatId, job.messageId, 'Your report is ready below. Open the PNG to view or share it.', { replyMarkup: { inline_keyboard: [[{ text: 'New report', callback_data: 'lm:home' }]] } })
+    }
   } catch (error) {
-    console.error('[launch-report-jobs] Report failed', { jobId: original._id, modelId: original.selection.modelId, stage: job?.status, error: error instanceof Error ? error.message.slice(0, 500) : 'Unknown error' })
     if (!job || job.status === 'complete') return
-    const failed = await transition(job, { status: 'failed', deliveryUncertain: job.status === 'sending' }).catch(() => null)
+    const transient = isLaunchDataUnavailable(error)
+    const lastFailure = { code: transient ? error.code : 'REPORT_FAILED', stage: job.status, at: new Date().toISOString(), message: launchDataErrorMessage(error), ...(transient ? { service: error.service, httpStatus: error.httpStatus } : {}) }
+    // Only retry reads/calculation, never an image that Telegram may have accepted.
+    if (transient && job.status === 'running' && !job.report && (job.attempts || 0) < 3) {
+      const delay = Math.max(15_000 * (job.attempts || 1), Math.min(error.retryAfterMs || 0, 120_000))
+      const nextAttemptAt = new Date(Date.now() + delay).toISOString()
+      const queued = await transition(job, { status: 'queued', nextAttemptAt, lastFailure })
+      console.warn('[launch-report-jobs]', JSON.stringify({ event: 'retry-scheduled', jobId: job._id, modelId: job.selection.modelId, attempt: job.attempts, nextAttemptAt, ...lastFailure }))
+      if (queued) await editTelegramMessage(token, job.chatId, job.messageId, 'The live data service is busy. I’m retrying automatically and will post your image here when it’s ready. You don’t need to tap again.', { replyMarkup: { inline_keyboard: [] } }).catch(() => {})
+      return
+    }
+    console.error('[launch-report-jobs]', JSON.stringify({ event: 'failed', jobId: original._id, modelId: original.selection.modelId, attempt: job.attempts, ...lastFailure }))
+    const failed = await transition(job, { status: 'failed', deliveryUncertain: job.status === 'sending', lastFailure }).catch(() => null)
     if (failed) await feedback(failed, token, failed.report ? 'delivery' : 'generation').catch(() => {})
   }
 }
@@ -106,7 +124,7 @@ export function runLaunchReportJobs() {
       const next = await transition(job, { status: job.status === 'running' ? 'queued' : 'failed', deliveryUncertain: job.status === 'sending' })
       if (next?.status === 'failed') await feedback(next, token, 'delivery').catch(() => {})
     }
-    const jobs = await readJobs({ 'data->>status': 'eq.queued', order: 'created_at.asc', limit: '2' })
+    const jobs = await readJobs({ 'data->>status': 'eq.queued', or: `(data->>nextAttemptAt.is.null,data->>nextAttemptAt.lte.${now})`, order: 'created_at.asc', limit: '2' })
     await Promise.all(jobs.map(job => runJob(job, token)))
     return { ok: true as const, processed: jobs.length }
   })().finally(() => { activeRun = null })

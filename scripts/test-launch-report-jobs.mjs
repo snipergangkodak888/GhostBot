@@ -30,6 +30,12 @@ function harness() {
   function matches(row, search) {
     for (const [key, condition] of search) {
       if (['select', 'limit', 'order', 'on_conflict'].includes(key)) continue
+      if (key === 'or') {
+        assert.match(condition, /^\(data->>nextAttemptAt.is.null,data->>nextAttemptAt.lte\./)
+        const due = condition.slice('(data->>nextAttemptAt.is.null,data->>nextAttemptAt.lte.'.length, -1)
+        if (row.data.nextAttemptAt && row.data.nextAttemptAt > due) return false
+        continue
+      }
       const actual = key.startsWith('data->>') ? row.data[key.slice(7)] : row[key]
       if (condition.startsWith('eq.')) { if (String(actual) !== condition.slice(3)) return false }
       else if (condition.startsWith('in.(') && condition.endsWith(')')) { if (!condition.slice(4, -1).split(',').includes(String(actual))) return false }
@@ -347,6 +353,46 @@ try {
     assert.equal(h.state.generateCalls, 2)
     assert.equal(h.state.sends.length, 1)
     assert.equal(h.job(queued.job._id).status, 'complete')
+  })
+
+  await test('temporary live-data failures retry durably without another click or duplicate image', async () => {
+    const h = harness()
+    const queued = await h.worker.queueLaunchReport(h.params())
+    h.state.generateError = Object.assign(new Error('Solana launch settings HTTP 429'), { code: 'LAUNCH_DATA_UNAVAILABLE', service: 'Solana launch settings', httpStatus: 429, retryAfterMs: 30000 })
+    await h.worker.runLaunchReportJobs()
+    const retry = h.job(queued.job._id)
+    assert.equal(retry.status, 'queued')
+    assert.equal(retry.attempts, 1)
+    assert.equal(retry.lastFailure.httpStatus, 429)
+    assert(Date.parse(retry.nextAttemptAt) > Date.now())
+    assert.match(h.state.edits.at(-1)[3], /retrying automatically/)
+    await h.loadWorker().runLaunchReportJobs()
+    assert.equal(h.state.generateCalls, 1, 'Respect the provider cooldown across worker restarts')
+    h.state.generateError = null
+    retry.nextAttemptAt = '2000-01-01T00:00:00.000Z'
+    await h.loadWorker().runLaunchReportJobs()
+    assert.equal(h.job(queued.job._id).status, 'complete')
+    assert.equal(h.state.sends.length, 1)
+  })
+
+  await test('prolonged outage stops after three attempts; manual retry starts a new bounded cycle', async () => {
+    const h = harness()
+    const queued = await h.worker.queueLaunchReport(h.params())
+    h.state.generateError = Object.assign(new Error('Unavailable'), { code: 'LAUNCH_DATA_UNAVAILABLE', service: 'Solana launch settings' })
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      h.job(queued.job._id).nextAttemptAt = '2000-01-01T00:00:00.000Z'
+      await h.loadWorker().runLaunchReportJobs()
+      assert.equal(h.job(queued.job._id).attempts, attempt)
+    }
+    assert.equal(h.job(queued.job._id).status, 'failed')
+    assert.equal(h.state.sends.length, 0)
+    await h.worker.runLaunchReportJobs()
+    assert.equal(h.state.generateCalls, 3)
+    await h.worker.queueLaunchReport(h.params())
+    assert.equal(h.job(queued.job._id).attempts, 0)
+    h.state.generateError = null
+    await h.worker.runLaunchReportJobs()
+    assert.equal(h.state.sends.length, 1)
   })
 
   await test('invalid callback selections and message identifiers never enter storage', async () => {

@@ -141,7 +141,7 @@ try {
   for (const mode of ['http', 'zero', 'invalid']) {
     lookupFailure = mode
     const priorRefreshes = refreshCalls
-    await assert.rejects(() => prepareLaunchReport(draft), /refresh|invalid/)
+    await assert.rejects(() => prepareLaunchReport(draft), /refresh|invalid|temporarily unavailable/)
     assert.equal(refreshCalls, priorRefreshes, 'A failed FX lookup must stop before protocol calculation')
     assert.deepEqual(draft, draftBefore)
   }
