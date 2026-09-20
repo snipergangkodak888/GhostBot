@@ -1,6 +1,7 @@
 import { createDefaultRequest, getModelCatalog } from './catalog'
 import { renderLaunchReportPng } from './render'
 import { injectionReference } from './injection'
+import { launchReportCautions } from './client-summary'
 import { formatAmount, parseAmount } from './utils'
 import type { LaunchReport, LaunchReportRequest } from './types'
 
@@ -184,17 +185,11 @@ export function launchMathResultCaption(report: LaunchReport): string {
   const available = report.rows.filter(row => row.status === 'ok').length
   const missing = report.rows.length - available
   return [
-    `Ghost Launch Math · ${venueName(report.modelId)}`,
-    `${available} funding scenarios · ${report.request.quote.symbol}${report.request.quote.usdPrice ? ' and USD' : ''}`,
-    `${walletLine(report.request)} included in every total.`,
-    report.request.injectionLiquidity
-      ? 'Total = launch funding + aged wallets + injection / MM liquidity. The MM reserve is held separately from initial pool liquidity.'
-      : 'This saved report excludes injection / MM liquidity. Generate a fresh report to include the current buffer policy.',
-    'MC = modeled price after purchases × total token supply.',
-    report.warnings.some(warning => warning.startsWith('Operating allowances are zero:')) ? operatingExclusionNote : '',
-    missing ? `${missing} unavailable scenario${missing === 1 ? ' is' : 's are'} marked in the image.` : '',
-    `Estimate prepared ${new Date(report.generatedAt).toISOString().slice(0, 16).replace('T', ' ')} UTC.`,
-    'Tap the image to view it, or forward it directly to your client.',
+    `Ghost · ${venueName(report.modelId)}`,
+    `${available} scenarios · ${report.request.operations.agedWalletCount} aged wallets${report.request.injectionLiquidity ? ' + MM liquidity' : ''} included.`,
+    !report.request.injectionLiquidity ? 'MM excluded from this saved report; refresh to include.' : '',
+    launchReportCautions(report).filter(note => /excluded|excludes|refresh/i.test(note)).join(' '),
+    missing ? `${missing} unavailable scenario${missing === 1 ? '' : 's'} marked in the image.` : '',
   ].filter(Boolean).join('\n')
 }
 

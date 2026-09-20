@@ -23,6 +23,8 @@ Each supply percentage is the share of total token supply held after purchases, 
 3. Keep the displayed standard settings and tap **Generate image**. Pool examples also let you choose from the standard liquidity amounts.
 4. Ghost checks current settings, calculates the report and displays an inline photo in the same conversation. Tap to view it or forward it directly. The original PNG remains available from the web builder. Temporary data failures retry automatically.
 
+Client images keep the footer to supply accumulation, aged wallets, MM liquidity and the total funding definition, plus applicable model assumptions or exclusions. Telegram uses a two-line caption for standard reports, adding an exclusion or unavailable-scenario note only when needed. Full calculations, source records and detailed assumptions remain in the web report and JSON export.
+
 The bot uses the same standard supply comparisons, 125-wallet default and fixed wallet prices as the web tool. There are no curve constants, opening ticks or quote tables to enter. For a client name or a custom setup, use the web builder.
 
 This flow is available to active enrolled team members in direct messages or configured launch, trade and management groups. The detailed web builder retains the normal administrator login. Queued report jobs and duplicate protection prevent repeat taps or webhook delivery from starting the same job twice. Generating a report does not buy wallets or execute a launch; the existing launch workflow remains separate.

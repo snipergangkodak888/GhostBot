@@ -12,9 +12,9 @@ const load = createSourceLoader({
     const request = structuredClone(draft)
     request.quote.usdPrice = '125.50'
     request.quote.priceSource = 'Fixture current price'
-    request.quote.priceAsOf = '2026-09-20T12:00:00.000Z'
+    request.quote.priceAsOf = new Date().toISOString()
     request.injectionLiquidity = { policyVersion: 'ghost-injection-v1', referenceSymbol: ['pumpfun', 'raydium-cpmm'].includes(request.modelId) ? 'SOL' : 'ETH', referenceUsdPrice: request.quote.usdPrice, quoteUsdPrice: request.quote.usdPrice, asOf: request.quote.priceAsOf, source: request.quote.priceSource }
-    request.termsSource = { kind: 'snapshot', label: 'Fresh fixture terms', asOf: '2026-09-20T12:00:00.000Z' }
+    request.termsSource = { kind: 'snapshot', label: 'Fresh fixture terms', asOf: request.quote.priceAsOf }
     return request
   } },
 })
@@ -116,11 +116,11 @@ const frozen = flow.renderTelegramLaunchReport(result.report, { modelId: 'pumpfu
 assert.equal(prepareCalls, 1)
 assert.deepEqual(frozen.png, result.png)
 assert.equal(frozen.caption, result.caption)
-assert.match(frozen.caption, /forward it directly to your client/)
-assert.match(frozen.caption, /Total = launch funding \+ aged wallets \+ injection/)
+assert.match(frozen.caption, /125 aged wallets \+ MM liquidity included/)
+assert.equal(frozen.caption.split('\n').length, 2, 'Standard report caption stays compact')
 const legacyReport = structuredClone(result.report)
 delete legacyReport.request.injectionLiquidity
-assert.match(flow.launchMathResultCaption(legacyReport), /saved report excludes injection/)
+assert.match(flow.launchMathResultCaption(legacyReport), /MM excluded from this saved report/)
 assert.throws(() => flow.renderTelegramLaunchReport(result.report, { modelId: 'pons' }), /does not match/)
 assert.throws(() => flow.renderTelegramLaunchReport({ ...result.report, rows: [] }, { modelId: 'pumpfun' }), /No funding scenarios/)
 for (const button of buttons(result)) assert.ok(callback(button))
@@ -132,7 +132,7 @@ assert.ok(dex.report.rows.every(row => row.liquidity === '30' && row.status === 
 assert.ok(dex.caption.length <= 1024)
 
 const v2 = await flow.generateTelegramLaunchReport({ modelId: 'uniswap-v2' })
-assert.match(v2.caption, /Network, setup, cleanup and holder costs are excluded/)
+assert.match(v2.caption, /Excludes network, setup, cleanup and holder costs/)
 assert.ok(v2.caption.length <= 1024)
 
 const failing = createSourceLoader({ './prepare': { prepareLaunchReport: async () => { throw new Error('Fixture refresh unavailable') } } })(path.join(projectRoot, 'lib/launch-reports/telegram.ts'))

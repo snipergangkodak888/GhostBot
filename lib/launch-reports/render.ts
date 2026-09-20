@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Resvg } from '@resvg/resvg-js'
 import type { LaunchReport } from './types'
+import { launchReportFootnotes } from './client-summary'
 
 const xml = (v: unknown) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]!))
 const short = (v: unknown, n = 100) => { const s = String(v ?? ''); return s.length > n ? `${s.slice(0, n - 1)}…` : s }
@@ -21,8 +22,8 @@ export function renderLaunchReportSvg(report: LaunchReport): string {
   if (report.rows.length > 64) throw new Error('An image can contain at most 64 scenarios.')
   const q = report.request.quote
   const stamp = new Date(report.generatedAt).toISOString().replace('T', ' ').slice(0, 16) + ' UTC'
-  const notes = [...new Set([...report.assumptions, ...report.warnings, ...report.rows.flatMap(r => r.warnings)])].flatMap(s => wrap(s))
-  const height = 348 + report.rows.length * 61 + notes.length * 22 + 90
+  const notes = launchReportFootnotes(report).flatMap(s => wrap(s))
+  const height = 348 + report.rows.length * 61 + notes.length * 24 + 48
   const parts = [`<svg xmlns="http://www.w3.org/2000/svg" width="3200" height="${height * 2}" viewBox="0 0 1600 ${height}" role="img" aria-label="${xml(report.title)}">`]
   const fontPath = join(process.cwd(), 'node_modules/geist/dist/fonts/geist-sans/Geist-Regular.woff2')
   const font = readFileSync(fontPath).toString('base64')
@@ -60,8 +61,8 @@ export function renderLaunchReportSvg(report: LaunchReport): string {
     if (q.usdPrice) t(`≈ $${cash(Number(fixed(totalCents)) * Number(q.usdPrice))}`, cols[total], y + 45, 11, '#a6bbd6', 400, 'middle')
   })
   const foot = 326 + report.rows.length * 61; line(foot)
-  notes.forEach((note, i) => t(note, 44, foot + 28 + i * 22, 12, i === 0 ? '#84b9ff' : '#9dafc7'))
-  t('Scenario estimate • Capital includes stated reserves and liquidity • Values rounded for display', 44, height - 28, 11, '#728aa9')
+  notes.forEach((note, i) => t(note, 44, foot + 28 + i * 24, 14, i === 0 ? '#84b9ff' : '#9dafc7'))
+  t('Estimates • Rounded values', 44, height - 24, 11, '#728aa9')
   t('GHOST / LAUNCH MATH', 1556, height - 28, 10, '#728aa9', 600, 'end')
   parts.push('</svg>'); return parts.join('\n')
 }
