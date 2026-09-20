@@ -37,24 +37,27 @@ export function renderLaunchReportSvg(report: LaunchReport): string {
   t(short(`${report.client ? `${report.client} · ` : ''}${report.modelId} · ${report.request.chain || q.symbol} · ${report.request.base.supply} ${report.request.base.symbol} total supply`, 150), 44, 193, 15, '#9dafc7')
   t(short(`Terms: ${report.request.termsSource?.label || 'User-supplied inputs'}${report.request.termsSource?.asOf ? ` · ${report.request.termsSource.asOf}` : ''}`, 158), 44, 223, 12, '#9dafc7')
   t(q.usdPrice ? `FX: 1 ${q.symbol} = $${q.usdPrice} · ${q.priceSource || 'User supplied'} · ${q.priceAsOf || 'No date supplied'}` : `Native ${q.symbol} estimates · USD conversion not supplied`, 44, 246, 12, '#9dafc7')
-  const cols = [44, 188, 355, 695, 953, 1200, 1450]
-  const headers = ['CONTROL', `INITIAL LP (${q.symbol})`, 'PHASE', q.usdPrice ? 'FDV (USD)' : `FDV (${q.symbol})`, `FUNDING (${q.symbol})`, `WALLETS (${q.symbol})`, `TOTAL (${q.symbol})`]
-  headers.forEach((s, i) => t(s, cols[i], 286, 11, i === 6 ? '#84b9ff' : '#9dafc7', 600, i < 3 ? 'start' : 'middle')); line(303)
+  const hasLp = report.rows.some(row => row.liquidity !== '0')
+  const cols = hasLp ? [44, 205, 405, 655, 890, 1115, 1450] : [44, 310, 580, 845, 1115, 1450]
+  const mc = hasLp ? 2 : 1, funding = mc + 1, wallets = mc + 2, injection = mc + 3, total = mc + 4
+  const headers = ['CONTROL', ...(hasLp ? [`INITIAL LP (${q.symbol})`] : []), q.usdPrice ? 'MC (USD)' : `MC (${q.symbol})`, `LAUNCH (${q.symbol})`, `WALLETS (${q.symbol})`, `INJECTION / MM (${q.symbol})`, `TOTAL (${q.symbol})`]
+  headers.forEach((s, i) => t(s, cols[i], 286, 11, i === total ? '#84b9ff' : '#9dafc7', 600, i === 0 ? 'start' : 'middle')); line(303)
   report.rows.forEach((row, i) => {
     const y = 312 + i * 61
     if (i % 2) parts.push(`<rect x="44" y="${y - 2}" width="1512" height="58" rx="3" fill="#0e1c30"/>`)
-    t(`${row.targetPct}%`, cols[0], y + 31, 21, '#f1f5ff', 600)
+    t(`${row.targetPct}%`, cols[0], y + 23, 21, '#f1f5ff', 600)
     if (row.status !== 'ok' || !row.raw) { t(short(row.error || 'Required launch inputs are missing.', 130), cols[1], y + 31, 14, '#e6ba88'); return }
-    t(row.liquidity === '0' ? '—' : short(row.liquidity, 14), cols[1], y + 31, 18)
-    t(short(row.phase, 28), cols[2], y + 31, 14, '#a6bbd6')
-    t(`${q.usdPrice ? '$' : ''}${cash(q.usdPrice ? row.fdvUsd : row.fdvQuote)}`, cols[3], y + 31, 20, '#f1f5ff', 400, 'middle')
-    // Reconcile displayed funding to rounded total less rounded wallet cost.
-    const walletCents = cents(row.raw.agedWallets, q.decimals), totalCents = cents(row.raw.total, q.decimals)
-    t(fixed(totalCents - walletCents), cols[4], y + 31, 20, '#f1f5ff', 400, 'middle')
-    t(fixed(walletCents), cols[5], y + 31, 20, '#9dafc7', 400, 'middle')
+    t(short(row.phase, hasLp ? 22 : 32), cols[0], y + 44, 10, '#a6bbd6')
+    if (hasLp) t(short(row.liquidity, 14), cols[1], y + 31, 18, '#ecf3ff', 400, 'middle')
+    t(`${q.usdPrice ? '$' : ''}${cash(q.usdPrice ? row.fdvUsd : row.fdvQuote)}`, cols[mc], y + 31, 20, '#f1f5ff', 400, 'middle')
+    // Displayed components must sum to the displayed total after rounding.
+    const walletCents = cents(row.raw.agedWallets, q.decimals), injectionCents = cents(row.raw.injectionLiquidity || '0', q.decimals), totalCents = cents(row.raw.total, q.decimals)
+    t(fixed(totalCents - walletCents - injectionCents), cols[funding], y + 31, 20, '#f1f5ff', 400, 'middle')
+    t(fixed(walletCents), cols[wallets], y + 31, 20, '#9dafc7', 400, 'middle')
+    t(fixed(injectionCents), cols[injection], y + 31, 20, '#b8d4fb', 400, 'middle')
     parts.push(`<rect x="1340" y="${y - 2}" width="216" height="58" rx="4" fill="#152b49"/>`)
-    t(fixed(totalCents), cols[6], y + (q.usdPrice ? 24 : 32), 24, '#84b9ff', 700, 'middle')
-    if (q.usdPrice) t(`≈ $${cash(Number(fixed(totalCents)) * Number(q.usdPrice))}`, cols[6], y + 45, 11, '#a6bbd6', 400, 'middle')
+    t(fixed(totalCents), cols[total], y + (q.usdPrice ? 24 : 32), 24, '#84b9ff', 700, 'middle')
+    if (q.usdPrice) t(`≈ $${cash(Number(fixed(totalCents)) * Number(q.usdPrice))}`, cols[total], y + 45, 11, '#a6bbd6', 400, 'middle')
   })
   const foot = 326 + report.rows.length * 61; line(foot)
   notes.forEach((note, i) => t(note, 44, foot + 28 + i * 22, 12, i === 0 ? '#84b9ff' : '#9dafc7'))
@@ -71,7 +74,7 @@ export function renderLaunchReportPng(report: LaunchReport): Buffer {
 
 export function launchReportCsv(report: LaunchReport): string {
   const cell = (v: unknown) => { const s = String(v ?? ''); return `"${(/^[=+\-@\t\r]/.test(s) ? "'" + s : s).replace(/"/g, '""')}"` }
-  const headers = ['model', 'quote', 'target_percent', 'actual_percent', 'initial_liquidity', 'phase', 'purchases', 'operations', 'model_reserves', 'provider_fee', 'recipient_buffers', 'source_gas', 'funding', 'aged_wallets', 'total', 'fdv_quote', 'fdv_usd', 'status', 'notes']
-  const rows = report.rows.map(r => [report.modelId, report.request.quote.symbol, r.targetPct, r.actualPct, r.amounts?.initialLiquidity, r.phase, r.amounts?.buys, r.amounts?.operations, r.amounts?.modelReserves, r.amounts?.providerFee, r.amounts?.recipientBuffers, r.amounts?.sourceGas, r.amounts?.funding, r.amounts?.agedWallets, r.amounts?.total, r.fdvQuote, r.fdvUsd, r.status, r.error || r.warnings.join('; ')])
+  const headers = ['model', 'quote', 'target_percent', 'actual_percent', 'initial_liquidity', 'phase', 'purchases', 'operations', 'model_reserves', 'provider_fee', 'recipient_buffers', 'source_gas', 'funding', 'aged_wallets', 'injection_mm_liquidity', 'total', 'mc_quote', 'mc_usd', 'status', 'notes']
+  const rows = report.rows.map(r => [report.modelId, report.request.quote.symbol, r.targetPct, r.actualPct, r.amounts?.initialLiquidity, r.phase, r.amounts?.buys, r.amounts?.operations, r.amounts?.modelReserves, r.amounts?.providerFee, r.amounts?.recipientBuffers, r.amounts?.sourceGas, r.amounts?.funding, r.amounts?.agedWallets, r.amounts?.injectionLiquidity ?? (r.status === 'ok' ? '0' : ''), r.amounts?.total, r.fdvQuote, r.fdvUsd, r.status, r.error || r.warnings.join('; ')])
   return [headers, ...rows].map(row => row.map(cell).join(',')).join('\r\n') + '\r\n'
 }

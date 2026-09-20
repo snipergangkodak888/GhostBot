@@ -13,6 +13,7 @@ const load = createSourceLoader({
     request.quote.usdPrice = '125.50'
     request.quote.priceSource = 'Fixture current price'
     request.quote.priceAsOf = '2026-09-20T12:00:00.000Z'
+    request.injectionLiquidity = { policyVersion: 'ghost-injection-v1', referenceSymbol: ['pumpfun', 'raydium-cpmm'].includes(request.modelId) ? 'SOL' : 'ETH', referenceUsdPrice: request.quote.usdPrice, quoteUsdPrice: request.quote.usdPrice, asOf: request.quote.priceAsOf, source: request.quote.priceSource }
     request.termsSource = { kind: 'snapshot', label: 'Fresh fixture terms', asOf: '2026-09-20T12:00:00.000Z' }
     return request
   } },
@@ -115,7 +116,11 @@ const frozen = flow.renderTelegramLaunchReport(result.report, { modelId: 'pumpfu
 assert.equal(prepareCalls, 1)
 assert.deepEqual(frozen.png, result.png)
 assert.equal(frozen.caption, result.caption)
-assert.match(frozen.caption, /Open or save the PNG to share/)
+assert.match(frozen.caption, /forward it directly to your client/)
+assert.match(frozen.caption, /Total = launch funding \+ aged wallets \+ injection/)
+const legacyReport = structuredClone(result.report)
+delete legacyReport.request.injectionLiquidity
+assert.match(flow.launchMathResultCaption(legacyReport), /saved report excludes injection/)
 assert.throws(() => flow.renderTelegramLaunchReport(result.report, { modelId: 'pons' }), /does not match/)
 assert.throws(() => flow.renderTelegramLaunchReport({ ...result.report, rows: [] }, { modelId: 'pumpfun' }), /No funding scenarios/)
 for (const button of buttons(result)) assert.ok(callback(button))

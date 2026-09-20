@@ -45,9 +45,9 @@ function verifyReport(report, request) {
     const raw = Object.fromEntries(Object.entries(row.raw).map(([key, value]) => [key, BigInt(value)]))
     assert.equal(raw.agedWallets, walletRaw, 'Fixed wallet pricing must reconcile')
     assert.equal(raw.funding, raw.buys + raw.initialLiquidity + raw.operations + raw.modelReserves + raw.providerFee + raw.recipientBuffers + raw.sourceGas)
-    assert.equal(raw.total, raw.funding + raw.agedWallets)
+    assert.equal(raw.total, raw.funding + raw.agedWallets + raw.injectionLiquidity)
     assert.ok(Number.isFinite(row.totalUsd) && row.totalUsd > 0, 'USD total must be positive and finite')
-    if (row.fdvUsd !== null) assert.ok(Number.isFinite(row.fdvUsd) && row.fdvUsd >= 0, 'FDV must be finite and nonnegative')
+    if (row.fdvUsd !== null) assert.ok(Number.isFinite(row.fdvUsd) && row.fdvUsd >= 0, 'MC must be finite and nonnegative')
   }
 }
 
@@ -73,6 +73,7 @@ async function testVenue(model) {
     assert.deepEqual(png.subarray(0, 8), Buffer.from([137,80,78,71,13,10,26,10]), 'Export must be a valid PNG')
     const width = png.readUInt32BE(16), height = png.readUInt32BE(20)
     assert.ok(width > 0 && height > 0 && png.length > 1000)
+    assert.ok(png.length <= 10_000_000 && width + height <= 10000 && Math.max(width / height, height / width) <= 20, 'Standard report must fit Telegram inline-photo limits')
     await fs.writeFile(path.join(output, `${model.id}.png`), png)
     const result = { model: model.id, status: 'pass', rows: report.rows.length, elapsedMs: Date.now() - started, pngBytes: png.length, width, height,
       source: supportedRefreshModels.includes(model.id) ? 'live protocol + live FX' : 'generic pool assumptions + live FX',

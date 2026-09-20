@@ -1,5 +1,6 @@
 import { createDefaultRequest, getModelCatalog } from './catalog'
 import { renderLaunchReportPng } from './render'
+import { injectionReference } from './injection'
 import { formatAmount, parseAmount } from './utils'
 import type { LaunchReport, LaunchReportRequest } from './types'
 
@@ -135,6 +136,9 @@ export function launchMathReviewView(selection: LaunchMathSelection): LaunchMath
     lines.push(`Initial liquidity: ${request.liquidityAmounts.join(' / ')} ${request.quote.symbol} (included in funding).`)
     lines.push(`${request.operations.retainedPct}% of tokens are kept by the team; the report includes them in ownership.`)
   }
+  lines.push(injectionReference(checked.modelId) === 'SOL'
+    ? 'Injection / MM liquidity: 30 SOL through $500k MC, scaling above; added to each total.'
+    : 'Injection / MM liquidity: 1.3 ETH through $300k MC, 2 ETH at $500k, about $10,000 at $1m; scales between and above. Converted to the report currency and added to each total.')
   if (isDex) lines.push(`Example pool · ${checked.modelId === 'uniswap-v3' ? 'full range · ' : ''}0.30% swap fee · 1 billion tokens.`)
   if (['fourmeme', 'lunch-v4-tax'].includes(checked.modelId)) lines.push('Standard example: 0% creator buy tax.')
   if (checked.modelId === 'sushi-launchpad') lines.push('Uses the V1 launch model.')
@@ -183,11 +187,14 @@ export function launchMathResultCaption(report: LaunchReport): string {
     `Ghost Launch Math · ${venueName(report.modelId)}`,
     `${available} funding scenarios · ${report.request.quote.symbol}${report.request.quote.usdPrice ? ' and USD' : ''}`,
     `${walletLine(report.request)} included in every total.`,
-    'Ownership = tokens purchased plus any stated team allocation. Funding includes the stated fees, reserves and initial liquidity.',
+    report.request.injectionLiquidity
+      ? 'Total = launch funding + aged wallets + injection / MM liquidity. The MM reserve is held separately from initial pool liquidity.'
+      : 'This saved report excludes injection / MM liquidity. Generate a fresh report to include the current buffer policy.',
+    'MC = modeled price after purchases × total token supply.',
     report.warnings.some(warning => warning.startsWith('Operating allowances are zero:')) ? operatingExclusionNote : '',
     missing ? `${missing} unavailable scenario${missing === 1 ? ' is' : 's are'} marked in the image.` : '',
     `Estimate prepared ${new Date(report.generatedAt).toISOString().slice(0, 16).replace('T', ' ')} UTC.`,
-    'Open or save the PNG to share with your client.',
+    'Tap the image to view it, or forward it directly to your client.',
   ].filter(Boolean).join('\n')
 }
 

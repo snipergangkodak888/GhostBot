@@ -131,6 +131,7 @@ try {
     const finished = h.job(clicked[0].job._id)
     assert.equal(finished.status, 'complete')
     assert.equal(finished.deliveredMessageId, 900)
+    assert.equal(finished.deliveryFormat, 'photo')
     assert.equal((await h.worker.queueLaunchReport(h.params())).duplicate, true)
   })
 
@@ -233,7 +234,7 @@ try {
     assert.equal(h.job(queued.job._id).status, 'failed')
     assert.equal(h.job(queued.job._id).deliveryUncertain, true)
     assert.equal(h.state.sends.length, 1)
-    assert.match(h.state.edits.at(-1)[3], /Check this chat for the PNG before tapping Try again/)
+    assert.match(h.state.edits.at(-1)[3], /Check this chat for the image before tapping Try again/)
   })
 
   await test('restart recovers an expired calculation lease', async () => {
@@ -403,24 +404,25 @@ try {
   })
 
   // Exercise real multipart delivery independently, with every HTTP response captured.
-  await test('PNG delivery sends the original image and result keyboard', async () => {
+  await test('inline photo delivery sends the image and result keyboard', async () => {
     const requests = []
     globalThis.fetch = async (url, options) => {
       requests.push({ url, options })
-      return new Response(JSON.stringify({ ok: true, result: { message_id: 903 } }), { status: 200 })
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 903, photo: [{ file_id: 'fixture-photo' }] } }), { status: 200 })
     }
     const delivery = createSourceLoader({ './telegram-bot': { isTelegramCaptureActive: () => false } })(deliveryPath)
     const image = { png: Buffer.from('fixture original PNG'), filename: 'ghost-pumpfun-launch-report.png', caption: 'Report prepared', replyMarkup: { inline_keyboard: [[{ text: 'New report', callback_data: 'lm:home' }]] } }
     assert.deepEqual(await delivery.sendLaunchReportImage('TEST_ONLY_TOKEN', '1234', image), { status: 'sent', messageId: 903 })
     assert.equal(requests.length, 1)
-    assert.equal(requests[0].url, 'https://api.telegram.org/botTEST_ONLY_TOKEN/sendDocument')
+    assert.equal(requests[0].url, 'https://api.telegram.org/botTEST_ONLY_TOKEN/sendPhoto')
     const { body, signal } = requests[0].options
     assert.equal(body.get('chat_id'), '1234')
     assert.equal(body.get('caption'), image.caption)
+    assert.notEqual(body.get('protect_content'), 'true', 'The image must be forwardable')
     assert.deepEqual(JSON.parse(body.get('reply_markup')), image.replyMarkup)
-    assert.equal(body.get('document').type, 'image/png')
-    assert.equal(body.get('document').name, image.filename)
-    assert.deepEqual(Buffer.from(await body.get('document').arrayBuffer()), image.png)
+    assert.equal(body.get('photo').type, 'image/png')
+    assert.equal(body.get('photo').name, image.filename)
+    assert.deepEqual(Buffer.from(await body.get('photo').arrayBuffer()), image.png)
     assert.ok(signal instanceof AbortSignal)
   })
 
@@ -431,6 +433,8 @@ try {
     assert.deepEqual(await delivery.sendLaunchReportImage('TEST_ONLY_TOKEN', '1234', image), { status: 'rejected' })
     globalThis.fetch = async () => new Response('<h1>Gateway failure</h1>', { status: 502 })
     assert.deepEqual(await delivery.sendLaunchReportImage('TEST_ONLY_TOKEN', '1234', image), { status: 'uncertain' })
+    globalThis.fetch = async () => new Response(JSON.stringify({ ok: true, result: { message_id: 903, document: { file_id: 'wrong-format' } } }), { status: 200 })
+    assert.deepEqual(await delivery.sendLaunchReportImage('TEST_ONLY_TOKEN', '1234', image), { status: 'uncertain' }, 'Only an actual photo acknowledgment confirms inline delivery')
     globalThis.fetch = async () => new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 })
     assert.deepEqual(await delivery.sendLaunchReportImage('TEST_ONLY_TOKEN', '1234', image), { status: 'uncertain' })
     globalThis.fetch = async () => { throw new TypeError('Fixture connection closed after send') }
@@ -442,7 +446,7 @@ try {
     let accepted = true
     const delivery = createSourceLoader({ './telegram-bot': {
       isTelegramCaptureActive: () => true,
-      sendTelegramDocument: async (...args) => { captures.push(args); return accepted },
+      sendTelegramPhoto: async (...args) => { captures.push(args); return accepted },
     } })(deliveryPath)
     globalThis.fetch = async () => { throw new Error('Capture must not use the network') }
     const image = { png: Buffer.from('PNG'), filename: 'report.png', caption: 'Fixture report', replyMarkup: { inline_keyboard: [] } }
@@ -458,4 +462,4 @@ try {
 if (failures.length) {
   for (const failure of failures) process.stderr.write(`${failure.name}\n${failure.error.stack}\n`)
   process.exitCode = 1
-} else process.stdout.write(`PASS: ${passed} durable job, permission, recovery, retry and original PNG delivery checks. No Telegram messages were sent.\n`)
+} else process.stdout.write(`PASS: ${passed} durable job, permission, recovery, retry and inline photo delivery checks. No Telegram messages were sent.\n`)

@@ -14,14 +14,14 @@ The builder ships through Ghost's existing application deployment at `/admin/lau
 
 **Customize report · optional** contains report titles, different supply percentages, the wallet count, saved setups and imports. **Advanced launch settings · optional** contains allocation, taxes, operating allowances and technical settings. Most reports need neither section. Defaults describe the named launch profile, not every launch mode or network offered by that brand.
 
-Each supply percentage is the share of total token supply held after purchases, including any retained allocation in the setup. FDV is the value of all tokens at the modeled price after purchases. Total funding includes launch funding and the aged-wallet budget; pool liquidity and unused reserves remain assets. These definitions also appear beside the web results.
+Each supply percentage is the share of total token supply held after purchases, including any retained allocation in the setup. MC (market cap) is the value of all tokens at the modeled price after purchases. Total funding includes launch funding, the aged-wallet budget and injection / MM liquidity; pool liquidity and unused reserves remain assets. These definitions also appear beside the web results.
 
 ## Quick reports in Telegram
 
 1. Open the internal Ghost bot and send `/launchmath`, or tap **Launch Math**. `/launchcalc` opens the same flow.
 2. Choose **Solana**, **BNB**, **Robinhood** or **DEX examples**, then choose a venue.
 3. Keep the displayed standard settings and tap **Generate image**. Pool examples also let you choose from the standard liquidity amounts.
-4. Ghost checks current settings, calculates the report and returns a shareable image in the same conversation. If a request fails, use the retry button.
+4. Ghost checks current settings, calculates the report and displays an inline photo in the same conversation. Tap to view it or forward it directly. The original PNG remains available from the web builder. Temporary data failures retry automatically.
 
 The bot uses the same standard supply comparisons, 125-wallet default and fixed wallet prices as the web tool. There are no curve constants, opening ticks or quote tables to enter. For a client name or a custom setup, use the web builder.
 
@@ -42,6 +42,16 @@ The standard aged-wallet prices are fixed in `lib/launch-reports/pricing.ts`:
 Aged wallets acquired, executing buyers and funded holder destinations are separate counts. For USDC or USDT funding, native wallet and operating allowances retain their native policy values and convert using recorded USD prices, rounding each amount upward to the quote token's smallest unit. They are not relabeled as stablecoin amounts.
 
 Buy funding, launch fees, operating reserves, provider fees/buffers and aged-wallet acquisition remain separate in the calculation data. Operating allowances are editable planning assumptions, not universal network charges. A zero allowance means that component is excluded. Liquidity and unused reserves remain assets; total required funding is not the same as fees permanently spent.
+
+### Injection / MM liquidity
+
+Every newly generated report adds Ghost's trading-capital reserve as its own line item. **Total = launch funding + aged wallets + injection / MM liquidity.** This reserve is held separately from the initial pool liquidity; it does not execute additional buys, raise the modeled MC, or receive an extra launch-funding provider fee.
+
+- Solana venues: 30 SOL through $500,000 post-buy MC, then proportional to MC (60 SOL at $1m).
+- EVM venues: 1.3 ETH through $300,000 MC, linearly increasing to 2 ETH at $500,000 and $10,000 worth of ETH at $1m. The $1m anchor has a 2 ETH minimum so a rising ETH price cannot make larger launches require a smaller reserve. Above $1m, scale proportionally from that anchor (normally 1% of MC).
+- BNB and stablecoin reports convert the reference reserve into their report currency using captured USD exchange rates. Native amounts round upward to the currency's smallest unit.
+
+These are Ghost planning assumptions, not protocol-required fees or guarantees. The request stores `ghost-injection-v1` and its dated reference FX so exports reproduce exactly. Legacy snapshots without that field retain their original totals and explicitly show that the MM reserve was excluded; fresh generation applies the current policy. MC is modeled post-buy price multiplied by total token supply. Existing internal JSON `fdvQuote`/`fdvUsd` fields remain compatible; client labels and CSV headers use MC.
 
 ## Supported profiles
 
@@ -66,7 +76,7 @@ The catalogue covers the sixteen report entries below. Coverage refers to these 
 | `sushi-launchpad` | The supplied native ETH **V1** single-range model on Robinhood Chain; opening geometry, protocol reserve and launch fee are retrieved automatically. V2 Moon Mode has different geometry. |
 | `fourmeme` | Standard native BNB curve and PancakeSwap V2 migration; two matching current launches and exact helper quotes verify the profile. Creator buy tax is a launch choice. Stablecoin, stock and alternate launch modes are outside this profile. |
 
-Supply control includes an explicitly chosen retained allocation where the model supports it. The FDV column is total token supply multiplied by the marginal price after the ordered buys, rather than circulating market cap. Targets outside a model's supported curve or pool range remain unavailable with a reason; a capped result is never relabeled as a larger target.
+Supply control includes an explicitly chosen retained allocation where the model supports it. The MC column is total token supply multiplied by the marginal price after the ordered buys, rather than circulating market cap. Targets outside a model's supported curve or pool range remain unavailable with a reason; a capped result is never relabeled as a larger target.
 
 ## Current reports and reproducible snapshots
 

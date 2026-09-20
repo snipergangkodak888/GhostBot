@@ -265,24 +265,29 @@ export async function sendTelegramPhoto(
   chatId: number | string,
   png: Buffer,
   caption?: string,
+  filename = "ghost-payroll-report.png",
+  options: TelegramMessageOptions = {},
 ) {
   if (isTelegramCaptureActive()) {
     captureTelegramCall("sendPhoto", {
       chat_id: chatId,
       caption: caption || "",
-      filename: "ghost-payroll-report.png",
+      filename,
+      ...(options.replyMarkup ? { reply_markup: options.replyMarkup } : {}),
       byte_length: png.byteLength,
     })
     return true
   }
   const form = new FormData()
   form.append("chat_id", String(chatId))
-  form.append("photo", new Blob([new Uint8Array(png)], { type: "image/png" }), "ghost-payroll-report.png")
+  form.append("photo", new Blob([new Uint8Array(png)], { type: "image/png" }), filename)
+  if (options.replyMarkup) form.append("reply_markup", JSON.stringify(options.replyMarkup))
   if (caption) form.append("caption", caption.slice(0, 1024))
 
   const response = await fetch(`${TELEGRAM_API}/bot${token}/sendPhoto`, {
     method: "POST",
     body: form,
+    signal: AbortSignal.timeout(30_000),
   }).catch((error) => {
     console.error("[telegram] sendPhoto network error:", error instanceof Error ? error.message : error)
     return null

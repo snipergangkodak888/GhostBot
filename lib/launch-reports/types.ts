@@ -14,6 +14,8 @@ export interface LaunchReportRequest {
   operations: LaunchOperations
   /** Native costs and the dated FX rates used to express them in the quote currency. */
   fundingConversion?: { nativeOperations: LaunchOperations; nativeUsdPrice: string; quoteUsdPrice: string; asOf: string; source: string }
+  /** Ghost MM reserve policy and frozen reference FX; absent on legacy snapshots. */
+  injectionLiquidity?: { policyVersion: 'ghost-injection-v1'; referenceSymbol: 'SOL' | 'ETH'; referenceUsdPrice: string; quoteUsdPrice: string; asOf: string; source: string }
   termsSource?: { label: string; url?: string; asOf?: string; kind: 'snapshot' | 'user' | 'code-default' }
 }
 
@@ -90,6 +92,7 @@ export interface LaunchReportAmounts {
   sourceGas: string
   funding: string
   agedWallets: string
+  injectionLiquidity?: string
   total: string
 }
 

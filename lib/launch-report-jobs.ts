@@ -14,6 +14,7 @@ export type LaunchReportJob = {
   selection: LaunchMathSelection; status: JobStatus; version: number
   createdAt: string; updatedAt: string; leaseUntil?: string
   report?: LaunchReport; deliveryUncertain?: boolean; deliveredMessageId?: number
+  deliveryFormat?: 'photo' | 'document'
   attempts?: number; nextAttemptAt?: string | null
   lastFailure?: { code: string; stage: string; at: string; message?: string; service?: string; httpStatus?: number }
 }
@@ -66,7 +67,7 @@ async function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
 }
 async function feedback(job: LaunchReportJob, token: string, reason: 'generation' | 'delivery') {
   const view = launchMathErrorView(job.selection, reason)
-  const text = job.deliveryUncertain ? 'Telegram did not confirm delivery. Check this chat for the PNG before tapping Try again.' : view.text
+  const text = job.deliveryUncertain ? 'Telegram did not confirm delivery. Check this chat for the image before tapping Try again.' : view.text
   await editTelegramMessage(token, job.chatId, job.messageId, text, { replyMarkup: view.replyMarkup })
 }
 async function runJob(original: LaunchReportJob, token: string) {
@@ -89,11 +90,11 @@ async function runJob(original: LaunchReportJob, token: string) {
       if (failed) await feedback(failed, token, 'delivery')
       return
     }
-    job = await transition(job, { status: 'complete', deliveredMessageId: delivery.messageId })
+    job = await transition(job, { status: 'complete', deliveredMessageId: delivery.messageId, deliveryFormat: 'photo' })
     if (job) {
       // Next's production compiler removes console.info; keep this server audit event.
-      process.stdout.write(`[launch-report-jobs] ${JSON.stringify({ event: 'complete', jobId: job._id, modelId: job.selection.modelId, attempt: job.attempts, deliveredMessageId: delivery.messageId })}\n`)
-      await editTelegramMessage(token, job.chatId, job.messageId, 'Your report is ready below. Open the PNG to view or share it.', { replyMarkup: { inline_keyboard: [[{ text: 'New report', callback_data: 'lm:home' }]] } })
+      process.stdout.write(`[launch-report-jobs] ${JSON.stringify({ event: 'complete', jobId: job._id, modelId: job.selection.modelId, attempt: job.attempts, deliveredMessageId: delivery.messageId, deliveryFormat: job.deliveryFormat })}\n`)
+      await editTelegramMessage(token, job.chatId, job.messageId, 'Your report is ready below. Tap the image to view it or forward it to your client.', { replyMarkup: { inline_keyboard: [[{ text: 'New report', callback_data: 'lm:home' }]] } })
     }
   } catch (error) {
     if (!job || job.status === 'complete') return

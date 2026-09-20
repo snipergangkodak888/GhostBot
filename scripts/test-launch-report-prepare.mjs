@@ -123,7 +123,9 @@ try {
   generic.quote = { ...generic.quote, usdPrice: '2000', priceSource: 'Client scenario', priceAsOf: observedAt }
   lookups.length = 0
   const callsBeforeGeneric = refreshCalls
-  assert.deepEqual(await prepareLaunchReport(generic), generic)
+  const preparedGeneric = await prepareLaunchReport(generic)
+  assert.deepEqual({ ...preparedGeneric, injectionLiquidity: undefined }, { ...generic, injectionLiquidity: undefined })
+  assert.equal(preparedGeneric.injectionLiquidity.referenceSymbol, 'ETH')
   assert.equal(lookups.length, 0)
   assert.equal(refreshCalls, callsBeforeGeneric, 'Generic chosen-liquidity math needs no launchpad lookup')
 

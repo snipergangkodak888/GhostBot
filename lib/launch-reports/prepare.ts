@@ -5,6 +5,7 @@ import { validateRequest } from './engine'
 import { convertNativeAmount, convertNativeOperations, nativeDecimals } from './funding'
 import { formatAmount, parseAmount } from './utils'
 import { getModelCatalog } from './catalog'
+import { GHOST_INJECTION_VERSION, injectionReference } from './injection'
 
 async function spot(symbol: string) {
   if (!['SOL', 'ETH', 'BNB', 'USDC', 'USDT'].includes(symbol)) throw new Error('Select a supported quote currency or supply an explicit dated USD price.')
@@ -17,6 +18,8 @@ async function spot(symbol: string) {
 
 /** Validate editable inputs before public lookups, allowing explicitly native funding. */
 export function validateLaunchDraft(request: LaunchReportRequest) {
+  // A new generation applies the current policy and refreshes its captured FX.
+  if (request?.injectionLiquidity) request = { ...request, injectionLiquidity: undefined }
   if (request?.fundingConversion) request = { ...request, operations: request.fundingConversion.nativeOperations, fundingConversion: undefined }
   if (request?.operations?.currencySymbol && request?.quote?.symbol && request.operations.currencySymbol !== request.quote.symbol) {
     if (!['USDC', 'USDT'].includes(request.quote.symbol)) throw new Error('Native funding conversion is supported for USDC and USDT quotes.')
@@ -33,6 +36,7 @@ export function validateLaunchDraft(request: LaunchReportRequest) {
 export async function prepareLaunchReport(request: LaunchReportRequest): Promise<LaunchReportRequest> {
   validateLaunchDraft(request)
   let next = structuredClone(request)
+  delete next.injectionLiquidity
   const symbol = next.quote.symbol.toUpperCase()
   if (!next.quote.usdPrice || next.quote.priceSource === 'Coinbase spot') {
     const price = await spot(symbol)
@@ -51,6 +55,13 @@ export async function prepareLaunchReport(request: LaunchReportRequest): Promise
     next.terms.nativeMigrationFundingQuoteRaw = parseAmount(amount, next.quote.decimals).toString()
     next.terms.nativeMigrationConversion = { nativeUsdPrice: nativePrice, quoteUsdPrice: next.quote.usdPrice, source: 'Coinbase spot', quoteAsOf: next.quote.priceAsOf }
   }
+  const referenceSymbol = injectionReference(next.modelId)
+  const reference = referenceSymbol === next.quote.symbol
+    ? { price: next.quote.usdPrice!, asOf: next.quote.priceAsOf!, source: next.quote.priceSource! }
+    : next.fundingConversion?.nativeOperations.currencySymbol === referenceSymbol
+      ? { price: next.fundingConversion.nativeUsdPrice, asOf: next.fundingConversion.asOf, source: next.fundingConversion.source }
+      : await spot(referenceSymbol)
+  next.injectionLiquidity = { policyVersion: GHOST_INJECTION_VERSION, referenceSymbol, referenceUsdPrice: reference.price, quoteUsdPrice: next.quote.usdPrice!, asOf: reference.asOf, source: reference.source }
   validateRequest(next)
   return next
 }

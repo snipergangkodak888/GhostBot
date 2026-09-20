@@ -9,8 +9,9 @@ import { getAgedWalletUnitAmount, GHOST_PRICING_VERSION } from './pricing'
 import { ceilDiv, formatAmount, integerTerm, jsonSafe, parseAmount, percentRaw, splitRaw, sumRaw, termBigInt } from './utils'
 import sourceManifest from './source-manifest.json'
 import { convertNativeOperations, nativeDecimals } from './funding'
+import { injectionLiquidityRaw, injectionPolicyNote, validateInjectionPolicy } from './injection'
 
-const MODEL_VERSION = 'ghost-launch-reports-v1'
+const MODEL_VERSION = 'ghost-launch-reports-v2'
 const CORE_SOLANA = new Set(['pumpfun', 'pumpfun-custom', 'launchlab', 'stonkfun', 'raydium-cpmm'])
 const MONEY_KEYS = ['setupAmount', 'buyerGasAmount', 'cleanupAmount', 'holderAmount', 'tipAmount', 'launchFeeAmount', 'recipientBufferAmount', 'sourceGasAmount', 'agedWalletUnitAmount'] as const
 
@@ -64,10 +65,11 @@ export function validateRequest(request: LaunchReportRequest): void {
     validDate(conversion.asOf, 'Native funding exchange-rate timestamp')
     if (typeof conversion.source !== 'string' || !conversion.source.trim() || conversion.source.length > 1000) throw new Error('Funding conversion requires a price source.')
     if (conversion.quoteUsdPrice !== request.quote.usdPrice) throw new Error('Funding conversion does not match the report USD price. Generate again.')
-    validateRequest({ ...request, fundingConversion: undefined, liquidityAmounts: undefined, operations: native, quote: { symbol: native?.currencySymbol, decimals: nativeDecimals(native?.currencySymbol), usdPrice: conversion.nativeUsdPrice, priceAsOf: conversion.asOf, priceSource: conversion.source } })
+    validateRequest({ ...request, injectionLiquidity: undefined, fundingConversion: undefined, liquidityAmounts: undefined, operations: native, quote: { symbol: native?.currencySymbol, decimals: nativeDecimals(native?.currencySymbol), usdPrice: conversion.nativeUsdPrice, priceAsOf: conversion.asOf, priceSource: conversion.source } })
     const expected = convertNativeOperations(native, request.quote.symbol, request.quote.decimals, conversion.nativeUsdPrice, conversion.quoteUsdPrice)
     for (const key of Object.keys(expected) as (keyof typeof expected)[]) if (expected[key] !== op[key]) throw new Error('Converted funding does not match its retained native allowance and exchange rate. Generate again.')
   }
+  validateInjectionPolicy(request)
 }
 
 function ponsAdapter(context: AdapterContext): AdapterResult {
@@ -177,9 +179,11 @@ export function calculateLaunchReport(request: LaunchReportRequest): LaunchRepor
       const recipientBuffers = BigInt(op.recipientCount) * amount('recipientBufferAmount'), sourceGas = amount('sourceGasAmount')
       const funding = baseFunding + providerFee + recipientBuffers + sourceGas
       const agedWallets = BigInt(op.agedWalletCount) * amount('agedWalletUnitAmount')
-      const raw = { buys: result.buyRaw, initialLiquidity, operations: operationalRaw, modelReserves, providerFee, recipientBuffers, sourceGas, funding, agedWallets, total: funding + agedWallets }
-      const amounts = Object.fromEntries(Object.entries(raw).map(([key, value]) => [key, formatAmount(value, decimals)])) as unknown as LaunchReportAmounts
       const fx = request.quote.usdPrice === undefined ? null : Number(request.quote.usdPrice)
+      const mcUsd = fx === null || result.fdvQuote === null ? null : result.fdvQuote * fx
+      const injectionLiquidity = injectionLiquidityRaw(request, mcUsd)
+      const raw = { buys: result.buyRaw, initialLiquidity, operations: operationalRaw, modelReserves, providerFee, recipientBuffers, sourceGas, funding, agedWallets, injectionLiquidity, total: funding + agedWallets + injectionLiquidity }
+      const amounts = Object.fromEntries(Object.entries(raw).map(([key, value]) => [key, formatAmount(value, decimals)])) as unknown as LaunchReportAmounts
       Object.assign(row, { status: 'ok', actualPct: Number(result.actualBaseRaw * 100_000_000n / supplyRaw) / 1e6, phase: result.phase, amounts, raw: Object.fromEntries(Object.entries(raw).map(([key, value]) => [key, value.toString()])), fdvQuote: result.fdvQuote, fdvUsd: fx === null || result.fdvQuote === null ? null : result.fdvQuote * fx, totalUsd: fx === null ? null : Number(amounts.total) * fx, details: jsonSafe(result.details), warnings: result.warnings ?? [] })
     } catch (error) { row.error = error instanceof Error ? error.message : 'Unable to calculate this scenario' }
     rows.push(row)
@@ -194,8 +198,11 @@ export function calculateLaunchReport(request: LaunchReportRequest): LaunchRepor
       `Operating allowance = setup ${op.setupAmount} + ${op.buyerCount} × buyer gas ${op.buyerGasAmount} + cleanup ${op.cleanupAmount} + ${op.holderCount} × holder funding ${op.holderAmount} + tip ${op.tipAmount} + launch fee ${op.launchFeeAmount}.`,
       request.fundingConversion ? `Aged wallets = ${op.agedWalletCount} × ${request.fundingConversion.nativeOperations.agedWalletUnitAmount} ${request.fundingConversion.nativeOperations.currencySymbol}; fixed Ghost commercial pricing, converted to ${op.agedWalletUnitAmount} ${request.quote.symbol} each.` : `Aged wallets = ${op.agedWalletCount} × ${op.agedWalletUnitAmount} ${request.quote.symbol}; ${getAgedWalletUnitAmount(request.quote.symbol) ? 'fixed Ghost commercial pricing' : 'explicit quote-currency allowance'}.`,
       `Provider fee ${op.providerFeeBps} bps is grossed up on purchases, included liquidity, operating allowances and model reserves; recipient buffers and source gas are then added.`,
+      injectionPolicyNote(request),
+      ...(request.injectionLiquidity && request.injectionLiquidity.referenceSymbol !== request.quote.symbol ? [`Injection conversion: 1 ${request.injectionLiquidity.referenceSymbol} = $${request.injectionLiquidity.referenceUsdPrice}; 1 ${request.quote.symbol} = $${request.injectionLiquidity.quoteUsdPrice}. Reference rate recorded ${request.injectionLiquidity.asOf}.`] : []),
+      'Total = launch funding + aged wallets + injection / MM liquidity. The MM reserve is held separately; it does not change modeled purchases or MC and is not subject to the launch funding provider fee.',
       'Funding is capital required, not irreversible expense. Liquidity, holder balances and unused reserves remain assets.',
-      'FDV is the spot price after the modeled buys multiplied by total supply; it is not circulating market capitalization.',
+      'MC (market cap) = spot price after the modeled buys × total token supply.',
     ],
   }
 }
