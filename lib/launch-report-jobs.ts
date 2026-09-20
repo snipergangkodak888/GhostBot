@@ -91,7 +91,8 @@ async function runJob(original: LaunchReportJob, token: string) {
     }
     job = await transition(job, { status: 'complete', deliveredMessageId: delivery.messageId })
     if (job) {
-      console.info('[launch-report-jobs]', JSON.stringify({ event: 'complete', jobId: job._id, modelId: job.selection.modelId, attempt: job.attempts, deliveredMessageId: delivery.messageId }))
+      // Next's production compiler removes console.info; keep this server audit event.
+      process.stdout.write(`[launch-report-jobs] ${JSON.stringify({ event: 'complete', jobId: job._id, modelId: job.selection.modelId, attempt: job.attempts, deliveredMessageId: delivery.messageId })}\n`)
       await editTelegramMessage(token, job.chatId, job.messageId, 'Your report is ready below. Open the PNG to view or share it.', { replyMarkup: { inline_keyboard: [[{ text: 'New report', callback_data: 'lm:home' }]] } })
     }
   } catch (error) {
