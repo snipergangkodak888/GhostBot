@@ -17,6 +17,7 @@ The codebase uses Supabase as the data store. Application data is saved through 
   - data/sheets
 - Admin dashboard:
   - overview
+  - [Launch Math client reports](docs/launch-math.md)
   - projects
   - calendar
   - reminders

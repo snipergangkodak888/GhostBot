@@ -1,0 +1,30 @@
+{
+  "package": "@sumo/amm-math",
+  "version": "0.1.0",
+  "importedAt": "2026-09-19",
+  "files": {
+    "destination-apportionment.ts": "448daf0baa7d8ae6e62afd7c49f91b44819d4156c94a977e65c130bd24edd13a",
+    "flap-curve.ts": "75c3b2fd3a83a0d0053c8628b483733ee723919d60c3d1c9d7373facc5b7745b",
+    "flap-graduated-pool.ts": "596416eefe79a0ba9e84f87510a83fca68f31cc746a0b0799933f7d05845c076",
+    "flap-launch-rules.ts": "1004314a0ce709b5254d04c302a60ae204273b0066b0963a5802107560866b4d",
+    "fourmeme-launch-rules.ts": "cfe1ca93037308fe44f0d095b3aa05a366523a3f8df8b335889fc2a16ca6472a",
+    "index.ts": "27f7042e17c4d366c69fc174ab5cdc3cd8413d2f1a121c55251916e424cac10c",
+    "launch-quote-funding.ts": "e8de9c61bea7f9c5113150ce5d504b0206070143ad79bd03cec6715bda4225b1",
+    "launchlab-funding-plan.ts": "50ad91913f29bd21bf21a5bb6818df44f070f50a1d66e2928c3b91641c44aba5",
+    "launchlab-quote-math.ts": "9d3a39cdc667bdac0c2a2c4f01b28741a65304f8ce5240a1613d6360e054288d",
+    "letscash-v4.ts": "2f8eef019097d92fb524d4d9af478daf9d18b58f533023eac41c4c7f0851de16",
+    "lunch-fun.ts": "2d5d24ebeb1f2f4dd9228da2853af197a4ccc526c2949a8308959ff1e9d87c3a",
+    "plain-decimal.ts": "9f880394271d3b84d198f51731bbb5c19a512d76c1d9f361d7a859f341ffe946",
+    "pons-v2-curve.ts": "98e886cd7a833c5e241f435287c940e714883d0ee3e4a5719440bdc7db57a0dc",
+    "pons-v2-graduated-pool.ts": "bc0299fb8e7185dd5592c5a0b421233b5a5549b59eb11632cd8402a46befa21a",
+    "pools-trade-instant.ts": "1d5d547062f967299cd971f75cb401fffb23a450dd58e590ebe14528113963ee",
+    "pumpfun-funding-plan.ts": "d9bc71fa4284a4f7c488163175e45dcdb3fce0040f3f4c1c459f4ab74824767a",
+    "pumpfun-quote-math.ts": "0261ab6552755b7c21345a14d709c9586b9e1ee8ce2fd87d31a4ed5bb26a8449",
+    "stonkfun-launch-terms.ts": "ad2fc543627d832b6a5cf64062c8658a299913d5f76b2c28f890a006e3748857",
+    "sushi-launch-quote.ts": "a85fd471a6545bead8d6b0a9bdaf28e33a7c3db533758031f9549ce30281fd6c",
+    "token-2022-transfer-fee.ts": "eeb9260fa4d968bc7c10d4aef64ea89db30504a5dae6e2885c4956c544b3e74d",
+    "uniswap-v2.ts": "3838297c04720cdab8dd953554d73a54075816a4a53000a73602daed6b15174d",
+    "uniswap-v3.ts": "d910fbe58069e678c33180844d1f1536e19baf65aac6004b2bb77ed5ba96b3d4",
+    "v2-graduated-pool.ts": "cd46e9ef7a46328ccd1b2f60307ea9a7504ec8c0804298530f5af388e35837c8"
+  }
+}

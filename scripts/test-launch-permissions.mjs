@@ -103,7 +103,7 @@ const permissions = load('lib/bot-permissions.ts')
 const access = load('lib/team-access.ts')
 const ops = load('lib/ops-bot.ts')
 const webhook = load('app/api/telegram/webhook/route.ts', '\nexport { handleCallback, processState, routeText, getLaunchSetupAction, aiPermissionPolicy };')
-const req = { nextUrl: new URL('http://localhost:3000/api/telegram/webhook') }
+const req = { nextUrl: new URL('http://localhost:3000/api/telegram/webhook'), headers: new Headers({ host: 'localhost:3000', 'x-forwarded-proto': 'http' }) }
 const chatId = -100
 const memberId = 2
 const adminId = 3
@@ -159,6 +159,15 @@ async function timingReply(text, user = memberId, sourceChat = chatId) {
   await webhook.routeText('test', sourceChat, user, text, req, Date.now(), { message_id: 101, chat: { id: sourceChat } })
   return messages.map(message => message.text).join('\n')
 }
+// The client report launcher preserves both chat capability and admin restrictions.
+assert.match(await timingReply('/launchmath', memberId), /available to Ghost admins/)
+assert.equal(lastButtons().some(button => button.url), false)
+assert.match(await timingReply('/launchmath', adminId, -200), /Launch functions are not available/)
+assert.equal(lastButtons().some(button => button.url), false)
+await db.collection('opsBotStates').updateOne({ telegramId: adminId }, { $set: { action: 'ai', chatId: String(chatId) } }, { upsert: true })
+assert.match(await timingReply('/launchmath@test_bot', adminId), /Sign in with your Ghost admin account/)
+assert.equal(lastButtons().find(button => button.text === 'Open Launch Math')?.url, 'http://localhost:3000/admin/launch-math')
+assert.equal(await db.collection('opsBotStates').findOne({ telegramId: adminId }), null, 'Opening reports must clear a pending text workflow')
 async function editTiming(user = memberId, sourceChat = chatId) {
   const project = await timingProject()
   await callback(user, `calendar:launch:${project._id}:${project.scheduleVersion}`, sourceChat)

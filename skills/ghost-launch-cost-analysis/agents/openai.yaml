@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ghost Launch Cost Analysis"
+  short_description: "Automatic Ghost client launch reports and exports"
+  default_prompt: "Use $ghost-launch-cost-analysis to create a Ghost client launch report with automatic protocol settings, standard wallet pricing, and PNG/CSV/JSON exports."

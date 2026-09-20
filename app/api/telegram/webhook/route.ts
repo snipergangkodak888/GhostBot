@@ -170,6 +170,7 @@ async function setBotCommands(token: string) {
       { command: "schedulelaunch", description: "Create a launch with guided setup" },
       { command: "organicsetup", description: "Set up organic trade notifications" },
       { command: "launchcalc", description: "Build a client launch-capital quote" },
+      { command: "launchmath", description: "Admin: open client launch reports" },
       { command: "reminders", description: "Manage reminders" },
       { command: "setreminder", description: "Set a reminder in natural language" },
       { command: "payroll", description: "Manage payroll" },
@@ -215,6 +216,7 @@ function helpMessage() {
     "🗓️ /schedulelaunch - create a launch with guided setup",
     "📣 /organicsetup TICKER - set up organic trade notifications",
     "🚀 /launchcalc - build a launch-capital quote",
+    "📊 /launchmath - admin client launch reports",
     "🔔 /reminders",
     "⏰ /setreminder WWR injection today at 8 PM ET",
     "💸 /payroll",
@@ -3355,6 +3357,12 @@ async function routeText(token: string, chatId: number | string, telegramId: num
     if (!(await requireCapability(token, context, "launch"))) return
     return sendLaunchCalculatorStart(token, chatId, telegramId)
   }
+  if (isBotCommand(text, "launchmath")) {
+    if (!(await requireCapability(token, context, "launch"))) return
+    if (context.role !== "admin") return sendMessage(token, chatId, "⛔ Client launch reports are available to Ghost admins.")
+    await clearState(telegramId)
+    return sendMessage(token, chatId, "📊 Open Ghost Launch Math to choose a launch model, review assumptions, and export a client report.\n\nSign in with your Ghost admin account to continue.", [[{ text: "Open Launch Math", url: `${appBaseUrl(req)}/admin/launch-math` }]])
+  }
   if (aiCommand !== null) {
     const policy = aiPermissionPolicy(context)
     if (!(await requireCapability(token, context, policy.capability))) return
@@ -3372,7 +3380,7 @@ async function routeText(token: string, chatId: number | string, telegramId: num
     return sendMessage(token, chatId, "🧠 Send your AI question now.\n\nI will answer only the next message sent after this command.\n\nSend /cancel to stop.")
   }
 
-  const navigationCommands = new Set(["calendar", "menu", "help", "commands", "projects", "profit", "payroll", "fees", "report", "reminders", "notes", "launchcalc", "addlaunch", "setreminder"])
+  const navigationCommands = new Set(["calendar", "menu", "help", "commands", "projects", "profit", "payroll", "fees", "report", "reminders", "notes", "launchcalc", "launchmath", "addlaunch", "setreminder"])
   const navigationInput = navigationCommands.has(botCommandName(text)) || isGroupMenuButton(text)
   if (navigationInput) await clearState(telegramId)
   else if (await processState(token, chatId, telegramId, text, messageDateMs, message, context)) return

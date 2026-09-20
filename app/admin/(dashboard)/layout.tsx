@@ -97,7 +97,7 @@ export default function AdminDashboardLayout({ children }: { children: React.Rea
           <AdminHeader />
           {/* Full-width admin shell with left-pinned sidebar */}
           <div className="px-3 sm:px-4 md:px-6 py-4 md:py-6">
-            <div className="flex gap-4 md:gap-6 items-start">
+            <div className="flex flex-col md:flex-row gap-4 md:gap-6 items-start">
               {/* Left sidebar - fixed width, sticky */}
               <div className="hidden md:flex flex-col gap-3 w-64 shrink-0">
                 <AdminSidebar />
@@ -108,7 +108,7 @@ export default function AdminDashboardLayout({ children }: { children: React.Rea
                 <AdminSidebar />
               </div>
               {/* Main content fills remaining width */}
-              <main className="flex-1 min-w-0">
+              <main className="w-full flex-1 min-w-0">
                 {children}
               </main>
             </div>

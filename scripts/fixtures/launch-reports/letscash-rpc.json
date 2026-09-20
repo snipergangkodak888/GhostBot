@@ -1,0 +1,182 @@
+[
+  {
+    "url": "https://rpc.mainnet.chain.robinhood.com",
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "method": "eth_blockNumber",
+      "params": []
+    },
+    "response": {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "result": "0x405db1a"
+    }
+  },
+  {
+    "url": "https://rpc.mainnet.chain.robinhood.com",
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "eth_chainId",
+      "params": []
+    },
+    "response": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": "0x1237"
+    }
+  },
+  {
+    "url": "https://rpc.mainnet.chain.robinhood.com",
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "method": "eth_getBlockByNumber",
+      "params": [
+        "0x405db1a",
+        false
+      ]
+    },
+    "response": {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "result": {
+        "baseFeePerGas": "0x3ee8010",
+        "difficulty": "0x1",
+        "extraData": "0x39d9f8e46206610c0f4454086154649413369ccb8301a6d179f066486bdd9efc",
+        "gasLimit": "0x4000000000000",
+        "gasUsed": "0xde8eb",
+        "hash": "0xe22e8f0f415eddb9f5018af806e97844f167df73dd155349aaa84cf256d9d4b3",
+        "l1BlockNumber": "0x18cf503",
+        "logsBloom": "0x0000000000000004000020100008840000000020120000000000000800000000000800001000002040000000280800008000000004000010040000000000000000000100000050000040000a000010000000108000400020000000000000001001003000021008000000000001000800001000000800000000000010000000201000000000000000000000000002024000080000000104000000100000000000000025000000000100000020000080000000000000000000004000000080000000020402000001000000000000000000000006000000008000040200402024000000001000000000024000040140000080280000000000000000000002000810",
+        "miner": "0xa4b000000000000000000073657175656e636572",
+        "mixHash": "0x0000000000000a1b00000000018cf503000000000000003d0000000000000000",
+        "nonce": "0x00000000000497cb",
+        "number": "0x405db1a",
+        "parentHash": "0x0008b3d287045f65df00634a36b71e715fd37ba9d9b52e33aea2947b5fdb5fb0",
+        "receiptsRoot": "0x02bff6099e32fae6ff523f7c53974b38e0fe20882f5833fe8e36f619caa9dffe",
+        "sendCount": "0xa1b",
+        "sendRoot": "0x39d9f8e46206610c0f4454086154649413369ccb8301a6d179f066486bdd9efc",
+        "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+        "size": "0x1123",
+        "stateRoot": "0x8323f9b3859c7645e55267c8d8a5735eb6563748d6b69a6ec50dbd93835d48a5",
+        "timestamp": "0x6aaf2133",
+        "transactions": [
+          "0x3455049263b27074f09f50c689de72bede46ebc3927e2be2df36bc1b5f472fb4",
+          "0x0f0e1d826ca370671061280305ba30b724461a482ec44386d6a9ca9faaa9e5ee",
+          "0xf732b6bbb3677c11472c6a5e219b0b89a8351538921fc566a9f5c8403bca3dc9",
+          "0xcce1da7cbe1081ad93c47bbaac4957ca054c63646318b665e76b5948d11dd8b4"
+        ],
+        "transactionsRoot": "0x9525f93fec0156bddb93db1e6b539bf9593ac2cb94fe37be0d44418248fbe0c6",
+        "uncles": []
+      }
+    }
+  },
+  {
+    "url": "https://rpc.mainnet.chain.robinhood.com",
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 4,
+      "method": "eth_call",
+      "params": [
+        {
+          "to": "0x5bd1Fbe78a78fe8236fa00CF48fbEBA74ae34661",
+          "data": "0x1cad862d00000000000000000000000000000000000000000000000000000000000003e8"
+        },
+        "0x405db1a"
+      ]
+    },
+    "response": {
+      "jsonrpc": "2.0",
+      "id": 4,
+      "result": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000033b2e3c9fd0803ce800000000000000000000000000000000000000000000000000000000000000000000c80000000000000000000000000000000000000000000000000000000000031da80000000000000000000000000000000000000000000000000000000000001b580000000000000000000000000000000000000000000000000000000000002710000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001"
+    }
+  },
+  {
+    "url": "https://rpc.mainnet.chain.robinhood.com",
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 5,
+      "method": "eth_call",
+      "params": [
+        {
+          "to": "0x5bd1Fbe78a78fe8236fa00CF48fbEBA74ae34661",
+          "data": "0x236a4afb"
+        },
+        "0x405db1a"
+      ]
+    },
+    "response": {
+      "jsonrpc": "2.0",
+      "id": 5,
+      "result": "0x0000000000000000000000000000000000000000000000000000000000000001"
+    }
+  },
+  {
+    "url": "https://rpc.mainnet.chain.robinhood.com",
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 6,
+      "method": "eth_call",
+      "params": [
+        {
+          "to": "0x5bd1Fbe78a78fe8236fa00CF48fbEBA74ae34661",
+          "data": "0xcf3cf573"
+        },
+        "0x405db1a"
+      ]
+    },
+    "response": {
+      "jsonrpc": "2.0",
+      "id": 6,
+      "result": "0x0000000000000000000000000000000000000000000000000001c6bf52634000"
+    }
+  },
+  {
+    "url": "https://rpc.mainnet.chain.robinhood.com",
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 7,
+      "method": "eth_getBlockByNumber",
+      "params": [
+        "0x405db1a",
+        false
+      ]
+    },
+    "response": {
+      "jsonrpc": "2.0",
+      "id": 7,
+      "result": {
+        "baseFeePerGas": "0x3ee8010",
+        "difficulty": "0x1",
+        "extraData": "0x39d9f8e46206610c0f4454086154649413369ccb8301a6d179f066486bdd9efc",
+        "gasLimit": "0x4000000000000",
+        "gasUsed": "0xde8eb",
+        "hash": "0xe22e8f0f415eddb9f5018af806e97844f167df73dd155349aaa84cf256d9d4b3",
+        "l1BlockNumber": "0x18cf503",
+        "logsBloom": "0x0000000000000004000020100008840000000020120000000000000800000000000800001000002040000000280800008000000004000010040000000000000000000100000050000040000a000010000000108000400020000000000000001001003000021008000000000001000800001000000800000000000010000000201000000000000000000000000002024000080000000104000000100000000000000025000000000100000020000080000000000000000000004000000080000000020402000001000000000000000000000006000000008000040200402024000000001000000000024000040140000080280000000000000000000002000810",
+        "miner": "0xa4b000000000000000000073657175656e636572",
+        "mixHash": "0x0000000000000a1b00000000018cf503000000000000003d0000000000000000",
+        "nonce": "0x00000000000497cb",
+        "number": "0x405db1a",
+        "parentHash": "0x0008b3d287045f65df00634a36b71e715fd37ba9d9b52e33aea2947b5fdb5fb0",
+        "receiptsRoot": "0x02bff6099e32fae6ff523f7c53974b38e0fe20882f5833fe8e36f619caa9dffe",
+        "sendCount": "0xa1b",
+        "sendRoot": "0x39d9f8e46206610c0f4454086154649413369ccb8301a6d179f066486bdd9efc",
+        "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+        "size": "0x1123",
+        "stateRoot": "0x8323f9b3859c7645e55267c8d8a5735eb6563748d6b69a6ec50dbd93835d48a5",
+        "timestamp": "0x6aaf2133",
+        "transactions": [
+          "0x3455049263b27074f09f50c689de72bede46ebc3927e2be2df36bc1b5f472fb4",
+          "0x0f0e1d826ca370671061280305ba30b724461a482ec44386d6a9ca9faaa9e5ee",
+          "0xf732b6bbb3677c11472c6a5e219b0b89a8351538921fc566a9f5c8403bca3dc9",
+          "0xcce1da7cbe1081ad93c47bbaac4957ca054c63646318b665e76b5948d11dd8b4"
+        ],
+        "transactionsRoot": "0x9525f93fec0156bddb93db1e6b539bf9593ac2cb94fe37be0d44418248fbe0c6",
+        "uncles": []
+      }
+    }
+  }
+]

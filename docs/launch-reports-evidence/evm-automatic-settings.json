@@ -1,0 +1,432 @@
+[
+  {
+    "modelId": "sushi-launchpad",
+    "request": {
+      "schemaVersion": 1,
+      "modelId": "sushi-launchpad",
+      "title": "Launch funding analysis",
+      "targetsPct": [
+        40,
+        50,
+        60,
+        70,
+        80,
+        90
+      ],
+      "base": {
+        "symbol": "TOKEN",
+        "decimals": 18,
+        "supply": "1000000000"
+      },
+      "quote": {
+        "symbol": "ETH",
+        "decimals": 18
+      },
+      "terms": {
+        "plannedStartTick": -200800,
+        "reserveBps": 300,
+        "tickRangeSpacings": 1,
+        "slippageBps": 50,
+        "_snapshot": {
+          "protocolVersion": "Sushi Launchpad V1",
+          "factory": "0x104f1ab42674565ec3df0bfebccc4186f72fa7ed",
+          "quoteToken": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+          "sourceUrl": "https://github.com/sushi-labs/sushi/blob/master/src/evm/config/features/launchpad-v1.ts",
+          "kind": "public-rpc",
+          "chainId": 4663,
+          "rpc": "https://rpc.mainnet.chain.robinhood.com",
+          "blockNumber": "67493737",
+          "blockHash": "0x55c005ea208f958598936063ca17606139d863ba04395d1f1aefa59c2980c2f0",
+          "blockTime": "2026-09-19T23:58:26.000Z",
+          "observedAt": "2026-09-19T23:58:27.181Z",
+          "reads": {
+            "0x104f1ab42674565ec3df0bfebccc4186f72fa7ed:calculateStartTick(address)": "0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffcefa0",
+            "0x104f1ab42674565ec3df0bfebccc4186f72fa7ed:protocolReserveBps()": "0x000000000000000000000000000000000000000000000000000000000000012c",
+            "0x104f1ab42674565ec3df0bfebccc4186f72fa7ed:launchFee()": "0x0000000000000000000000000000000000000000000000000001c6bf52634000"
+          }
+        }
+      },
+      "operations": {
+        "currencySymbol": "ETH",
+        "buyerCount": 32,
+        "retainedPct": 0,
+        "includeInitialLiquidity": true,
+        "setupAmount": "0",
+        "buyerGasAmount": "0",
+        "cleanupAmount": "0",
+        "holderCount": 0,
+        "holderAmount": "0",
+        "tipAmount": "0",
+        "launchFeeAmount": "0.0005",
+        "providerFeeBps": 0,
+        "recipientCount": 0,
+        "recipientBufferAmount": "0",
+        "sourceGasAmount": "0",
+        "agedWalletCount": 125,
+        "agedWalletUnitAmount": "0.10"
+      },
+      "termsSource": {
+        "kind": "snapshot",
+        "asOf": "2026-09-19T23:58:27.181Z",
+        "url": "https://github.com/sushi-labs/sushi/blob/master/site/pages/contracts/launchpad.mdx",
+        "label": "Sushi Launchpad V1 native settings, Robinhood Chain block 67493737"
+      },
+      "chain": "Robinhood Chain"
+    },
+    "rows": [
+      {
+        "targetPct": 40,
+        "total": "13.836510700893149837",
+        "fdvQuote": 5.589930140999999
+      },
+      {
+        "targetPct": 50,
+        "total": "14.525835371034828188",
+        "fdvQuote": 8.276295986
+      },
+      {
+        "targetPct": 60,
+        "total": "15.587767970982819175",
+        "fdvQuote": 13.354519966000002
+      },
+      {
+        "targetPct": 70,
+        "total": "17.436317311633025702",
+        "fdvQuote": 25.078652721
+      },
+      {
+        "targetPct": 80,
+        "total": "21.459630582459945786",
+        "fdvQuote": 63.260684546
+      },
+      {
+        "targetPct": 90,
+        "total": "36.978124627078066106",
+        "fdvQuote": 373.10893538700003
+      }
+    ]
+  },
+  {
+    "modelId": "lunch-v3",
+    "request": {
+      "schemaVersion": 1,
+      "modelId": "lunch-v3",
+      "title": "Launch funding analysis",
+      "targetsPct": [
+        40,
+        50,
+        60,
+        70,
+        80,
+        90
+      ],
+      "base": {
+        "symbol": "TOKEN",
+        "decimals": 18,
+        "supply": "1000000000"
+      },
+      "quote": {
+        "symbol": "ETH",
+        "decimals": 18
+      },
+      "terms": {
+        "magnitude": 204200,
+        "tokenOrdering": "both",
+        "buyTaxBps": 0,
+        "slippageBps": 50,
+        "_snapshot": {
+          "protocolVersion": "lunch.fun V3 native",
+          "factory": "0xf5Ac14e7691EF44b15b59FcC6a756e41A3E5EFd6",
+          "parameterGetter": "launchTickMagnitude()",
+          "quoteToken": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+          "sourceUrl": "https://www.lunch.fun/docs",
+          "launchFeeSource": "Official lunch.fun docs: no launch fee",
+          "kind": "public-rpc",
+          "chainId": 4663,
+          "rpc": "https://rpc.mainnet.chain.robinhood.com",
+          "blockNumber": "67493742",
+          "blockHash": "0xb0157ac329da1391f1cfab5f9cc60d79f547099508c2f66688ad26b5e0526c8d",
+          "blockTime": "2026-09-19T23:58:26.000Z",
+          "observedAt": "2026-09-19T23:58:27.476Z",
+          "reads": {
+            "0xf5Ac14e7691EF44b15b59FcC6a756e41A3E5EFd6:launchTickMagnitude()": "0x0000000000000000000000000000000000000000000000000000000000031da8"
+          }
+        }
+      },
+      "operations": {
+        "currencySymbol": "ETH",
+        "buyerCount": 32,
+        "retainedPct": 0,
+        "includeInitialLiquidity": true,
+        "setupAmount": "0",
+        "buyerGasAmount": "0",
+        "cleanupAmount": "0",
+        "holderCount": 0,
+        "holderAmount": "0",
+        "tipAmount": "0",
+        "launchFeeAmount": "0",
+        "providerFeeBps": 0,
+        "recipientCount": 0,
+        "recipientBufferAmount": "0",
+        "sourceGasAmount": "0",
+        "agedWalletCount": 125,
+        "agedWalletUnitAmount": "0.10"
+      },
+      "termsSource": {
+        "kind": "snapshot",
+        "asOf": "2026-09-19T23:58:27.476Z",
+        "url": "https://www.lunch.fun/docs",
+        "label": "lunch.fun V3 native launcher, Robinhood Chain block 67493742"
+      },
+      "chain": "Robinhood Chain"
+    },
+    "rows": [
+      {
+        "targetPct": 40,
+        "total": "13.412900849035086775",
+        "fdvQuote": 3.765716002
+      },
+      {
+        "targetPct": 50,
+        "total": "13.869351273552630154",
+        "fdvQuote": 5.422631043000001
+      },
+      {
+        "targetPct": 60,
+        "total": "14.554026910328945208",
+        "fdvQuote": 8.472861004999999
+      },
+      {
+        "targetPct": 70,
+        "total": "15.695152971622803664",
+        "fdvQuote": 15.062864009
+      },
+      {
+        "targetPct": 80,
+        "total": "17.977405094210520537",
+        "fdvQuote": 33.891444019999994
+      },
+      {
+        "targetPct": 90,
+        "total": "24.824161461973671459",
+        "fdvQuote": 135.565776081
+      }
+    ]
+  },
+  {
+    "modelId": "lunch-v4-tax",
+    "request": {
+      "schemaVersion": 1,
+      "modelId": "lunch-v4-tax",
+      "title": "Launch funding analysis",
+      "targetsPct": [
+        40,
+        50,
+        60,
+        70,
+        80,
+        90
+      ],
+      "base": {
+        "symbol": "TOKEN",
+        "decimals": 18,
+        "supply": "1000000000"
+      },
+      "quote": {
+        "symbol": "ETH",
+        "decimals": 18
+      },
+      "terms": {
+        "magnitude": 204200,
+        "tokenOrdering": "token1",
+        "buyTaxBps": 0,
+        "slippageBps": 50,
+        "_snapshot": {
+          "protocolVersion": "lunch.fun V4 native",
+          "factory": "0xC783221AB1db0244203458417981B4631E80B988",
+          "parameterGetter": "launchTick()",
+          "quoteToken": "0x0000000000000000000000000000000000000000",
+          "sourceUrl": "https://www.lunch.fun/docs",
+          "launchFeeSource": "Official lunch.fun docs: no launch fee",
+          "kind": "public-rpc",
+          "chainId": 4663,
+          "rpc": "https://rpc.mainnet.chain.robinhood.com",
+          "blockNumber": "67493746",
+          "blockHash": "0xa140acdfb80f8b404b41abb03bc440ecea03ad808f79d17821c6cf50170352fa",
+          "blockTime": "2026-09-19T23:58:26.000Z",
+          "observedAt": "2026-09-19T23:58:27.877Z",
+          "reads": {
+            "0xC783221AB1db0244203458417981B4631E80B988:launchTick()": "0x0000000000000000000000000000000000000000000000000000000000031da8",
+            "0xC783221AB1db0244203458417981B4631E80B988:TICK_SPACING()": "0x00000000000000000000000000000000000000000000000000000000000000c8"
+          }
+        }
+      },
+      "operations": {
+        "currencySymbol": "ETH",
+        "buyerCount": 32,
+        "retainedPct": 0,
+        "includeInitialLiquidity": true,
+        "setupAmount": "0",
+        "buyerGasAmount": "0",
+        "cleanupAmount": "0",
+        "holderCount": 0,
+        "holderAmount": "0",
+        "tipAmount": "0",
+        "launchFeeAmount": "0",
+        "providerFeeBps": 0,
+        "recipientCount": 0,
+        "recipientBufferAmount": "0",
+        "sourceGasAmount": "0",
+        "agedWalletCount": 125,
+        "agedWalletUnitAmount": "0.10"
+      },
+      "termsSource": {
+        "kind": "snapshot",
+        "asOf": "2026-09-19T23:58:27.877Z",
+        "url": "https://www.lunch.fun/docs",
+        "label": "lunch.fun V4 native launcher, Robinhood Chain block 67493746"
+      },
+      "chain": "Robinhood Chain"
+    },
+    "rows": [
+      {
+        "targetPct": 40,
+        "total": "13.40649131448820051",
+        "fdvQuote": 3.765716002
+      },
+      {
+        "targetPct": 50,
+        "total": "13.859736971732300756",
+        "fdvQuote": 5.422631043000001
+      },
+      {
+        "targetPct": 60,
+        "total": "14.539605457598451111",
+        "fdvQuote": 8.472861004999999
+      },
+      {
+        "targetPct": 70,
+        "total": "15.672719600708701736",
+        "fdvQuote": 15.062864009
+      },
+      {
+        "targetPct": 80,
+        "total": "17.938947886929202948",
+        "fdvQuote": 33.891444019999994
+      },
+      {
+        "targetPct": 90,
+        "total": "24.737632745590706866",
+        "fdvQuote": 135.565776081
+      }
+    ]
+  },
+  {
+    "modelId": "lunch-v4-rewards",
+    "request": {
+      "schemaVersion": 1,
+      "modelId": "lunch-v4-rewards",
+      "title": "Launch funding analysis",
+      "targetsPct": [
+        40,
+        50,
+        60,
+        70,
+        80,
+        90
+      ],
+      "base": {
+        "symbol": "TOKEN",
+        "decimals": 18,
+        "supply": "1000000000"
+      },
+      "quote": {
+        "symbol": "ETH",
+        "decimals": 18
+      },
+      "terms": {
+        "magnitude": 204200,
+        "tokenOrdering": "token1",
+        "buyTaxBps": 0,
+        "slippageBps": 50,
+        "_snapshot": {
+          "protocolVersion": "lunch.fun V4 native",
+          "factory": "0xC783221AB1db0244203458417981B4631E80B988",
+          "parameterGetter": "launchTick()",
+          "quoteToken": "0x0000000000000000000000000000000000000000",
+          "sourceUrl": "https://www.lunch.fun/docs",
+          "launchFeeSource": "Official lunch.fun docs: no launch fee",
+          "kind": "public-rpc",
+          "chainId": 4663,
+          "rpc": "https://rpc.mainnet.chain.robinhood.com",
+          "blockNumber": "67493746",
+          "blockHash": "0xa140acdfb80f8b404b41abb03bc440ecea03ad808f79d17821c6cf50170352fa",
+          "blockTime": "2026-09-19T23:58:26.000Z",
+          "observedAt": "2026-09-19T23:58:28.172Z",
+          "reads": {
+            "0xC783221AB1db0244203458417981B4631E80B988:launchTick()": "0x0000000000000000000000000000000000000000000000000000000000031da8",
+            "0xC783221AB1db0244203458417981B4631E80B988:TICK_SPACING()": "0x00000000000000000000000000000000000000000000000000000000000000c8"
+          }
+        }
+      },
+      "operations": {
+        "currencySymbol": "ETH",
+        "buyerCount": 32,
+        "retainedPct": 0,
+        "includeInitialLiquidity": true,
+        "setupAmount": "0",
+        "buyerGasAmount": "0",
+        "cleanupAmount": "0",
+        "holderCount": 0,
+        "holderAmount": "0",
+        "tipAmount": "0",
+        "launchFeeAmount": "0",
+        "providerFeeBps": 0,
+        "recipientCount": 0,
+        "recipientBufferAmount": "0",
+        "sourceGasAmount": "0",
+        "agedWalletCount": 125,
+        "agedWalletUnitAmount": "0.10"
+      },
+      "termsSource": {
+        "kind": "snapshot",
+        "asOf": "2026-09-19T23:58:28.172Z",
+        "url": "https://www.lunch.fun/docs",
+        "label": "lunch.fun V4 native launcher, Robinhood Chain block 67493746"
+      },
+      "chain": "Robinhood Chain"
+    },
+    "rows": [
+      {
+        "targetPct": 40,
+        "total": "13.40649131448820051",
+        "fdvQuote": 3.765716002
+      },
+      {
+        "targetPct": 50,
+        "total": "13.859736971732300756",
+        "fdvQuote": 5.422631043000001
+      },
+      {
+        "targetPct": 60,
+        "total": "14.539605457598451111",
+        "fdvQuote": 8.472861004999999
+      },
+      {
+        "targetPct": 70,
+        "total": "15.672719600708701736",
+        "fdvQuote": 15.062864009
+      },
+      {
+        "targetPct": 80,
+        "total": "17.938947886929202948",
+        "fdvQuote": 33.891444019999994
+      },
+      {
+        "targetPct": 90,
+        "total": "24.737632745590706866",
+        "fdvQuote": 135.565776081
+      }
+    ]
+  }
+]

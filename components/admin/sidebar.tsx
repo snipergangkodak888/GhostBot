@@ -2,7 +2,7 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { DollarSign, Home, Settings, Send, Rocket, ChevronDown, Radio, Clock, Database, CalendarDays, FolderKanban, Bot, Bell, Shield, WalletCards } from 'lucide-react'
+import { DollarSign, Home, Settings, Send, Rocket, ChevronDown, Radio, Clock, Database, CalendarDays, FolderKanban, Bot, Bell, Shield, WalletCards, Calculator } from 'lucide-react'
 
 type NavLeaf = { href: string; label: string; icon: React.ElementType; color?: string }
 type NavGroup = { group: string; icon: React.ElementType; color?: string; children: NavLeaf[] }
@@ -22,6 +22,7 @@ const textOn = (color: string) => color === sectionColors.projects ? '#111827' :
 const navItems: NavItem[] = [
   { href: '/admin', label: 'Home', icon: Home, color: sectionColors.home },
   { href: '/admin/projects', label: 'Projects', icon: FolderKanban, color: sectionColors.projects },
+  { href: '/admin/launch-math', label: 'Launch Math', icon: Calculator, color: sectionColors.home },
   { href: '/admin/calendar', label: 'Calendar', icon: CalendarDays, color: sectionColors.calendar },
   { href: '/admin/reminders', label: 'Reminders', icon: Bell, color: sectionColors.reminders },
   { href: '/admin/revenue', label: 'Revenue Inbox', icon: WalletCards, color: sectionColors.payroll },

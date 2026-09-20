@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "allowImportingTsExtensions": true,
+    "incremental": false
+  },
+  "include": [
+    "next-env.d.ts",
+    "lib/launch-reports/**/*.ts",
+    "scripts/launch-report.ts",
+    "components/admin/launch-math-builder.tsx",
+    "app/api/admin/launch-reports/**/*.ts",
+    "app/admin/(dashboard)/launch-math/page.tsx"
+  ],
+  "exclude": ["node_modules"]
+}
