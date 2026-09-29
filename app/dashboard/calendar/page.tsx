@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react"
 import { CalendarDays, Plus, Save, X } from "lucide-react"
 import { toast } from "sonner"
 import { reminderText } from "@/lib/reminder-text"
+import { launchMethodLabel, normalizeLaunchMethod } from "@/lib/launch-method"
 
 type Project = { _id: string; name: string; status: string; owner?: string; launchDate?: string; launchAt?: string; tentativeLaunchDate?: string; launchTimingStatus?: "tentative" | "confirmed"; launchMethod?: "sumo" | "senzu_plugin" | "other_mm_plugin" }
 type Reminder = { _id: string; text?: string; title?: string; message?: string; dueAt?: string; status?: string }
@@ -80,7 +81,7 @@ export default function CalendarPage() {
         id: `project-${project._id}`,
         date: project.launchAt || project.launchDate || `${project.tentativeLaunchDate}T12:00:00`,
         title: project.name,
-        meta: [project.tentativeLaunchDate && !project.launchAt ? "Time TBD · Tentative" : project.owner || project.status, project.launchMethod === "sumo" ? "Sumo" : project.launchMethod === "senzu_plugin" ? "Senzu plugin" : project.launchMethod === "other_mm_plugin" ? "Other MM plugin" : ""].filter(Boolean).join(" · "),
+        meta: [project.tentativeLaunchDate && !project.launchAt ? "Time TBD · Tentative" : project.owner || project.status, normalizeLaunchMethod(project.launchMethod) ? launchMethodLabel(project.launchMethod) : ""].filter(Boolean).join(" · "),
         type: project.tentativeLaunchDate && !project.launchAt ? "Tentative launch" : "Launch",
       })),
       ...reminders.filter((reminder) => reminder.dueAt).map((reminder) => ({

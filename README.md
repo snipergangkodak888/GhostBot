@@ -333,6 +333,8 @@ To change a scheduled launch, use `/calendar` (or `/calendar tomorrow`) → **Op
 
 The same launch editor offers **Change chain**, followed by a matching launchpad / DEX picker. If the chain is missing, **Change launch venue / DEX** opens the chain picker first. Switching chains resets the quote token and accepted revenue assets to the new chain’s defaults and clears an incompatible venue or token contract; it keeps launch timing, notes, referrer, and fee settings. Solana venues include Stonks for scheduling (without a launch calculator model).
 
+New launches default to **Sumo** unless **Other MM plugin** is explicitly requested or selected. **Change launch method** in the saved launch editor offers these two choices. Older Senzu values display as **Other MM plugin**. Changing timing or other details preserves the existing method.
+
 Launch readiness confirmations keep the remaining fee or referrer button on the same message. Once setup is complete, an explicitly requested pending activation finishes automatically; ordinary setup edits show **Open launch** without offering **Launched on schedule** or **Launched now**. Launch confirmation stays in the dedicated launch reminder flow.
 
 Run one of these commands inside each Telegram group. The caller must be both a GhostBot admin and a Telegram group administrator:

@@ -81,8 +81,8 @@ function localRequire(id) {
   if (id === "@/lib/launch-calendar") return { LAUNCH_TIME_ZONE: "America/New_York", formatLaunchDaySchedule: async () => "schedule", getLaunchesForDay: async () => [], launchDateKey: () => "2026-08-24" }
   if (id === "@/lib/revenue-service") return { ensureDailyTradingFeeExpectations: async () => ({}), valuePendingRevenueReceipts: async () => ({}) }
   if (id === "@/lib/launch-method") return {
-    normalizeLaunchMethod: (value) => ["sumo", "senzu_plugin", "other_mm_plugin"].includes(String(value)) ? String(value) : "",
-    launchMethodLabel: (value) => value === "sumo" ? "Sumo" : value === "senzu_plugin" ? "Senzu plugin" : value === "other_mm_plugin" ? "Other MM plugin" : "Not selected",
+    normalizeLaunchMethod: (value) => ["sumo", "other_mm_plugin"].includes(String(value)) ? String(value) : "",
+    launchMethodLabel: (value) => value === "sumo" ? "Sumo" : value === "other_mm_plugin" ? "Other MM plugin" : "Not selected",
   }
   if (id === "@/lib/launch-venues") return {
     operationalLaunchVenue: (id) => id === "pumpfun" ? { name: "Pump.fun" } : id === "uni-rh-v2" ? { name: "Uniswap V2" } : null,
@@ -149,7 +149,7 @@ assert.equal(messages.at(-1).options.replyMarkup.inline_keyboard[0][0].callback_
 
 projects.push(
   { _id: "tentative", name: "Tentative today", status: "scheduled", launchAt: null, tentativeLaunchDate: "2026-08-24", launchTimingStatus: "tentative", launchTimeZone: "America/New_York", launchChatId: "-1001", scheduleVersion: 1, launchVenue: "pumpfun", chain: "solana", quoteToken: "SOL", launchMethod: "sumo" },
-  { _id: "tentative-two", name: "Second TBD", status: "scheduled", launchAt: null, tentativeLaunchDate: "2026-08-24", launchTimingStatus: "tentative", launchTimeZone: "America/New_York", launchChatId: "-1001", scheduleVersion: 2, launchVenue: "uni-rh-v2", chain: "robinhood", quoteToken: "ETH", launchMethod: "senzu_plugin" },
+  { _id: "tentative-two", name: "Second TBD", status: "scheduled", launchAt: null, tentativeLaunchDate: "2026-08-24", launchTimingStatus: "tentative", launchTimeZone: "America/New_York", launchChatId: "-1001", scheduleVersion: 2, launchVenue: "uni-rh-v2", chain: "robinhood", quoteToken: "ETH", launchMethod: "other_mm_plugin" },
 )
 await module.exports.processDueLaunchConfirmations("test", new Date("2026-08-24T21:00:00.000Z"))
 assert.equal(messages.length, 4, "tentative launches must not receive launch-time activation prompts")
@@ -158,7 +158,7 @@ assert.equal(followup.due, 2)
 assert.equal(messages.length, 5)
 assert.match(messages.at(-1).text, /Today’s launches with time TBD/)
 assert.match(messages.at(-1).text, /Tentative today · Solana\/Pump.fun · Sumo/)
-assert.match(messages.at(-1).text, /Second TBD · Robinhood\/Uni V2 · Senzu plugin/)
+assert.match(messages.at(-1).text, /Second TBD · Robinhood\/Uni V2 · Other MM plugin/)
 assert.deepEqual(JSON.parse(JSON.stringify(messages.at(-1).options.replyMarkup.inline_keyboard.flat().map((button) => button.callback_data))), [
   "tentative:ack:2026-08-24",
   "calendar:edit:2026-08-24",

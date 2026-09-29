@@ -112,8 +112,8 @@ overrides['@/lib/launch-calculator'] = {
 }
 const permissions = load('lib/bot-permissions.ts')
 const access = load('lib/team-access.ts')
-const ops = load('lib/ops-bot.ts')
-const webhook = load('app/api/telegram/webhook/route.ts', '\nexport { handleCallback, processState, routeText, getLaunchSetupAction, aiPermissionPolicy };')
+const ops = load('lib/ops-bot.ts', '\nexport { normalizeActionDates };')
+const webhook = load('app/api/telegram/webhook/route.ts', '\nexport { handleCallback, processState, routeText, getLaunchSetupAction, aiPermissionPolicy, createGuidedLaunchDraft };')
 assert.equal((await webhook.POST({ headers: new Headers(), json: async () => { throw new Error('An unauthenticated update must never be parsed') } })).status, 401)
 const webhookSecret = load('lib/telegram-webhook-auth.ts').telegramWebhookSecret('test-bot-token')
 assert.equal((await webhook.POST({ headers: new Headers({ 'x-telegram-bot-api-secret-token': webhookSecret }), json: async () => ({}) })).status, 200)
@@ -141,6 +141,28 @@ async function callback(user, data, sourceChat = chatId) {
   await webhook.handleCallback('test', sourceChat, user, data, req, { message_id: 100, chat: { id: sourceChat } })
   return messages.map(message => message.text).join('\n')
 }
+
+// A planner guess cannot override the new-launch default or silently change an existing method.
+for (const guessedMethod of [undefined, 'senzu_plugin', 'other_mm_plugin']) {
+  const normalized = ops.normalizeActionDates('create_project', { ...payload, launchMethod: guessedMethod }, 'Add Alpha launch tomorrow at 3 PM', 'America/New_York', new Date())
+  assert.equal(normalized.launchMethod, 'sumo')
+  const update = ops.normalizeActionDates('update_project', { launchMethod: guessedMethod }, 'Move Alpha launch to tomorrow at 3 PM', 'America/New_York', new Date())
+  assert.equal(Object.hasOwn(update, 'launchMethod'), false, 'Timing edits must preserve the stored method')
+}
+for (const [requested, expected] of [['sumo launch', 'sumo'], ['senzu plugin', 'other_mm_plugin'], ['other MM plugin', 'other_mm_plugin']]) {
+  for (const actionType of ['create_project', 'update_project']) {
+    assert.equal(ops.normalizeActionDates(actionType, { launchMethod: 'senzu_plugin' }, `Use ${requested}`, 'America/New_York', new Date()).launchMethod, expected)
+  }
+}
+const defaultDraft = await webhook.createGuidedLaunchDraft(db, { telegramId: memberId, chatId, name: 'Default Method', launchAt: payload.launchAt, timeZone: 'America/New_York' })
+assert.equal(defaultDraft.payload.launchMethod, 'sumo')
+const projectApi = load('app/api/ops/projects/route.ts', '\nexport { cleanProject };')
+assert.equal((await projectApi.cleanProject({ name: 'Default method' })).launchMethod, 'sumo')
+for (const launchMethod of ['other_mm_plugin', 'senzu_plugin']) assert.equal((await projectApi.cleanProject({ name: 'Plugin method', launchMethod })).launchMethod, 'other_mm_plugin')
+await callback(memberId, `launchsetup:setmethod:${defaultDraft._id}:senzu_plugin`)
+assert.equal((await db.collection('opsAiActions').findOne({ _id: defaultDraft._id })).payload.launchMethod, 'other_mm_plugin', 'Legacy draft selections must map to Other MM plugin')
+await callback(memberId, `launchsetup:method:${defaultDraft._id}`)
+assert.equal(messages.at(-1).options.replyMarkup.inline_keyboard.flat().some(button => /senzu/i.test(button.text)), false)
 
 await draft('shared')
 for (const user of [memberId, adminId]) {
@@ -253,6 +275,39 @@ function assertTimingCard() {
   assert.match(messages.at(-1).text, /Notes\nNo notes yet/)
   assert.match(buttonWithText('Change launch timing'), /^calendar:timing:/)
 }
+
+// Saved launch methods are editable in Launch Chat and launch-enabled DMs.
+const methodProjectId = 'method-launch'
+await db.collection('opsProjects').insertOne({ ...payload, _id: methodProjectId, launchMethod: 'senzu_plugin', status: 'scheduled', scheduleVersion: 1, notes: 'Keep these notes' })
+const methodProject = () => db.collection('opsProjects').findOne({ _id: methodProjectId })
+await callback(memberId, `calendar:launch:${methodProjectId}:1`)
+assert.match(await callback(memberId, buttonWithText('Change launch method')), /Current method: Other MM plugin/)
+assert.deepEqual(lastButtons().map(button => button.text), ['Sumo', 'Other MM plugin', 'Back'])
+const staleMethod = buttonWithText('Other MM plugin')
+assert.match(await callback(memberId, buttonWithText('Sumo')), /Launch method updated to Sumo/)
+assert.equal(messages.at(-1).messageId, 100)
+const sumoProject = await methodProject()
+assert.equal(sumoProject.launchMethod, 'sumo')
+assert.equal(sumoProject.launchMethodUpdatedByTelegramId, memberId)
+for (const field of ['launchAt', 'launchVenue', 'chain', 'quoteToken', 'referrerStatus', 'dailyTradingFeeUsd', 'launchFeeUsd']) assert.equal(sumoProject[field], payload[field])
+assert.equal(sumoProject.notes, 'Keep these notes')
+assert.match(await callback(memberId, staleMethod), /no longer available/)
+assert.deepEqual(await methodProject(), sumoProject)
+assert.match(await callback(memberId, `calendar:method:${methodProjectId}:1`), /already updated/)
+for (const [label, value] of [['Other MM plugin', 'other_mm_plugin'], ['Sumo', 'sumo']]) {
+  await callback(dmId, `calendar:method:${methodProjectId}:${(await methodProject()).scheduleVersion}`, dmId)
+  await callback(dmId, buttonWithText(label), dmId)
+  assert.equal((await methodProject()).launchMethod, value)
+}
+const finalMethodProject = await methodProject()
+await callback(memberId, `calendar:setmethod:${methodProjectId}:sumo~${finalMethodProject.scheduleVersion}`)
+assert.deepEqual(await methodProject(), finalMethodProject, 'Selecting the current method should not change the project')
+assert.match(await callback(memberId, `calendar:setmethod:${methodProjectId}:invalid~${finalMethodProject.scheduleVersion}`), /no longer available/)
+assert.match(await callback(memberId, `calendar:setmethod:${methodProjectId}:senzu_plugin~${finalMethodProject.scheduleVersion}`, memberId), /launch scheduling access/)
+assert.deepEqual(await methodProject(), finalMethodProject)
+await db.collection('opsProjects').updateOne({ _id: methodProjectId }, { $set: { status: 'inactive' } })
+assert.match(await callback(memberId, `calendar:setmethod:${methodProjectId}:senzu_plugin~${finalMethodProject.scheduleVersion}`), /no longer available/)
+assert.equal((await methodProject()).launchMethod, 'sumo')
 
 // Completing either readiness step must leave the other step on the same card.
 const feeButton = '✅ Use standard $1K launch + $500/day fees'

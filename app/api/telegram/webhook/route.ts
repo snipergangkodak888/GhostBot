@@ -32,7 +32,7 @@ import { createGuardEnrollmentLink, guardEnrollmentTokenFromText, guardEnrollmen
 import { activateScheduledProject, activationLifecycleFields, cancelScheduledProject, cleanLaunchProjectName, confirmNoProjectReferrer, confirmStandardProjectFees, deactivateActiveProject, projectActivationReadiness, projectLaunchAt, projectLaunchDateKey, projectLaunchTimingStatus, rescheduleProject, setTentativeProjectLaunchDate } from "@/lib/project-lifecycle"
 import { formatLaunchSetupReview, launchChainButtons, launchChainConfig, launchChainIdForProject, launchMethodButtons, launchProjectChainChanges, launchQuoteButtons, launchSetupButtons, launchSetupReady, launchVenueButtons, launchVenueSelection } from "@/lib/launch-setup"
 import { parseCustomQuoteTokenInput, resolveCustomQuoteToken } from "@/lib/custom-quote-token"
-import { launchMethodLabel, normalizeLaunchMethod } from "@/lib/launch-method"
+import { DEFAULT_LAUNCH_METHOD, LAUNCH_METHODS, launchMethodLabel, normalizeLaunchMethod } from "@/lib/launch-method"
 import { ghostBotOrganicChannelUrl, normalizeOrganicTicker, organicChannelCompletionMessage, organicChannelTitle, SUMO_TRADE_BOT_USERNAME, sumoBotChannelUrl, sumoSubscribeCommand, validOrganicTicker, validSumoProfileId } from "@/lib/organic-channel-setup"
 import { telegramUserAutomationConfigured } from "@/lib/telegram-user-client"
 import { queueOrganicChannelJob } from "@/lib/organic-channel-jobs"
@@ -1187,6 +1187,7 @@ async function showCalendarLaunchEditor(token: string, chatId: number | string, 
   buttons.push([{ text: "Change project name", callback_data: `calendar:name:${id}:${scheduleVersion}` }])
   buttons.push([{ text: "Change chain", callback_data: `calendar:chain:${id}:${scheduleVersion}` }])
   buttons.push([{ text: "Change launch venue / DEX", callback_data: `calendar:venue:${id}:${scheduleVersion}` }])
+  buttons.push([{ text: "Change launch method", callback_data: `calendar:method:${id}:${scheduleVersion}` }])
   buttons.push([{ text: "Add note", callback_data: `calendar:addnote:${id}:${scheduleVersion}` }])
   if (scheduled) buttons.push([{ text: "Cancel launch", callback_data: `lifecycle:cancel:${id}:${scheduleVersion}` }])
   buttons.push([{ text: "Back to launches", callback_data: `calendar:edit:${dateKey}` }])
@@ -2218,6 +2219,7 @@ async function createGuidedLaunchDraft(db: any, params: {
       tentativeLaunchDate,
       launchTimingStatus: launchAt ? "confirmed" : "tentative",
       launchTimeZone: params.timeZone,
+      launchMethod: DEFAULT_LAUNCH_METHOD,
       status: "scheduled",
       referrerStatus: "pending",
       dailyTradingFeeEnabled: true,
@@ -2517,6 +2519,37 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       return action === "chain"
         ? showCalendarLaunchChainPicker(token, chatId, project, messageId)
         : showCalendarLaunchVenuePicker(token, chatId, project, messageId)
+    }
+
+    if (action === "method") {
+      const project = await db.collection("opsProjects").findOne({ _id: id })
+      const scheduleVersion = Number(extra || 0)
+      if (!project || String(project.status || "") === "inactive" || Number(project.scheduleVersion || 0) !== scheduleVersion) {
+        return workflowReply("This launch was already updated. Open /calendar for the latest version.")
+      }
+      return showLaunchSetupPicker(token, chatId, messageId, `Choose the launch method for ${project.name}:\n\nCurrent method: ${launchMethodLabel(project.launchMethod)}`, [
+        ...LAUNCH_METHODS.map((method) => [{ text: method.label, callback_data: `calendar:setmethod:${id}:${method.id}~${scheduleVersion}` }]),
+        [{ text: "Back", callback_data: `calendar:launch:${id}:${scheduleVersion}` }],
+      ])
+    }
+
+    if (action === "setmethod") {
+      const [methodId, rawVersion] = String(extra || "").split("~")
+      const scheduleVersion = Number(rawVersion || 0)
+      const launchMethod = normalizeLaunchMethod(methodId)
+      const project = await db.collection("opsProjects").findOne({ _id: id })
+      if (!project || !launchMethod || String(project.status || "") === "inactive" || Number(project.scheduleVersion || 0) !== scheduleVersion) {
+        return workflowReply("That method selection is no longer available. Open /calendar and try again.")
+      }
+      if (project.launchMethod === launchMethod) return showCalendarLaunchEditor(token, chatId, project, messageId)
+      const now = new Date()
+      const result = await db.collection("opsProjects").updateOne(
+        { _id: id, status: project.status, scheduleVersion: project.scheduleVersion },
+        { $set: { launchMethod, scheduleVersion: scheduleVersion + 1, launchMethodUpdatedAt: now, launchMethodUpdatedByTelegramId: telegramId, updatedAt: now } },
+      )
+      const updated = await db.collection("opsProjects").findOne({ _id: id })
+      if (!result.matchedCount || !updated || updated.launchMethod !== launchMethod) return workflowReply("⚠️ This launch was updated while you were editing it. Open /calendar and try again.")
+      return showCalendarLaunchEditor(token, chatId, updated, messageId, `Launch method updated to ${launchMethodLabel(launchMethod)}.`)
     }
 
     if (action === "setchain") {

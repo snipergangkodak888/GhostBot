@@ -12,10 +12,13 @@ vm.runInNewContext(`(function (exports, require, module) { ${output}\n})(module.
 const methods = module.exports
 
 assert.equal(methods.inferLaunchMethod("this is a sumo launch"), "sumo")
-assert.equal(methods.inferLaunchMethod("use the senzu plugin"), "senzu_plugin")
-assert.equal(methods.inferLaunchMethod("using a launch dev plugin"), "senzu_plugin")
+assert.equal(methods.inferLaunchMethod("use the senzu plugin"), "other_mm_plugin")
+assert.equal(methods.inferLaunchMethod("using a launch dev plugin"), "other_mm_plugin")
 assert.equal(methods.inferLaunchMethod("use another other mm plugin"), "other_mm_plugin")
 assert.equal(methods.normalizeLaunchMethod("Other MM Plugin"), "other_mm_plugin")
-assert.equal(methods.launchMethodLabel("senzu_plugin"), "Senzu plugin")
+assert.equal(methods.launchMethodLabel("senzu_plugin"), "Other MM plugin")
+assert.equal(methods.normalizeLaunchMethod("senzu_plugin"), "other_mm_plugin")
+assert.equal(methods.DEFAULT_LAUNCH_METHOD, "sumo")
+assert.deepEqual(JSON.parse(JSON.stringify(methods.LAUNCH_METHODS)), [{ id: "sumo", label: "Sumo" }, { id: "other_mm_plugin", label: "Other MM plugin" }])
 
-console.log("PASS: launch methods normalize, infer, and label all three supported options.")
+console.log("PASS: launch methods offer Sumo and Other MM plugin, default to Sumo, and map legacy Senzu values to Other MM plugin.")
