@@ -37,7 +37,7 @@ import { reminderTargetForTelegramId, reminderTargetsLabel, resolveReminderTarge
 import { reminderText, reminderWriteText } from "@/lib/reminder-text"
 import { cleanLaunchProjectName, cleanLaunchProjectNameFromRequest, inferLaunchConfiguration, normalizeProjectStatus, projectActivationReadiness, projectLaunchAt, scheduledLifecycleFields, tentativeLifecycleFields } from "@/lib/project-lifecycle"
 import { formatLaunchSetupReview, launchSetupButtons, launchSetupReady } from "@/lib/launch-setup"
-import { inferLaunchMethod, normalizeLaunchMethod } from "@/lib/launch-method"
+import { DEFAULT_LAUNCH_METHOD, inferLaunchMethod, normalizeLaunchMethod } from "@/lib/launch-method"
 import { cleanProjectFeeFields } from "@/lib/revenue-projects"
 import { resolveCustomQuoteToken } from "@/lib/custom-quote-token"
 
@@ -840,7 +840,10 @@ function normalizeActionDates(actionType: string, payload: any, text: string, ti
     if (!next.chain && inferred.chain) next.chain = inferred.chain
     if (!next.quoteToken && inferred.quoteToken) next.quoteToken = inferred.quoteToken
     if (!next.quoteTokenAddress && inferred.quoteTokenAddress) next.quoteTokenAddress = inferred.quoteTokenAddress
-    if (!normalizeLaunchMethod(next.launchMethod) && inferredLaunchMethod) next.launchMethod = inferredLaunchMethod
+    // Only the request can choose a method; a planner guess must not override the default or an existing launch.
+    if (actionType === "create_project") next.launchMethod = inferredLaunchMethod || DEFAULT_LAUNCH_METHOD
+    else if (inferredLaunchMethod) next.launchMethod = inferredLaunchMethod
+    else delete next.launchMethod
     if (next.quoteToken) next.quoteAssets = [String(next.quoteToken).toUpperCase()]
     if (next.chain && next.quoteToken && next.feeConfigurationConfirmed === undefined) {
       next.dailyTradingFeeEnabled = next.dailyTradingFeeEnabled !== false
@@ -1184,7 +1187,7 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
           "Capability semantics:",
           "• The launch calendar is backed by a project's launchAt timestamp. Requests to add, schedule, move, or reschedule a launch update an existing project, or create a scheduled project when the named project does not exist.",
           "• If the team knows the launch day but not the exact time, use launchTimingStatus=tentative and tentativeLaunchDate=YYYY-MM-DD, with launchAt and launchDate null. Never invent a time for a tentative launch.",
-          "• launchMethod must be one of sumo, senzu_plugin, or other_mm_plugin. Infer Senzu from 'senzu plugin' or 'launch dev plugin', and infer other_mm_plugin from 'other MM plugin'.",
+          "• launchMethod must be sumo or other_mm_plugin. Default new launches to sumo unless the request explicitly names another method. Treat other MM plugin, legacy Senzu, and dev plugin requests as other_mm_plugin. For existing launches, omit launchMethod unless the user asks to change it.",
           "• Launch scheduling should capture launchAt, launchTimeZone, launchVenue, chain, and one quoteToken whenever the user supplied them. The project's quote token is used for both launch-fee and daily-fee receipts.",
           "• For a custom quote token, capture both quoteToken (symbol) and quoteTokenAddress (its exact contract or mint address). Never invent an address or token decimals.",
           "• acceptedRevenueAssets is a separate list of cashout receipt assets on the project's chain (for example SOL and USDC). Only change it when explicitly requested; do not change the trading-pair quoteToken when adding a revenue asset.",
@@ -1480,7 +1483,7 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
       launchVenue: String(payload.launchVenue || "").trim(),
       launchVenueLabel: String(payload.launchVenueLabel || "").trim(),
       launchFundingAsset: String(payload.launchFundingAsset || "").trim().toUpperCase(),
-      launchMethod: normalizeLaunchMethod(payload.launchMethod) || "",
+      launchMethod: normalizeLaunchMethod(payload.launchMethod) || DEFAULT_LAUNCH_METHOD,
       referrerStatus: String(payload.referrerStatus || (payload.referrer ? "assigned" : "pending")),
       feeConfigurationConfirmed: payload.feeConfigurationConfirmed === true,
       ...cleanProjectFeeFields(payload),

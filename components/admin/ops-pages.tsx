@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import { DEFAULT_LAUNCH_METHOD, LAUNCH_METHODS, launchMethodLabel, normalizeLaunchMethod } from "@/lib/launch-method"
 import {
   Bell,
   BookOpen,
@@ -128,7 +129,7 @@ const emptyProject = {
   launchTimeZone: "America/New_York",
   launchVenue: "",
   launchFundingAsset: "",
-  launchMethod: "",
+  launchMethod: String(DEFAULT_LAUNCH_METHOD),
   endDate: "",
   revenueToday: "0",
   currentProfitLoss: "0",
@@ -406,7 +407,7 @@ export function AdminProjectsPage() {
       launchTimeZone: project.launchTimeZone || "America/New_York",
       launchVenue: project.launchVenue || "",
       launchFundingAsset: project.launchFundingAsset || "",
-      launchMethod: project.launchMethod || "",
+      launchMethod: normalizeLaunchMethod(project.launchMethod) || DEFAULT_LAUNCH_METHOD,
       endDate: project.endDate ? String(project.endDate).slice(0, 10) : "",
       revenueToday: String(project.revenueToday || 0),
       currentProfitLoss: String(project.currentProfitLoss ?? project.profitThisWeek ?? 0),
@@ -583,7 +584,7 @@ export function AdminProjectsPage() {
               <Field label="Schedule timezone"><Input value={form.launchTimeZone} onChange={(e) => setForm({ ...form, launchTimeZone: e.target.value })} placeholder="America/New_York" /></Field>
               <Field label="Launch venue"><Input value={form.launchVenue} onChange={(e) => setForm({ ...form, launchVenue: e.target.value })} placeholder="pumpfun, aerodrome…" /></Field>
               <Field label="Funding asset"><Input value={form.launchFundingAsset} onChange={(e) => setForm({ ...form, launchFundingAsset: e.target.value.toUpperCase() })} placeholder="SOL" /></Field>
-              <Field label="Launch method"><Select value={form.launchMethod} onChange={(e) => setForm({ ...form, launchMethod: e.target.value })}><option value="">Not selected</option><option value="sumo">Sumo</option><option value="senzu_plugin">Senzu plugin</option><option value="other_mm_plugin">Other MM plugin</option></Select></Field>
+              <Field label="Launch method"><Select value={form.launchMethod} onChange={(e) => setForm({ ...form, launchMethod: e.target.value })}>{LAUNCH_METHODS.map((method) => <option key={method.id} value={method.id}>{method.label}</option>)}</Select></Field>
             </div>
           </div>
           <div className="grid gap-3 md:grid-cols-1">
@@ -924,7 +925,7 @@ export function AdminCalendarPage() {
         date: project.launchAt || project.launchDate || `${project.tentativeLaunchDate}T12:00:00`,
         type: project.tentativeLaunchDate && !project.launchAt ? "Tentative launch" : "Launch",
         title: project.name,
-        detail: [project.tentativeLaunchDate && !project.launchAt ? "Time TBD" : "", project.launchMethod === "sumo" ? "Sumo" : project.launchMethod === "senzu_plugin" ? "Senzu plugin" : project.launchMethod === "other_mm_plugin" ? "Other MM plugin" : ""].filter(Boolean).join(" · ") || project.service || project.referrer || "Project",
+        detail: [project.tentativeLaunchDate && !project.launchAt ? "Time TBD" : "", normalizeLaunchMethod(project.launchMethod) ? launchMethodLabel(project.launchMethod) : ""].filter(Boolean).join(" · ") || project.service || project.referrer || "Project",
       })),
       ...reminders.filter((reminder) => reminder.dueAt).map((reminder) => ({
         id: `reminder-${reminder._id}`,

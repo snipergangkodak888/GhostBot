@@ -125,7 +125,7 @@ try {
   await seedLaunchChatProfile()
   server = await ensureBotLabServer(config, { quiet: true })
   await resetBotLab(config)
-  const proposed = await sendBotLabUpdate(config, { text: `/schedulelaunch ${projectName} pumpfun sol launch at 5:10 pm ET today - sumo` })
+  const proposed = await sendBotLabUpdate(config, { text: `/schedulelaunch ${projectName} pumpfun sol launch at 5:10 pm ET today` })
   const proposedText = responseText(proposed)
   const reviewFields = ["Review launch", `Project name: <b>${projectName}</b>`, "Pump.fun", "Solana", "Quote token: <b>SOL</b>", "Launch method: <b>Sumo</b>", "Choose before creating", "Nothing is saved until you tap Create launch"]
   const missingReviewFields = reviewFields.filter((value) => !proposedText.includes(value))
@@ -155,7 +155,7 @@ try {
 
   const tentativeProposed = await sendBotLabUpdate(config, { text: `/schedulelaunch ${tentativeProjectName} pumpfun sol launch today time TBD - senzu plugin` })
   const tentativeReview = responseText(tentativeProposed)
-  for (const requiredField of ["Review launch", `Project name: <b>${tentativeProjectName}</b>`, "Time TBD (tentative)", "Pump.fun", "Solana", "Quote token: <b>SOL</b>", "Launch method: <b>Senzu plugin</b>"]) {
+  for (const requiredField of ["Review launch", `Project name: <b>${tentativeProjectName}</b>`, "Time TBD (tentative)", "Pump.fun", "Solana", "Quote token: <b>SOL</b>", "Launch method: <b>Other MM plugin</b>"]) {
     if (!tentativeReview.includes(requiredField)) throw new Error(`Tentative review is missing ${requiredField}. Response: ${tentativeReview}`)
   }
   const tentativeNoRefCallback = callbackStartingWith(tentativeProposed, "launchsetup:noref:")
@@ -170,7 +170,7 @@ try {
   const tentativeProject = await lookupTestProject(tentativeProjectName)
   if (!tentativeProject) throw new Error("The tentative project was not stored.")
   if (tentativeProject.launchAt || tentativeProject.launchDate) throw new Error("Tentative launch incorrectly stored a fake exact timestamp.")
-  if (tentativeProject.launchMethod !== "senzu_plugin") throw new Error(`Expected Senzu launch method, received ${tentativeProject.launchMethod}`)
+  if (tentativeProject.launchMethod !== "other_mm_plugin") throw new Error(`Expected Other MM plugin launch method, received ${tentativeProject.launchMethod}`)
   if (tentativeProject.launchTimingStatus !== "tentative" || !/^\d{4}-\d{2}-\d{2}$/.test(String(tentativeProject.tentativeLaunchDate || ""))) throw new Error(`Tentative timing fields are invalid: ${JSON.stringify(tentativeProject)}`)
   const acknowledged = await sendBotLabUpdate(config, { callbackData: `tentative:ack:${tentativeProject.tentativeLaunchDate}`, messageId: tentativeCreated.messages?.[0]?.messageId })
   if (!responseText(acknowledged).includes(`Still TBD confirmed for today: ${tentativeProjectName}`)) throw new Error(`Still-TBD acknowledgement failed. Response: ${responseText(acknowledged)}`)
@@ -179,7 +179,7 @@ try {
 
   const calendar = await sendBotLabUpdate(config, { text: "/calendar" })
   const calendarText = responseText(calendar)
-  for (const expected of ["Today’s Launches —", `TBD — ${tentativeProjectName} · Solana/Pump.fun · Senzu plugin`]) {
+  for (const expected of ["Today’s Launches —", `TBD — ${tentativeProjectName} · Solana/Pump.fun · Other MM plugin`]) {
     if (!calendarText.includes(expected)) throw new Error(`Calendar is missing ${expected}. Response: ${calendarText}`)
   }
   const calendarDates = calendarText.match(/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}\b/g) || []
@@ -190,7 +190,14 @@ try {
   if (!responseText(editPicker).includes("Choose a launch:")) throw new Error(`Edit launches did not open the launch picker. Response: ${responseText(editPicker)}`)
   const tentativeLaunchCallback = callbackStartingWith(editPicker, `calendar:launch:${tentativeProject._id}:`)
   if (!tentativeLaunchCallback) throw new Error(`Launch picker did not include the tentative launch. Response: ${responseText(editPicker)}`)
-  const launchEditor = await sendBotLabUpdate(config, { callbackData: tentativeLaunchCallback, messageId: editPicker.messages?.[0]?.messageId || calendar.messages?.[0]?.messageId })
+  let launchEditor = await sendBotLabUpdate(config, { callbackData: tentativeLaunchCallback, messageId: editPicker.messages?.[0]?.messageId || calendar.messages?.[0]?.messageId })
+  const editMethod = callbackStartingWith(launchEditor, `calendar:method:${tentativeProject._id}:`)
+  if (!editMethod) throw new Error('Saved launch editor is missing Change launch method.')
+  const savedMethodPicker = await sendBotLabUpdate(config, { callbackData: editMethod, messageId: launchEditor.messages?.[0]?.messageId })
+  const savedSumo = callbackStartingWith(savedMethodPicker, `calendar:setmethod:${tentativeProject._id}:sumo~`)
+  if (!savedSumo) throw new Error('Saved launch method picker is missing Sumo.')
+  launchEditor = await sendBotLabUpdate(config, { callbackData: savedSumo, messageId: savedMethodPicker.messages?.[0]?.messageId })
+  if (!responseText(launchEditor).includes('Launch method updated to Sumo') || (await lookupTestProject(tentativeProjectName))?.launchMethod !== 'sumo') throw new Error('Saved launch method was not updated to Sumo.')
   const chainCallback = callbackStartingWith(launchEditor, `calendar:chain:${tentativeProject._id}:`)
   if (!chainCallback) throw new Error("The calendar launch editor did not include Change chain.")
   const chainPicker = await sendBotLabUpdate(config, { callbackData: chainCallback, messageId: launchEditor.messages?.[0]?.messageId })
@@ -290,7 +297,7 @@ try {
 
   const methodDraft = await sendBotLabUpdate(config, { text: `/schedulelaunch MethodChoice${suffix} pumpfun sol launch tomorrow at 2 PM ET no referrer` })
   const methodDraftText = responseText(methodDraft)
-  if (!methodDraftText.includes("launch method") || !callbackStartingWith(methodDraft, "launchsetup:method:")) throw new Error(`A missing launch method did not expose the required picker. Response: ${methodDraftText}`)
+  if (!methodDraftText.includes("Launch method: <b>Sumo</b>") || !callbackStartingWith(methodDraft, "launchsetup:method:") || !callbackStartingWith(methodDraft, "launchsetup:create:")) throw new Error(`The default Sumo method was not ready and editable. Response: ${methodDraftText}`)
   const methodPicker = await sendBotLabUpdate(config, { callbackData: callbackStartingWith(methodDraft, "launchsetup:method:"), messageId: methodDraft.messages?.[0]?.messageId })
   const otherMethodCallback = callbackStartingWith(methodPicker, "launchsetup:setmethod:") && (methodPicker.messages || []).flatMap((message) => message.replyMarkup?.inline_keyboard || []).flat().find((button) => String(button.callback_data || "").endsWith(":other_mm_plugin"))?.callback_data
   if (!otherMethodCallback) throw new Error(`The launch method picker did not include Other MM plugin. Response: ${responseText(methodPicker)}`)
