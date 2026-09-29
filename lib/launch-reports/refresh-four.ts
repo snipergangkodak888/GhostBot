@@ -1,3 +1,4 @@
+import { bnbLaunchRpc } from './bnb-rpc'
 import { fetchLaunchData } from './data-fetch'
 import { createHash } from 'node:crypto'
 import { keccak256, toHex } from 'viem'
@@ -5,7 +6,6 @@ import type { LaunchReportRequest } from './types'
 import { fourCurveCost, fourProtocolFee } from './four-curve'
 import { formatAmount } from './utils'
 
-const RPC = 'https://bsc-rpc.publicnode.com'
 const MANAGER = '0x5c952063c7fc8610FFDB798152D69F0B9550762b'
 const HELPER = '0xF251F83e40a78868FcfA3FA4599Dad6494E46034'
 const SUPPLY = 1000000000n * 10n ** 18n
@@ -27,11 +27,12 @@ function words(hex: unknown): bigint[] {
 export async function refreshFourMemeTerms(request: LaunchReportRequest): Promise<LaunchReportRequest> {
   if (request.quote.symbol !== 'BNB' || request.quote.decimals !== 18 || request.base.decimals !== 18 || request.base.supply !== '1000000000') throw new Error('Automatic Four.meme reports use the standard native BNB / 1-billion-token launch')
   if (request.terms.quoteClass !== undefined && request.terms.quoteClass !== 'native') throw new Error('Automatic Four.meme reports currently support the direct native BNB curve')
+  const endpoint = bnbLaunchRpc()
   let id = 0
   const observations: unknown[] = []
   async function rpc(method: string, params: unknown[]) {
     const payload = { jsonrpc: '2.0', id: ++id, method, params }
-    const response = await fetchLaunchData(RPC, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload), cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(12000) }, 'Four.meme launch settings')
+    const response = await fetchLaunchData(endpoint.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload), cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(12000) }, 'Four.meme launch settings')
     if (!response.ok) throw new Error(`Four.meme public chain read returned HTTP ${response.status}`)
     const text = await response.text()
     if (text.length > 1_000_000) throw new Error('Four.meme chain response is too large')
@@ -106,7 +107,7 @@ export async function refreshFourMemeTerms(request: LaunchReportRequest): Promis
   next.terms = {
     quoteClass: 'native', curveModel: 'four-native-kt-v1', kRaw: first.info[10].toString(), initialTRaw: first.initialT.toString(), maxOffersRaw: CAP.toString(), maxRaisingRaw: first.info[5].toString(),
     protocolFeeBps: Number(first.helper[4]), minTradingFeeRaw: first.helper[5].toString(), creatorBuyTaxBps: creatorTax, migrationFeeBps: 200, poolBuyTaxBps: creatorTax, poolFeeBps: 25,
-    _snapshot: { rpc: RPC, blockNumber: block.number, blockHash: block.hash, blockTimestamp: asOf, observedAt: new Date().toISOString(), manager: MANAGER, helper: HELPER, referenceTokens: selected.map(value => ({ token: value.token, registryIndex: value.index, creatorType: Number((value.info[2] >> 10n) & 63n) })), quoteChecks: checks, responseSha256: createHash('sha256').update(JSON.stringify(observations)).digest('hex'), scenario: 'New standard native BNB launch; reference-token creator taxes are not inherited.' },
+    _snapshot: { rpc: endpoint.label, blockNumber: block.number, blockHash: block.hash, blockTimestamp: asOf, observedAt: new Date().toISOString(), manager: MANAGER, helper: HELPER, referenceTokens: selected.map(value => ({ token: value.token, registryIndex: value.index, creatorType: Number((value.info[2] >> 10n) & 63n) })), quoteChecks: checks, responseSha256: createHash('sha256').update(JSON.stringify(observations)).digest('hex'), scenario: 'New standard native BNB launch; reference-token creator taxes are not inherited.' },
   }
   next.operations.launchFeeAmount = formatAmount(launchFeeResult[0], 18)
   next.termsSource = { kind: 'snapshot', label: `Four.meme native curve and Helper3 fees, finalized BNB Chain block ${BigInt(block.number)}`, url: SOURCE, asOf }

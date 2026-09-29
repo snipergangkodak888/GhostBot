@@ -8,6 +8,7 @@
   "include": [
     "next-env.d.ts",
     "lib/launch-reports/**/*.ts",
+    "lib/launch-calculator.ts",
     "scripts/launch-report.ts",
     "components/admin/launch-math-builder.tsx",
     "app/api/admin/launch-reports/**/*.ts",

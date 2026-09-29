@@ -1,14 +1,16 @@
+import { bnbLaunchRpc } from './bnb-rpc'
 import { fetchLaunchData } from './data-fetch'
 import { toFunctionSelector } from 'viem'
 
 const CHAINS = { robinhood: { id: 4663, rpc: 'https://rpc.mainnet.chain.robinhood.com' }, bsc: { id: 56, rpc: 'https://bsc-rpc.publicnode.com' } } as const
 
-/** Fixed-endpoint, block-pinned read helper. Never accepts a caller RPC URL. */
+/** Block-pinned read helper; only trusted server configuration can choose the RPC. */
 export async function createPinnedReader(chain: keyof typeof CHAINS) {
   const config = CHAINS[chain], signal = AbortSignal.timeout(20000)
+  const endpoint = chain === 'bsc' ? bnbLaunchRpc() : { url: config.rpc, label: config.rpc }
   let id = 0
   async function rpc(method: string, params: unknown[]): Promise<any> {
-    const response = await fetchLaunchData(config.rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }), cache: 'no-store', redirect: 'error', signal }, 'EVM launch settings')
+    const response = await fetchLaunchData(endpoint.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }), cache: 'no-store', redirect: 'error', signal }, 'EVM launch settings')
     if (!response.ok) throw new Error(`Public ${chain} RPC returned HTTP ${response.status}`)
     const text = await response.text()
     if (text.length > 2_000_000) throw new Error('Public RPC response is unexpectedly large')
@@ -31,7 +33,7 @@ export async function createPinnedReader(chain: keyof typeof CHAINS) {
   async function finish() {
     const again = await rpc('eth_getBlockByNumber', [block, false])
     if (again.hash !== header.hash) throw new Error('The reference block changed during the read; retry')
-    return { chainId: config.id, rpc: config.rpc, blockNumber: BigInt(block).toString(), blockHash: header.hash, blockTime: new Date(Number(BigInt(header.timestamp)) * 1000).toISOString(), observedAt: new Date().toISOString() }
+    return { chainId: config.id, rpc: endpoint.label, blockNumber: BigInt(block).toString(), blockHash: header.hash, blockTime: new Date(Number(BigInt(header.timestamp)) * 1000).toISOString(), observedAt: new Date().toISOString() }
   }
   return { rpc, words, finish, block }
 }

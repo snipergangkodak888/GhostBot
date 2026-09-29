@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { prepareCalculatorFixture } from './launch-calculator-fixtures.mjs'
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -97,6 +98,7 @@ function load(file, extra = '') {
   loaded.require = (id) => {
     if (id in overrides) return overrides[id]
     if (id.startsWith('@/')) return load(`${id.slice(2)}.ts`)
+    if (id.startsWith('.') && id.endsWith('.ts')) return load(path.resolve(path.dirname(absolute), id))
     if (id.startsWith('.') && fs.existsSync(path.resolve(path.dirname(absolute), `${id}.ts`))) return load(path.resolve(path.dirname(absolute), `${id}.ts`))
     return baseRequire(id)
   }
@@ -108,7 +110,10 @@ function load(file, extra = '') {
 }
 overrides['@/lib/launch-calculator'] = {
   ...load('lib/launch-calculator.ts'),
-  getLaunchAssetPrice: async pad => ({ price: pad.fallbackUsd, source: 'test fixture', fetchedAt: new Date().toISOString() }),
+  prepareLaunchQuote: async input => {
+    const draft = load('lib/launch-reports/catalog.ts').createDefaultRequest(input.venueId)
+    return load('lib/launch-calculator.ts').calculateLaunchQuote(input, await prepareCalculatorFixture(draft))
+  },
 }
 const permissions = load('lib/bot-permissions.ts')
 const access = load('lib/team-access.ts')
@@ -209,24 +214,46 @@ assert.match(await timingReply('📊 Launch Math', memberId), /Ghost Launch Math
 assert.match(await timingReply('/launchcalc@test_bot', memberId), /Launch capital calculator/)
 assert.match(await timingReply('🚀 Launch Calc', memberId), /Launch capital calculator/)
 assert.match(await callback(memberId, 'launch:chain:sol'), /Solana launchpad/)
+const catalogue = load('lib/launch-reports/venues.ts').getLaunchVenues()
+for (const group of ['solana', 'bnb', 'robinhood', 'dex']) {
+  await callback(memberId, `launch:chain:${group}`)
+  assert.deepEqual(lastButtons().filter(button => button.callback_data.startsWith('launch:venue:')).map(button => button.callback_data.slice('launch:venue:'.length)), catalogue.filter(venue => venue.chainId === group).map(venue => venue.id))
+}
 assert.match(await callback(memberId, 'launch:venue:pumpfun'), /solve for/)
 assert.match(await callback(memberId, 'launch:metric:supply:pumpfun'), /desired total supply control/)
 assert.match(await timingReply('70%'), /Capital requirement:.*70% supply control/s)
 assert.match(messages.at(-1).text, /125 aged wallets × 0\.10 SOL/)
 assert.equal(reportJobs.length, 0, 'Text quotes must not queue an image')
 assert.match(await callback(memberId, 'launch:adjust:target'), /desired total supply control/)
-assert.match(await timingReply('85%'), /migration snipe allocation/)
+assert.match(await timingReply('85%'), /curve \+ migrated pool/)
 assert.match(await callback(memberId, 'launch:adjust:mm'), /MM trading/)
 assert.match(await timingReply('45'), /45 SOL designated for initial MM/)
 assert.match(await callback(memberId, 'launch:metric:market_cap:pumpfun'), /launch market cap/)
 assert.match(await timingReply('$500k'), /~\$500K launch MC/)
-assert.match(messages.at(-1).text, /30 SOL designated for initial MM/, 'New target selection resets an earlier custom MM reserve')
-assert.match(await callback(memberId, 'launch:metric:supply:uni-eth'), /initial LP/)
+assert.match(messages.at(-1).text, /30(?:\.0+)? SOL designated for initial MM/, 'New target selection resets an earlier custom MM reserve')
+await callback(memberId, 'launch:adjust:target')
+assert.match(await timingReply('$1m'), /60(?:\.0+)? SOL designated for initial MM/)
+await callback(memberId, 'launch:adjust:mm')
+assert.match(await timingReply('45'), /45 SOL designated for initial MM/)
+await callback(memberId, 'launch:adjust:target')
+assert.match(await timingReply('$2m'), /45 SOL designated for initial MM/, 'An explicit custom reserve persists when changing the target')
+assert.match(await callback(memberId, 'launch:metric:supply:uniswap-v2'), /initial LP/)
 assert.match(await timingReply('1'), /desired total supply control/)
 assert.match(await timingReply('60%'), /Assuming a 1 ETH initial LP/)
 assert.match(messages.at(-1).text, /1\.25 ETH for 125 aged wallets × 0\.01 ETH/)
 assert.match(await callback(memberId, 'launch:metric:supply:fourmeme'), /desired total supply control/)
 assert.match(await timingReply('60%'), /2\.5 BNB for 125 aged wallets × 0\.02 BNB/)
+for (const venue of catalogue) {
+  const prepared = await prepareCalculatorFixture(load('lib/launch-reports/catalog.ts').createDefaultRequest(venue.id))
+  const quote = load('lib/launch-calculator.ts').calculateLaunchQuote({ venueId: venue.id, metric: 'supply', target: 67.37, ...(venue.requiresLiquidity ? { initialLp: venue.defaultLp } : {}) }, prepared)
+  for (const [metric, value] of [['supply', '67.37%'], ['market_cap', String(quote.launchMarketCapUsd)]]) {
+    await callback(memberId, `launch:metric:${metric}:${venue.id}`)
+    if (venue.requiresLiquidity) await callback(memberId, `launch:lp:default:${venue.id}`)
+    assert.match(await timingReply(value), /Capital requirement/, `${venue.id} ${metric} Telegram flow`)
+    assert(messages.at(-1).text.length < 4096, `${venue.id} text fits Telegram`)
+    assert.equal(reportJobs.length, 0, 'All calculator venues return text without queueing images')
+  }
+}
 for (const [user, sourceChat] of [[memberId, memberId], [memberId, -200], [adminId, -200]]) {
   assert.match(await timingReply('/launchcalc', user, sourceChat), /Launch capital calculator/)
   await callback(user, 'launch:metric:supply:pumpfun', sourceChat)

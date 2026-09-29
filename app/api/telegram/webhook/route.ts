@@ -23,10 +23,11 @@ import { forwardOriginIdentity } from "@/lib/revenue-forward-identity"
 import { confirmConsolidationCandidate, getConsolidationCandidate, rejectConsolidationCandidate } from "@/lib/revenue-consolidation-candidates"
 import { isGlobalRevenueFeeType, type FeeType } from "@/lib/revenue-types"
 import { receiptAvailableAmount, receiptAvailableUsd } from "@/lib/revenue-allocations"
-import { LAUNCH_CHAINS, launchPad, padsForChain, type LaunchChainId } from "@/lib/launch-math"
+import { LAUNCH_CHAINS, type LaunchChainId } from "@/lib/launch-math"
 import { operationalLaunchVenue, operationalVenuesForChain } from "@/lib/launch-venues"
 import { dailyProjectReviewButtons, dailyProjectReviewId, dailyProjectReviewText, type DailyProjectReviewRecord } from "@/lib/daily-project-review"
-import { calculateLaunchQuote, defaultMmLiquidity, formatLaunchQuote, getLaunchAssetPrice, parseLaunchNumber, type LaunchTargetMetric } from "@/lib/launch-calculator"
+import { getLaunchVenues, launchVenue as launchPad, launchVenueGroups } from "@/lib/launch-reports/venues"
+import { prepareLaunchQuote, formatLaunchQuote, parseLaunchNumber, type LaunchTargetMetric } from "@/lib/launch-calculator"
 import { botPermissionDeniedMessage, canCollaborateOnLaunchDraft, canEditLaunchSchedule, canOpenTraderSchedule, canUseBotCapability, canUseLaunchReports, getBotPermissionContext, isLaunchDraftAction, type BotCapability, type BotPermissionContext } from "@/lib/bot-permissions"
 import { createGuardEnrollmentLink, guardEnrollmentTokenFromText, guardEnrollmentUrl, handleGuardBotMembershipUpdate, handleGuardChatMemberUpdate, recordGuardChatMember, revokeGuardEnrollmentLinks, syncTelegramChatAdministrators, verifyAndRedeemGuardEnrollment } from "@/lib/guard-enrollment"
 import { activateScheduledProject, activationLifecycleFields, cancelScheduledProject, cleanLaunchProjectName, confirmNoProjectReferrer, confirmStandardProjectFees, deactivateActiveProject, projectActivationReadiness, projectLaunchAt, projectLaunchDateKey, projectLaunchTimingStatus, rescheduleProject, setTentativeProjectLaunchDate } from "@/lib/project-lifecycle"
@@ -866,16 +867,17 @@ function launchTargetPrompt(metric: LaunchTargetMetric, venueName: string) {
 async function sendLaunchCalculatorStart(token: string, chatId: number | string, telegramId: number, messageId?: number | null) {
   await clearState(telegramId)
   return editOrSendWorkflowMessage(token, chatId, messageId, "🚀 Launch capital calculator\n\nChoose the blockchain for this launch:", [
-    ...LAUNCH_CHAINS.filter((chain) => padsForChain(chain.id).length > 0).map((chain) => [{ text: chain.name, callback_data: `launch:chain:${chain.id}` }]),
+    ...Object.entries(launchVenueGroups).map(([id, name]) => [{ text: name, callback_data: `launch:chain:${id}` }]),
     [{ text: "⬅️ Back", callback_data: "main:menu" }],
   ])
 }
 
-async function sendLaunchVenuePicker(token: string, chatId: number | string, chainId: LaunchChainId, messageId?: number | null) {
-  const chain = LAUNCH_CHAINS.find((item) => item.id === chainId)
-  const pads = padsForChain(chainId)
-  if (!chain || !pads.length) return editOrSendWorkflowMessage(token, chatId, messageId, "No launch venues are configured for that chain yet.")
-  return editOrSendWorkflowMessage(token, chatId, messageId, `Choose the ${chain.name} launchpad or DEX:`, [
+async function sendLaunchVenuePicker(token: string, chatId: number | string, chainId: string, messageId?: number | null) {
+  const group = chainId === "sol" ? "solana" : chainId === "rh" ? "robinhood" : chainId
+  const chain = Object.entries(launchVenueGroups).find(([id]) => id === group)?.[1]
+  const pads = getLaunchVenues().filter(pad => pad.chainId === group)
+  if (!chain || !pads.length) return editOrSendWorkflowMessage(token, chatId, messageId, "Choose a network from the updated Launch Calc menu.", [[{ text: "Choose network", callback_data: "launch:start" }]])
+  return editOrSendWorkflowMessage(token, chatId, messageId, `Choose the ${chain} launchpad or DEX:`, [
     ...pads.map((pad) => [{ text: pad.name, callback_data: `launch:venue:${pad.id}` }]),
     [{ text: "⬅️ Chains", callback_data: "launch:start" }],
   ])
@@ -883,7 +885,7 @@ async function sendLaunchVenuePicker(token: string, chatId: number | string, cha
 
 async function sendLaunchMetricPicker(token: string, chatId: number | string, venueId: string, messageId?: number | null) {
   const pad = launchPad(venueId)
-  if (!pad) return editOrSendWorkflowMessage(token, chatId, messageId, "That launch venue is not supported.")
+  if (!pad) return editOrSendWorkflowMessage(token, chatId, messageId, "Choose a venue from the updated Launch Calc menu.", [[{ text: "Choose venue", callback_data: "launch:start" }]])
   return editOrSendWorkflowMessage(token, chatId, messageId, `${pad.name}\n\nWhat should the calculator solve for?`, [
     [{ text: "🎯 Desired supply control", callback_data: `launch:metric:supply:${pad.id}` }],
     [{ text: "💵 Desired launch MC", callback_data: `launch:metric:market_cap:${pad.id}` }],
@@ -904,13 +906,11 @@ async function sendCalculatedLaunchQuote(
   const metric = String(state.launchMetric || "") as LaunchTargetMetric
   if (!(["supply", "market_cap"] as string[]).includes(metric)) throw new Error("Choose a target type first.")
   const target = overrides.target ?? Number(state.launchTarget)
-  const mmLiquidity = overrides.mmLiquidity ?? (state.launchMmLiquidity == null ? undefined : Number(state.launchMmLiquidity))
-  const valuation = await getLaunchAssetPrice(pad, { testFixtureOnly: isTelegramCaptureActive() })
-  const quote = calculateLaunchQuote({
+  const mmLiquidity = overrides.mmLiquidity ?? (state.launchMmOverride == null ? undefined : Number(state.launchMmOverride))
+  const quote = await prepareLaunchQuote({
     venueId: pad.id,
     metric,
     target,
-    assetPriceUsd: valuation.price,
     ...(pad.type === "amm" ? { initialLp: Number(state.launchInitialLp) } : {}),
     ...(mmLiquidity == null ? {} : { mmLiquidity }),
   })
@@ -920,7 +920,8 @@ async function sendCalculatedLaunchQuote(
     launchMetric: metric,
     launchTarget: target,
     ...(pad.type === "amm" ? { launchInitialLp: quote.initialLp } : {}),
-    launchMmLiquidity: quote.lines.find((line) => line.key === "mm")?.amount ?? defaultMmLiquidity(pad.id),
+    launchMmOverride: mmLiquidity ?? null,
+    launchMmLiquidity: quote.lines.find((line) => line.key === "mm")?.amount,
   }, chatId)
   return editOrSendWorkflowMessage(token, chatId, messageId, formatLaunchQuote(quote), [
     [{ text: "🎯 Change target", callback_data: "launch:adjust:target" }, { text: "💧 Change MM reserve", callback_data: "launch:adjust:mm" }],

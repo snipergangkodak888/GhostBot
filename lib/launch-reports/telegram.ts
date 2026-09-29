@@ -11,34 +11,12 @@ export interface LaunchMathView {
   text: string
   replyMarkup: { inline_keyboard: LaunchMathButton[][] }
 }
-export type LaunchMathGroup = 'solana' | 'bnb' | 'robinhood' | 'dex'
+export type { LaunchVenueGroup as LaunchMathGroup } from './venues'
+import { launchVenueGroups as groups, groupFor, venueName, type LaunchVenueGroup as LaunchMathGroup } from './venues'
 export type LaunchMathAction =
   | { action: 'home' }
   | { action: 'group'; group: LaunchMathGroup }
   | { action: 'review' | 'generate'; selection: LaunchMathSelection }
-
-const groups: Record<LaunchMathGroup, string> = {
-  solana: 'Solana', bnb: 'BNB Chain', robinhood: 'Robinhood Chain', dex: 'DEX examples',
-}
-const venueNames: Record<string, string> = {
-  pumpfun: 'Pump.fun · SOL', 'pumpfun-custom': 'Pump.fun · USDC',
-  stonkfun: 'Stonkfun', launchlab: 'LaunchLab · Stonkfun settings',
-  'raydium-cpmm': 'Raydium CPMM', fourmeme: 'Four.meme', flap: 'Flap',
-  pons: 'Pons V2', letscash: 'LetsCash', 'pools-instant': 'Pools · Instant Launch',
-  'lunch-v3': 'lunch.fun · V3', 'lunch-v4-tax': 'lunch.fun · V4 tax',
-  'lunch-v4-rewards': 'lunch.fun · V4 rewards', 'sushi-launchpad': 'Sushi Launchpad · V1',
-  'uniswap-v2': 'Uniswap V2', 'uniswap-v3': 'Uniswap V3 · full range',
-}
-
-function groupFor(modelId: string): LaunchMathGroup {
-  if (modelId.startsWith('uniswap-')) return 'dex'
-  const chain = createDefaultRequest(modelId).chain
-  return chain === 'Solana' ? 'solana' : chain === 'BNB Chain' ? 'bnb' : 'robinhood'
-}
-
-function venueName(modelId: string): string {
-  return venueNames[modelId] || getModelCatalog().find(model => model.id === modelId)?.label || modelId
-}
 
 function checkedSelection(selection: LaunchMathSelection): Required<LaunchMathSelection> {
   if (!selection || typeof selection.modelId !== 'string' || !getModelCatalog().some(model => model.id === selection.modelId)) {

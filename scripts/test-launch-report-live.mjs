@@ -12,6 +12,7 @@ const { prepareLaunchReport } = loadSource(path.join(projectRoot, 'lib/launch-re
 const { calculateLaunchReport } = loadSource(path.join(projectRoot, 'lib/launch-reports/engine.ts'))
 const { supportedRefreshModels } = loadSource(path.join(projectRoot, 'lib/launch-reports/refresh.ts'))
 const { renderLaunchReportPng } = loadSource(path.join(projectRoot, 'lib/launch-reports/render.ts'))
+const { calculateLaunchQuote } = loadSource(path.join(projectRoot, 'lib/launch-calculator.ts'))
 const { parseAmount } = loadSource(path.join(projectRoot, 'lib/launch-reports/utils.ts'))
 
 const requested = [], args = process.argv.slice(2)
@@ -68,6 +69,16 @@ async function testVenue(model) {
     const report = calculateLaunchReport(prepared)
     await fs.writeFile(path.join(output, `${model.id}.json`), JSON.stringify(report, null, 2) + '\n')
     verifyReport(report, prepared)
+    stage = 'text-calculator'
+    const textStarted = Date.now()
+    const input = { venueId: model.id, metric: 'supply', target: 67.37, ...(model.requiresLiquidity ? { initialLp: Number(prepared.liquidityAmounts[0]) } : {}) }
+    const text = calculateLaunchQuote(input, prepared)
+    const identical = calculateLaunchReport({ ...prepared, targetsPct: [input.target], liquidityAmounts: model.requiresLiquidity ? [String(input.initialLp)] : undefined })
+    assert.equal(text.capitalTotalRaw, identical.rows[0].raw.total, 'Text and image funding must match exactly')
+    const inverse = calculateLaunchQuote({ ...input, metric: 'market_cap', target: text.launchMarketCapUsd }, prepared)
+    assert.ok(Math.abs(inverse.launchMarketCapUsd - text.launchMarketCapUsd) <= Math.max(0.01, text.launchMarketCapUsd * 0.000001), 'MC quote must recover the live scenario')
+    const textMs = Date.now() - textStarted
+    assert.ok(textMs < 5000, 'Text calculation must finish within the interactive budget')
     stage = 'png-export'
     const png = await renderLaunchReportPng(report)
     assert.deepEqual(png.subarray(0, 8), Buffer.from([137,80,78,71,13,10,26,10]), 'Export must be a valid PNG')
@@ -75,7 +86,7 @@ async function testVenue(model) {
     assert.ok(width > 0 && height > 0 && png.length > 1000)
     assert.ok(png.length <= 10_000_000 && width + height <= 10000 && Math.max(width / height, height / width) <= 20, 'Standard report must fit Telegram inline-photo limits')
     await fs.writeFile(path.join(output, `${model.id}.png`), png)
-    const result = { model: model.id, status: 'pass', rows: report.rows.length, elapsedMs: Date.now() - started, pngBytes: png.length, width, height,
+    const result = { model: model.id, status: 'pass', textMs, rows: report.rows.length, elapsedMs: Date.now() - started, pngBytes: png.length, width, height,
       source: supportedRefreshModels.includes(model.id) ? 'live protocol + live FX' : 'generic pool assumptions + live FX',
       terms: prepared.termsSource?.label, warnings: [...new Set([...report.warnings, ...report.rows.flatMap(row => row.warnings)])] }
     process.stdout.write(`PASS ${model.id}: ${result.rows} scenarios, PNG ${width}×${height}, ${result.elapsedMs}ms\n`)

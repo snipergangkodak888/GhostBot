@@ -1,236 +1,196 @@
-import {
-  launchPad,
-  marketCapNative,
-  quoteForMarketCapNative,
-  quoteToGraduate,
-  quoteToOwnPercent,
-  tokensOut,
-  type LaunchPad,
-} from "@/lib/launch-math"
-import {
-  PUMPFUN_MIGRATION_CONTROL_PCT,
-  quotePumpfunBySupplyControl,
-  quotePumpfunMigrationByMarketCap,
-} from "@/lib/pumpfun-migration-math"
-import { GHOST_DEFAULT_AGED_WALLET_COUNT, GHOST_WALLET_PRICING } from "@/lib/launch-reports/pricing"
+import { runInNewContext } from 'node:vm'
+import { createDefaultRequest } from './launch-reports/catalog'
+import { calculateLaunchReport } from './launch-reports/engine'
+import { prepareLaunchReport } from './launch-reports/prepare'
+import { launchReportCautions } from './launch-reports/client-summary'
+import { launchVenue } from './launch-reports/venues'
+import { formatAmount, parseAmount } from './launch-reports/utils'
+import type { LaunchReport, LaunchReportRequest } from './launch-reports/types'
 
-export type LaunchTargetMetric = "supply" | "market_cap"
-
+export type LaunchTargetMetric = 'supply' | 'market_cap'
 export type LaunchQuoteInput = {
   venueId: string
   metric: LaunchTargetMetric
   target: number
-  assetPriceUsd: number
   initialLp?: number
   mmLiquidity?: number
-  agedWalletCount?: number
 }
-
-export type LaunchQuoteLine = {
-  key: "curve" | "migration" | "lp" | "accumulation" | "aged" | "routing" | "mm"
-  amount: number
-  label: string
-}
-
+export type LaunchQuoteLine = { key: string; amount: string; raw: string; label: string }
 export type LaunchQuote = {
-  venue: LaunchPad
+  venue: NonNullable<ReturnType<typeof launchVenue>>
   metric: LaunchTargetMetric
   requestedTarget: number
   supplyControlPct: number
   launchMarketCapUsd: number
-  assetPriceUsd: number
   initialLp?: number
   lines: LaunchQuoteLine[]
-  capitalTotal: number
-  decimals: number
+  capitalTotal: string
+  capitalTotalRaw: string
+  report: LaunchReport
+  customMm: boolean
 }
 
-type VenueBudget = {
-  routing: number
-  defaultMm: number
+function validateInput(input: LaunchQuoteInput) {
+  const venue = launchVenue(input.venueId)
+  if (!venue) throw new Error('Choose a venue from the updated Launch Calc menu.')
+  if (!['supply', 'market_cap'].includes(input.metric)) throw new Error('Choose supply control or launch market cap.')
+  if (!Number.isFinite(input.target) || input.target <= 0) throw new Error('The target must be greater than zero.')
+  if (input.metric === 'supply' && input.target >= 100) throw new Error('Supply control must be below 100%.')
+  if (input.metric === 'supply' && Math.abs(input.target * 1e6 - Math.round(input.target * 1e6)) > 1e-6) throw new Error('Use at most 6 decimal places for supply control.')
+  if (venue.requiresLiquidity && (!Number.isFinite(input.initialLp) || Number(input.initialLp) <= 0)) throw new Error('Initial LP must be greater than zero.')
+  if (input.mmLiquidity != null && (!Number.isFinite(input.mmLiquidity) || input.mmLiquidity < 0)) throw new Error('MM liquidity must be a nonnegative amount.')
+  return venue
 }
 
-const VENUE_BUDGETS: Record<string, VenueBudget> = {
-  pumpfun: { routing: 17.5, defaultMm: 30 },
-  flap: { routing: 0, defaultMm: 5 },
-  fourmeme: { routing: 0, defaultMm: 5 },
-  pancake: { routing: 0, defaultMm: 5 },
-  meteora: { routing: 0, defaultMm: 30 },
-  "uni-eth": { routing: 0, defaultMm: 2.5 },
-  "uni-base-v2": { routing: 0, defaultMm: 2.5 },
-  "uni-base-v3": { routing: 0, defaultMm: 2.5 },
-  aero: { routing: 0, defaultMm: 2.5 },
-  "uni-rh-v2": { routing: 0, defaultMm: 2.5 },
-  "uni-rh-v3": { routing: 0, defaultMm: 2.5 },
-  "flap-rh": { routing: 0, defaultMm: 2.5 },
-  pons: { routing: 0, defaultMm: 2.5 },
+/** Each quote refreshes the exact same FX and protocol settings as Launch Math once. */
+export async function prepareLaunchQuote(input: LaunchQuoteInput): Promise<LaunchQuote> {
+  const venue = validateInput(input)
+  const request = createDefaultRequest(venue.id)
+  if (venue.requiresLiquidity) request.liquidityAmounts = [plainAmount(input.initialLp!)]
+  if (input.metric === 'supply') request.targetsPct = [input.target]
+  const prepared = await prepareLaunchReport(request)
+  return calculateLaunchQuote(input, prepared)
 }
 
-function budgetFor(pad: LaunchPad) {
-  const budget = VENUE_BUDGETS[pad.id]
-  if (!budget) throw new Error(`No operating budget is configured for ${pad.name}.`)
-  return budget
+function plainAmount(value: number) {
+  const plain = value.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 18 })
+  if (Number(plain) !== value) throw new Error('Amount precision exceeds the supported currency units.')
+  return plain
 }
 
-function validateInput(input: LaunchQuoteInput, pad: LaunchPad) {
-  if (!Number.isFinite(input.assetPriceUsd) || !(input.assetPriceUsd > 0)) throw new Error(`A valid ${pad.symbol} price is required.`)
-  if (!["supply", "market_cap"].includes(input.metric)) throw new Error("Choose supply control or launch market cap.")
-  if (!Number.isFinite(input.target) || !(input.target > 0)) throw new Error(input.metric === "supply" ? "Supply control must be greater than 0%." : "Launch market cap must be greater than $0.")
-  if (input.metric === "supply" && input.target >= 100) throw new Error("Supply control must be below 100%.")
-  if (pad.type === "amm" && (!Number.isFinite(input.initialLp) || !(Number(input.initialLp) > 0))) throw new Error("Initial LP must be greater than zero.")
-  if (input.mmLiquidity != null && (!Number.isFinite(input.mmLiquidity) || input.mmLiquidity < 0)) throw new Error("MM liquidity must be a nonnegative amount.")
-  if (input.agedWalletCount != null && (!Number.isSafeInteger(input.agedWalletCount) || input.agedWalletCount < 0 || input.agedWalletCount > 10000)) throw new Error("Aged wallet count must be between 0 and 10,000.")
+function requireQuote(report: LaunchReport) {
+  const row = report.rows[0]
+  if (row.status !== 'ok') throw new Error(row.error || 'This target cannot be quoted with the current launch settings.')
+  if (row.fdvUsd == null || !Number.isFinite(row.fdvUsd) || row.fdvUsd <= 0) throw new Error('A valid current USD price is required to quote launch MC.')
+  return report
 }
 
-export function calculateLaunchQuote(input: LaunchQuoteInput): LaunchQuote {
-  const pad = launchPad(input.venueId)
-  if (!pad) throw new Error("That launch venue is not supported.")
-  validateInput(input, pad)
-  const budget = budgetFor(pad)
-  const initialLp = pad.type === "amm" ? Number(input.initialLp) : 0
-  const targetMarketCapNative = input.metric === "market_cap" ? input.target / input.assetPriceUsd : 0
-
-  let netQuote = 0
-  let supplyControlPct = 0
-  let launchMarketCap = 0
-  let pumpMigration = false
-  let pumpCurveCapital = 0
-  let pumpMigrationCapital = 0
-
-  if (pad.id === "pumpfun") {
-    const graduationQuote = Number(quoteToGraduate(pad))
-    const graduationMarketCap = marketCapNative(pad, graduationQuote)
-    const pumpQuote = input.metric === "supply"
-      ? quotePumpfunBySupplyControl(input.target)
-      : targetMarketCapNative > graduationMarketCap
-        ? quotePumpfunMigrationByMarketCap(targetMarketCapNative)
-        : (() => {
-            const curveQuote = quoteForMarketCapNative(pad, targetMarketCapNative)
-            if (curveQuote < 0) throw new Error("That market cap is below the venue's starting market cap.")
-            const curveControl = (tokensOut(pad, curveQuote) / pad.supply) * 100
-            return quotePumpfunBySupplyControl(curveControl)
-          })()
-    pumpCurveCapital = pumpQuote.curveCapitalSol
-    pumpMigrationCapital = pumpQuote.migrationCapitalSol
-    pumpMigration = pumpMigrationCapital > 0
-    supplyControlPct = pumpQuote.supplyControlPct
-    launchMarketCap = pumpQuote.marketCapNative
-  } else {
-    if (pad.type === "curve" && input.metric === "supply") {
-      const maximum = (Number(pad.sellableTokens) / pad.supply) * 100
-      if (input.target >= maximum) throw new Error(`${pad.name} can provide up to ${maximum.toFixed(2)}% before migration.`)
-    }
-    if (pad.type === "curve" && input.metric === "market_cap") {
-      const graduationQuote = Number(quoteToGraduate(pad))
-      const maximumMarketCap = marketCapNative(pad, graduationQuote)
-      if (targetMarketCapNative > maximumMarketCap) throw new Error(`${pad.name} graduates at approximately $${Math.round(maximumMarketCap * input.assetPriceUsd).toLocaleString("en-US")} market cap.`)
-    }
-    netQuote = input.metric === "supply"
-      ? Number(quoteToOwnPercent(pad, input.target, initialLp))
-      : quoteForMarketCapNative(pad, targetMarketCapNative, initialLp)
-    if (!Number.isFinite(netQuote) || netQuote < 0) throw new Error("That target is outside this venue's supported range.")
-    supplyControlPct = (tokensOut(pad, netQuote, initialLp) / pad.supply) * 100
-    launchMarketCap = marketCapNative(pad, netQuote, initialLp)
+// The supplied exact-integer solvers can take very long near exhausted pool
+// ranges. Interrupt computation, including synchronous library calls, before a
+// difficult target can stall the Telegram server. No user code is evaluated.
+function boundedReport(request: LaunchReportRequest, deadline = Date.now() + 3000): LaunchReport {
+  const timeout = Math.min(1500, deadline - Date.now())
+  if (timeout < 1) throw new Error('This target is too close to the model’s limit. Try a lower supply-control or MC target.')
+  try {
+    return runInNewContext('calculate()', { calculate: () => calculateLaunchReport(request) }, { timeout })
+  } catch (error) {
+    if ((error as { code?: string })?.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') throw new Error('This target is too close to the model’s limit. Try a lower supply-control or MC target.')
+    throw error
   }
+}
 
+/** Search on the engine's six-decimal supply grid using one frozen snapshot.
+ * Unavailable boundaries are never returned as quotes. Migration price gaps fail
+ * explicitly rather than labelling an unattainable MC as the requested target.
+ */
+function solveMarketCap(request: LaunchReportRequest, target: number): LaunchReport {
+  const scale = 1_000_000, tolerance = Math.max(0.01, target * 0.000001), deadline = Date.now() + 3000
+  const cache = new Map<number, LaunchReport>()
+  const evaluate = (control: number) => {
+    let report = cache.get(control)
+    if (!report) {
+      report = boundedReport({ ...request, targetsPct: [control / scale] }, deadline)
+      cache.set(control, report)
+    }
+    return report
+  }
+  const valid = (report: LaunchReport) => report.rows[0].status === 'ok' && Number(report.rows[0].fdvUsd) > 0
+  const mc = (report: LaunchReport) => report.rows[0].fdvUsd!
+  const close = (report: LaunchReport) => Math.abs(mc(report) - target) <= tolerance
+  const samples = createDefaultRequest(request.modelId).targetsPct.map(pct => {
+    const control = Math.round(pct * scale)
+    return { control, report: requireQuote(evaluate(control)) }
+  }).sort((a, b) => a.control - b.control)
+  for (const sample of samples) if (close(sample.report)) return sample.report
+  // Extend only when necessary. Near-empty pools can be expensive to quote;
+  // normal client targets never need a speculative purchase of almost 100%.
+  if (target < mc(samples[0].report)) {
+    let bound = Math.max(1, Math.ceil(request.operations.retainedPct * scale)), edge = samples[0].control
+    while (edge > bound) {
+      const control = Math.floor((bound + edge) / 2), report = evaluate(control)
+      if (!valid(report)) { bound = control + 1; continue }
+      if (close(report)) return report
+      samples.unshift({ control, report }); edge = control
+      if (mc(report) <= target) break
+    }
+    if (target < mc(samples[0].report) - tolerance) throw new Error(`This setup starts at approximately ${compactUsd(mc(samples[0].report))} MC. Choose a higher MC or a supply-control target.`)
+  }
+  if (target > mc(samples[samples.length - 1].report)) {
+    let edge = samples[samples.length - 1].control, bound = 100 * scale - 1
+    while (edge < bound) {
+      const control = Math.ceil((edge + bound) / 2), report = evaluate(control)
+      if (!valid(report)) { bound = control - 1; continue }
+      if (close(report)) return report
+      samples.push({ control, report }); edge = control
+      if (mc(report) >= target) break
+    }
+    const maximum = mc(samples[samples.length - 1].report)
+    if (target > maximum + tolerance) throw new Error(`This setup supports approximately ${compactUsd(maximum)} MC at its upper limit. Choose a lower MC or a supply-control target.`)
+  }
+  // Search brackets separately because migration can reset the price downwards.
+  for (let i = 1; i < samples.length; i++) {
+    let low = samples[i - 1].control, high = samples[i].control
+    let a = samples[i - 1].report, b = samples[i].report
+    if (mc(a) > target || mc(b) < target) continue
+    while (high - low > 1) {
+      const middle = Math.floor((low + high) / 2), report = requireQuote(evaluate(middle))
+      if (close(report)) return report
+      if (mc(report) < target) { low = middle; a = report } else { high = middle; b = report }
+    }
+    for (const report of [a, b]) if (close(report)) return report
+  }
+  throw new Error('That exact MC falls between supported modeled prices, which can happen at migration. Try a nearby MC or choose a supply-control target.')
+}
+
+/** Pure text projection of a shared report snapshot; no alternate venue formulas. */
+export function calculateLaunchQuote(input: LaunchQuoteInput, prepared: LaunchReportRequest): LaunchQuote {
+  const venue = validateInput(input)
+  if (prepared.modelId !== venue.id || !prepared.injectionLiquidity) throw new Error('Refresh the venue settings before calculating a quote.')
+  const request = structuredClone(prepared)
+  request.liquidityAmounts = venue.requiresLiquidity ? [plainAmount(input.initialLp!)] : undefined
+  const report = input.metric === 'supply'
+    ? requireQuote(boundedReport({ ...request, targetsPct: [input.target] }))
+    : solveMarketCap(request, input.target)
+  const row = report.rows[0], raw = row.raw!, decimals = request.quote.decimals
+  const wallet = request.fundingConversion?.nativeOperations || request.operations
   const lines: LaunchQuoteLine[] = []
-  if (pumpMigration) {
-    lines.push({ key: "curve", amount: pumpCurveCapital, label: `to capture the full Pump.fun bonding curve (${PUMPFUN_MIGRATION_CONTROL_PCT.toFixed(2)}% supply control pre-migration)` })
-    lines.push({ key: "migration", amount: pumpMigrationCapital, label: `migration snipe allocation (bringing total control to ~${supplyControlPct.toFixed(2)}%)` })
-  } else {
-    lines.push({ key: "accumulation", amount: pad.id === "pumpfun" ? pumpCurveCapital : netQuote, label: "for supply accumulation" })
-  }
-  if (pad.type === "amm") lines.unshift({ key: "lp", amount: initialLp, label: "for initial LP" })
-  const agedWalletCount = input.agedWalletCount ?? GHOST_DEFAULT_AGED_WALLET_COUNT
-  const walletUnit = GHOST_WALLET_PRICING[pad.symbol]
-  lines.push({ key: "aged", amount: agedWalletCount * Number(walletUnit), label: `for ${agedWalletCount} aged wallets × ${walletUnit} ${pad.symbol}` })
-  if (budget.routing > 0) lines.push({ key: "routing", amount: budget.routing, label: "for initial/pass-through wallet funding used in token redistribution" })
-  lines.push({ key: "mm", amount: input.mmLiquidity ?? budget.defaultMm, label: "designated for initial MM trading liquidity" })
-
-  const capitalTotal = lines.reduce((sum, line) => sum + line.amount, 0)
-  return {
-    venue: pad,
-    metric: input.metric,
-    requestedTarget: input.target,
-    supplyControlPct,
-    launchMarketCapUsd: launchMarketCap * input.assetPriceUsd,
-    assetPriceUsd: input.assetPriceUsd,
-    ...(pad.type === "amm" ? { initialLp } : {}),
-    lines,
-    capitalTotal,
-    decimals: 2,
-  }
-}
-
-export function defaultMmLiquidity(venueId: string) {
-  const pad = launchPad(venueId)
-  return pad ? budgetFor(pad).defaultMm : null
+  const add = (key: string, amount: bigint, label: string) => lines.push({ key, amount: formatAmount(amount, decimals), raw: amount.toString(), label })
+  add('accumulation', BigInt(raw.buys), `for supply accumulation${/graduated|PancakeSwap/i.test(row.phase || '') ? ' (curve + migrated pool)' : ''}`)
+  if (BigInt(raw.initialLiquidity)) add('lp', BigInt(raw.initialLiquidity), 'for initial LP')
+  add('operations', BigInt(raw.funding) - BigInt(raw.buys) - BigInt(raw.initialLiquidity), 'for launch fees, operations and funding buffers')
+  add('aged', BigInt(raw.agedWallets), `for ${request.operations.agedWalletCount} aged wallets × ${wallet.agedWalletUnitAmount} ${wallet.currencySymbol}${request.fundingConversion ? ` (converted to ${request.quote.symbol})` : ''}`)
+  const mm = input.mmLiquidity == null ? BigInt(raw.injectionLiquidity!) : parseAmount(plainAmount(input.mmLiquidity), decimals, 'MM liquidity')
+  add('mm', mm, `designated for initial MM trading liquidity${input.mmLiquidity == null ? '' : ' (custom)'}`)
+  const capitalTotalRaw = BigInt(raw.funding) + BigInt(raw.agedWallets) + mm
+  return { venue, metric: input.metric, requestedTarget: input.target, supplyControlPct: row.actualPct!, launchMarketCapUsd: row.fdvUsd!,
+    ...(venue.requiresLiquidity ? { initialLp: input.initialLp } : {}), lines, capitalTotal: formatAmount(capitalTotalRaw, decimals), capitalTotalRaw: capitalTotalRaw.toString(), report, customMm: input.mmLiquidity != null }
 }
 
 export function parseLaunchNumber(text: string) {
-  const match = String(text || "").trim().toLowerCase().replace(/[$,%\s]/g, "").match(/^([0-9]+(?:\.[0-9]+)?)([kmb])?$/)
+  const match = String(text || '').trim().toLowerCase().replace(/[$,%\s]/g, '').match(/^([0-9]+(?:\.[0-9]+)?)([kmb])?$/)
   if (!match) return null
   const multipliers: Record<string, number> = { k: 1_000, m: 1_000_000, b: 1_000_000_000 }
   const value = Number(match[1]) * (match[2] ? multipliers[match[2]] : 1)
   return Number.isFinite(value) ? value : null
 }
-
 function compactUsd(value: number) {
-  const absolute = Math.abs(value)
-  if (absolute >= 1_000_000) return `$${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`
-  if (absolute >= 1_000) return `$${(value / 1_000).toFixed(1).replace(/\.0$/, "")}K`
-  return `$${Math.round(value).toLocaleString("en-US")}`
+  if (value >= 1e6) return `$${(value / 1e6).toFixed(2).replace(/\.?0+$/, '')}M`
+  if (value >= 1e3) return `$${(value / 1e3).toFixed(2).replace(/\.?0+$/, '')}K`
+  return `$${value.toFixed(2).replace(/\.?0+$/, '')}`
 }
-
-function nativeAmount(value: number, decimals: number) {
-  return value.toFixed(decimals).replace(/0+$/, "").replace(/\.$/, "")
+function display(value: number | string, digits = 4) {
+  return Number(value).toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: digits })
 }
-
-function percentAmount(value: number) {
-  return value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")
-}
-
 export function formatLaunchQuote(quote: LaunchQuote) {
-  const symbol = quote.venue.symbol
-  const heading = quote.initialLp
-    ? [`Assuming a ${nativeAmount(quote.initialLp, 4)} ${symbol} initial LP:`]
-    : []
-  const firstLine = `Capital requirement: <b>${nativeAmount(quote.capitalTotal, quote.decimals)} ${symbol} total</b> — targeting <b>${percentAmount(quote.supplyControlPct)}% supply control</b> with an estimated <b>~${compactUsd(quote.launchMarketCapUsd)} launch MC</b>.`
-  const breakdown = quote.lines.map((line) => `• ~${nativeAmount(line.amount, quote.decimals)} ${symbol} ${line.label}`)
+  const symbol = quote.venue.symbol, request = quote.report.request
   return [
-    ...heading,
-    firstLine,
-    "",
-    "Breakdown:",
-    ...breakdown,
-  ].join("\n")
-}
-
-export async function getLaunchAssetPrice(pad: LaunchPad, options: { testFixtureOnly?: boolean } = {}) {
-  if (options.testFixtureOnly) {
-    return {
-      price: pad.fallbackUsd,
-      source: "test fixture",
-      fetchedAt: new Date(0).toISOString(),
-    }
-  }
-
-  try {
-    const response = await fetch(`https://api.coinbase.com/v2/prices/${encodeURIComponent(pad.symbol)}-USD/spot`, {
-      cache: "no-store",
-      headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(5_000),
-    })
-    const body = await response.json()
-    const price = Number(body?.data?.amount)
-    if (!response.ok || !(price > 0)) throw new Error("Invalid price response")
-    return {
-      price,
-      source: "Coinbase",
-      fetchedAt: new Date().toISOString(),
-    }
-  } catch (error) {
-    console.error(`[launch-calculator] Live ${pad.symbol}/USD price lookup failed`, error)
-    throw new Error(`Live ${pad.symbol}/USD pricing is temporarily unavailable, so no estimate was generated. Please try again.`)
-  }
+    `<b>${quote.venue.name}</b>`,
+    ...(quote.initialLp ? [`Assuming a ${display(quote.initialLp)} ${symbol} initial LP:`] : []),
+    `Capital requirement: <b>${display(quote.capitalTotal)} ${symbol} total</b> — targeting <b>${display(quote.supplyControlPct, 2)}% supply control</b> with an estimated <b>~${compactUsd(quote.launchMarketCapUsd)} launch MC</b>.`,
+    '', 'Breakdown:',
+    ...quote.lines.map(line => `• ~${display(line.amount)} ${symbol} ${line.label}`),
+    '',
+    request.operations.retainedPct ? `Control includes ${request.operations.retainedPct}% team allocation. MM is held separately.` : 'MM is held separately from launch purchases.',
+    ...launchReportCautions(quote.report),
+  ].join('\n')
 }
