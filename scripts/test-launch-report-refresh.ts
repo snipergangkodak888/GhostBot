@@ -102,7 +102,7 @@ export async function testRefresh() {
     assert.equal(JSON.stringify(ponsInput), untouched)
     assert.equal(refreshedPons.terms.creatorTaxBps, 777)
     assert.equal(refreshedPons.operations.setupAmount, '0.123')
-    assert.equal(refreshedPons.operations.agedWalletUnitAmount, '0.10')
+    assert.equal(refreshedPons.operations.agedWalletUnitAmount, '0.01')
     assert.equal(refreshedPons.operations.launchFeeAmount, '0.0005')
     assert.equal((refreshedPons.terms._snapshot as Record<string, unknown>).blockHash, blockHash)
     assert.equal(pinnedCalls, 3)

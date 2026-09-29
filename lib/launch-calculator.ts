@@ -12,6 +12,7 @@ import {
   quotePumpfunBySupplyControl,
   quotePumpfunMigrationByMarketCap,
 } from "@/lib/pumpfun-migration-math"
+import { GHOST_DEFAULT_AGED_WALLET_COUNT, GHOST_WALLET_PRICING } from "@/lib/launch-reports/pricing"
 
 export type LaunchTargetMetric = "supply" | "market_cap"
 
@@ -22,6 +23,7 @@ export type LaunchQuoteInput = {
   assetPriceUsd: number
   initialLp?: number
   mmLiquidity?: number
+  agedWalletCount?: number
 }
 
 export type LaunchQuoteLine = {
@@ -44,25 +46,24 @@ export type LaunchQuote = {
 }
 
 type VenueBudget = {
-  agedWallets: number
   routing: number
   defaultMm: number
 }
 
 const VENUE_BUDGETS: Record<string, VenueBudget> = {
-  pumpfun: { agedWallets: 10, routing: 17.5, defaultMm: 30 },
-  flap: { agedWallets: 2, routing: 0, defaultMm: 5 },
-  fourmeme: { agedWallets: 2, routing: 0, defaultMm: 5 },
-  pancake: { agedWallets: 2, routing: 0, defaultMm: 5 },
-  meteora: { agedWallets: 10, routing: 0, defaultMm: 30 },
-  "uni-eth": { agedWallets: 1.5, routing: 0, defaultMm: 2.5 },
-  "uni-base-v2": { agedWallets: 1.5, routing: 0, defaultMm: 2.5 },
-  "uni-base-v3": { agedWallets: 1.5, routing: 0, defaultMm: 2.5 },
-  aero: { agedWallets: 1.5, routing: 0, defaultMm: 2.5 },
-  "uni-rh-v2": { agedWallets: 1.5, routing: 0, defaultMm: 2.5 },
-  "uni-rh-v3": { agedWallets: 1.5, routing: 0, defaultMm: 2.5 },
-  "flap-rh": { agedWallets: 1.5, routing: 0, defaultMm: 2.5 },
-  pons: { agedWallets: 1.5, routing: 0, defaultMm: 2.5 },
+  pumpfun: { routing: 17.5, defaultMm: 30 },
+  flap: { routing: 0, defaultMm: 5 },
+  fourmeme: { routing: 0, defaultMm: 5 },
+  pancake: { routing: 0, defaultMm: 5 },
+  meteora: { routing: 0, defaultMm: 30 },
+  "uni-eth": { routing: 0, defaultMm: 2.5 },
+  "uni-base-v2": { routing: 0, defaultMm: 2.5 },
+  "uni-base-v3": { routing: 0, defaultMm: 2.5 },
+  aero: { routing: 0, defaultMm: 2.5 },
+  "uni-rh-v2": { routing: 0, defaultMm: 2.5 },
+  "uni-rh-v3": { routing: 0, defaultMm: 2.5 },
+  "flap-rh": { routing: 0, defaultMm: 2.5 },
+  pons: { routing: 0, defaultMm: 2.5 },
 }
 
 function budgetFor(pad: LaunchPad) {
@@ -72,11 +73,13 @@ function budgetFor(pad: LaunchPad) {
 }
 
 function validateInput(input: LaunchQuoteInput, pad: LaunchPad) {
-  if (!(input.assetPriceUsd > 0)) throw new Error(`A valid ${pad.symbol} price is required.`)
-  if (!(input.target > 0)) throw new Error(input.metric === "supply" ? "Supply control must be greater than 0%." : "Launch market cap must be greater than $0.")
+  if (!Number.isFinite(input.assetPriceUsd) || !(input.assetPriceUsd > 0)) throw new Error(`A valid ${pad.symbol} price is required.`)
+  if (!["supply", "market_cap"].includes(input.metric)) throw new Error("Choose supply control or launch market cap.")
+  if (!Number.isFinite(input.target) || !(input.target > 0)) throw new Error(input.metric === "supply" ? "Supply control must be greater than 0%." : "Launch market cap must be greater than $0.")
   if (input.metric === "supply" && input.target >= 100) throw new Error("Supply control must be below 100%.")
-  if (pad.type === "amm" && !(Number(input.initialLp) > 0)) throw new Error("Initial LP must be greater than zero.")
-  if (input.mmLiquidity != null && input.mmLiquidity < 0) throw new Error("MM liquidity cannot be negative.")
+  if (pad.type === "amm" && (!Number.isFinite(input.initialLp) || !(Number(input.initialLp) > 0))) throw new Error("Initial LP must be greater than zero.")
+  if (input.mmLiquidity != null && (!Number.isFinite(input.mmLiquidity) || input.mmLiquidity < 0)) throw new Error("MM liquidity must be a nonnegative amount.")
+  if (input.agedWalletCount != null && (!Number.isSafeInteger(input.agedWalletCount) || input.agedWalletCount < 0 || input.agedWalletCount > 10000)) throw new Error("Aged wallet count must be between 0 and 10,000.")
 }
 
 export function calculateLaunchQuote(input: LaunchQuoteInput): LaunchQuote {
@@ -138,7 +141,9 @@ export function calculateLaunchQuote(input: LaunchQuoteInput): LaunchQuote {
     lines.push({ key: "accumulation", amount: pad.id === "pumpfun" ? pumpCurveCapital : netQuote, label: "for supply accumulation" })
   }
   if (pad.type === "amm") lines.unshift({ key: "lp", amount: initialLp, label: "for initial LP" })
-  lines.push({ key: "aged", amount: budget.agedWallets, label: "for aged wallets + Husher funding" })
+  const agedWalletCount = input.agedWalletCount ?? GHOST_DEFAULT_AGED_WALLET_COUNT
+  const walletUnit = GHOST_WALLET_PRICING[pad.symbol]
+  lines.push({ key: "aged", amount: agedWalletCount * Number(walletUnit), label: `for ${agedWalletCount} aged wallets × ${walletUnit} ${pad.symbol}` })
   if (budget.routing > 0) lines.push({ key: "routing", amount: budget.routing, label: "for initial/pass-through wallet funding used in token redistribution" })
   lines.push({ key: "mm", amount: input.mmLiquidity ?? budget.defaultMm, label: "designated for initial MM trading liquidity" })
 

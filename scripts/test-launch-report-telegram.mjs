@@ -61,7 +61,7 @@ assert.throws(() => flow.createTelegramLaunchRequest({ modelId: 'not-supported' 
 assert.throws(() => flow.createTelegramLaunchRequest({ modelId: 'uniswap-v3', liquidity: '-1' }), /liquidity/)
 
 // Shared commercial policy remains fixed for every teammate and every new request.
-const expectedWallets = { pumpfun: ['0.10', 'SOL', '12.5'], pons: ['0.10', 'ETH', '12.5'], fourmeme: ['0.02', 'BNB', '2.5'] }
+const expectedWallets = { pumpfun: ['0.10', 'SOL', '12.5'], pons: ['0.01', 'ETH', '1.25'], fourmeme: ['0.02', 'BNB', '2.5'] }
 for (const [modelId, [unit, currency, total]] of Object.entries(expectedWallets)) {
   const request = flow.createTelegramLaunchRequest({ modelId })
   assert.equal(request.operations.agedWalletUnitAmount, unit)

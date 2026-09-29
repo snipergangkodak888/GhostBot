@@ -129,6 +129,13 @@ try {
   assert.equal(lookups.length, 0)
   assert.equal(refreshCalls, callsBeforeGeneric, 'Generic chosen-liquidity math needs no launchpad lookup')
 
+  const legacyEth = structuredClone(generic)
+  legacyEth.operations.agedWalletUnitAmount = '0.10'
+  const correctedEth = await prepareLaunchReport(legacyEth)
+  assert.equal(legacyEth.operations.agedWalletUnitAmount, '0.10', 'Historical inputs remain unchanged')
+  assert.equal(correctedEth.operations.agedWalletUnitAmount, '0.01', 'Fresh ETH generation uses the corrected commercial price')
+  assert.equal(calculateLaunchReport(correctedEth).rows[0].amounts.agedWallets, '1.25')
+
   for (const mutate of [
     request => { request.operations.agedWalletUnitAmount = '0.02' },
     request => { request.modelId = 'not-a-model' },

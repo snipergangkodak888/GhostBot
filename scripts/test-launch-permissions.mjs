@@ -106,6 +106,10 @@ function load(file, extra = '') {
   loaded._compile(code, absolute)
   return loaded.exports
 }
+overrides['@/lib/launch-calculator'] = {
+  ...load('lib/launch-calculator.ts'),
+  getLaunchAssetPrice: async pad => ({ price: pad.fallbackUsd, source: 'test fixture', fetchedAt: new Date().toISOString() }),
+}
 const permissions = load('lib/bot-permissions.ts')
 const access = load('lib/team-access.ts')
 const ops = load('lib/ops-bot.ts')
@@ -178,9 +182,49 @@ for (const [user, sourceChat] of [[memberId, chatId], [memberId, memberId], [adm
 await db.collection('opsBotStates').updateOne({ telegramId: adminId }, { $set: { action: 'ai', chatId: String(chatId) } }, { upsert: true })
 assert.match(await timingReply('/launchmath@test_bot', adminId), /Ghost Launch Math/)
 assert.equal(await db.collection('opsBotStates').findOne({ telegramId: adminId }), null)
-assert.match(await timingReply('/launchcalc', memberId), /Ghost Launch Math/)
+assert.match(await timingReply('/launchcalc', memberId), /Launch capital calculator/)
 assert.match(await timingReply('📊 Launch Math', memberId), /Ghost Launch Math/)
-assert.match(await callback(memberId, 'launch:metric:supply:pumpfun'), /Ghost Launch Math/, 'Retired calculator buttons cannot send old wallet budgets')
+assert.match(await timingReply('/launchcalc@test_bot', memberId), /Launch capital calculator/)
+assert.match(await timingReply('🚀 Launch Calc', memberId), /Launch capital calculator/)
+assert.match(await callback(memberId, 'launch:chain:sol'), /Solana launchpad/)
+assert.match(await callback(memberId, 'launch:venue:pumpfun'), /solve for/)
+assert.match(await callback(memberId, 'launch:metric:supply:pumpfun'), /desired total supply control/)
+assert.match(await timingReply('70%'), /Capital requirement:.*70% supply control/s)
+assert.match(messages.at(-1).text, /125 aged wallets × 0\.10 SOL/)
+assert.equal(reportJobs.length, 0, 'Text quotes must not queue an image')
+assert.match(await callback(memberId, 'launch:adjust:target'), /desired total supply control/)
+assert.match(await timingReply('85%'), /migration snipe allocation/)
+assert.match(await callback(memberId, 'launch:adjust:mm'), /MM trading/)
+assert.match(await timingReply('45'), /45 SOL designated for initial MM/)
+assert.match(await callback(memberId, 'launch:metric:market_cap:pumpfun'), /launch market cap/)
+assert.match(await timingReply('$500k'), /~\$500K launch MC/)
+assert.match(messages.at(-1).text, /30 SOL designated for initial MM/, 'New target selection resets an earlier custom MM reserve')
+assert.match(await callback(memberId, 'launch:metric:supply:uni-eth'), /initial LP/)
+assert.match(await timingReply('1'), /desired total supply control/)
+assert.match(await timingReply('60%'), /Assuming a 1 ETH initial LP/)
+assert.match(messages.at(-1).text, /1\.25 ETH for 125 aged wallets × 0\.01 ETH/)
+assert.match(await callback(memberId, 'launch:metric:supply:fourmeme'), /desired total supply control/)
+assert.match(await timingReply('60%'), /2\.5 BNB for 125 aged wallets × 0\.02 BNB/)
+for (const [user, sourceChat] of [[memberId, memberId], [memberId, -200], [adminId, -200]]) {
+  assert.match(await timingReply('/launchcalc', user, sourceChat), /Launch capital calculator/)
+  await callback(user, 'launch:metric:supply:pumpfun', sourceChat)
+  assert.match(await timingReply('60%', user, sourceChat), /Capital requirement/)
+}
+await callback(memberId, 'launch:metric:supply:pumpfun')
+assert.match(await timingReply('100%'), /below 100%/)
+assert.match(await timingReply('/cancel'), /Cancelled/)
+for (const sourceChat of [-999, -401]) {
+  if(sourceChat===-401)await db.collection('opsChatProfiles').insertOne({chatId:String(sourceChat),profile:'finance',status:'active'})
+  assert.match(await timingReply('/launchcalc', memberId, sourceChat), /active Ghost teammates/)
+  assert.match(await callback(memberId, 'launch:metric:supply:pumpfun', sourceChat), /active Ghost teammates/)
+}
+assert.match(await callback(999, 'launch:metric:supply:pumpfun'), /active Ghost teammates/)
+await callback(memberId, 'launch:metric:supply:pumpfun')
+await db.collection('guardMembers').updateOne({telegramId:memberId},{$set:{status:'inactive'}})
+assert.match(await timingReply('60%'), /active Ghost teammates/)
+await db.collection('guardMembers').updateOne({telegramId:memberId},{$set:{status:'active'}})
+assert.equal(reportJobs.length, 0)
+
 assert.match(await callback(memberId, 'lm:group:solana'), /Where will the token launch/)
 assert.match(await callback(memberId, 'lm:review:pumpfun:compare'), /125 aged wallets/)
 assert.ok(buttonWithText('📊 Generate image'))

@@ -27,7 +27,7 @@ for (const [name, hash] of Object.entries(manifest.files)) {
   equals(actual, hash, `Source module ${name} changed`)
 }
 
-equals(GHOST_WALLET_PRICING, { SOL: '0.10', ETH: '0.10', BNB: '0.02' })
+equals(GHOST_WALLET_PRICING, { SOL: '0.10', ETH: '0.01', BNB: '0.02' })
 equals(getModelCatalog().length, 16)
 const needsTerms = new Set(['lunch-v3', 'lunch-v4-tax', 'lunch-v4-rewards', 'sushi-launchpad', 'fourmeme'])
 for (const model of getModelCatalog()) {
@@ -54,7 +54,7 @@ for (const model of getModelCatalog()) {
 }
 
 // Aged-wallet commercial prices stay fixed; quantities remain configurable.
-for (const [id, expected] of [['pumpfun', '12.5'], ['pons', '12.5'], ['flap', '2.5']] as const) {
+for (const [id, expected] of [['pumpfun', '12.5'], ['pons', '1.25'], ['flap', '2.5']] as const) {
   const input = createDefaultRequest(id), original = first(input)
   equals(original.amounts!.agedWallets, expected)
   input.operations.agedWalletCount = 126

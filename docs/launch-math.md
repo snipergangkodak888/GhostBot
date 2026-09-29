@@ -18,7 +18,7 @@ Each supply percentage is the share of total token supply held after purchases, 
 
 ## Quick reports in Telegram
 
-1. Open the internal Ghost bot and send `/launchmath`, or tap **Launch Math**. `/launchcalc` opens the same flow.
+1. Open the internal Ghost bot and send `/launchmath`, or tap **Launch Math**, for image reports.
 2. Choose **Solana**, **BNB**, **Robinhood** or **DEX examples**, then choose a venue.
 3. Keep the displayed standard settings and tap **Generate image**. Pool examples also let you choose from the standard liquidity amounts.
 4. Ghost checks current settings, calculates the report and displays an inline photo in the same conversation. Tap to view it or forward it directly. The original PNG remains available from the web builder. Temporary data failures retry automatically.
@@ -26,6 +26,8 @@ Each supply percentage is the share of total token supply held after purchases, 
 Client images keep the footer to supply accumulation, aged wallets, MM liquidity and the total funding definition, plus applicable model assumptions or exclusions. Telegram uses a two-line caption for standard reports, adding an exclusion or unavailable-scenario note only when needed. Full calculations, source records and detailed assumptions remain in the web report and JSON export.
 
 The bot uses the same standard supply comparisons, 125-wallet default and fixed wallet prices as the web tool. There are no curve constants, opening ticks or quote tables to enter. For a client name or a custom setup, use the web builder.
+
+`/launchcalc` (or **Launch Calc**) opens the separate text capital calculator. Choose the chain and venue, then enter either a target supply-control percentage or launch MC in USD. DEX quotes also ask for initial pool liquidity. The response shows the capital requirement and breakdown, with controls to change the target or MM reserve. It uses the existing calculator venue models and a default of 125 aged wallets at the shared per-wallet prices below; it does not create an image job.
 
 This flow is available to active enrolled team members in direct messages or configured launch, trade and management groups. The detailed web builder retains the normal administrator login. Queued report jobs and duplicate protection prevent repeat taps or webhook delivery from starting the same job twice. Generating a report does not buy wallets or execute a launch; the existing launch workflow remains separate.
 
@@ -38,7 +40,7 @@ The standard aged-wallet prices are fixed in `lib/launch-reports/pricing.ts`:
 | Native currency | Price per aged wallet | Default quantity | Acquisition subtotal |
 |---|---:|---:|---:|
 | SOL | 0.10 SOL | 125 | 12.50 SOL |
-| ETH | 0.10 ETH | 125 | 12.50 ETH |
+| ETH | 0.01 ETH | 125 | 1.25 ETH |
 | BNB | 0.02 BNB | 125 | 2.50 BNB |
 
 Aged wallets acquired, executing buyers and funded holder destinations are separate counts. For USDC or USDT funding, native wallet and operating allowances retain their native policy values and convert using recorded USD prices, rounding each amount upward to the quote token's smallest unit. They are not relabeled as stablecoin amounts.

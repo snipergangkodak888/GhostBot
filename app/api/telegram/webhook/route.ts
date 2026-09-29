@@ -56,9 +56,9 @@ function replyKeyboard() {
     keyboard: [
       [{ text: "🏠 Home" }, { text: "📁 Projects" }],
       [{ text: "📈 Profit" }, { text: "💸 Payroll" }],
-      [{ text: "📅 Calendar" }, { text: "📊 Launch Math" }],
+      [{ text: "📅 Calendar" }, { text: "🚀 Launch Calc" }],
       [{ text: "🔔 Reminders" }, { text: "📝 Notes" }],
-      [{ text: "🧠 AI" }],
+      [{ text: "🧠 AI" }, { text: "📊 Launch Math" }],
     ],
     resize_keyboard: true,
     is_persistent: true,
@@ -173,7 +173,7 @@ async function setBotCommands(token: string) {
       { command: "addlaunch", description: "Add a launch step by step" },
       { command: "schedulelaunch", description: "Create a launch with guided setup" },
       { command: "organicsetup", description: "Set up organic trade notifications" },
-      { command: "launchcalc", description: "Create a launch funding report image" },
+      { command: "launchcalc", description: "Text capital quote by supply control or launch MC" },
       { command: "launchmath", description: "Choose a venue and get a report image" },
       { command: "reminders", description: "Manage reminders" },
       { command: "setreminder", description: "Set a reminder in natural language" },
@@ -220,7 +220,7 @@ function helpMessage() {
     "🗓️ /schedulelaunch - create a launch with guided setup",
     "📣 /organicsetup TICKER - set up organic trade notifications",
     "📊 /launchmath - choose a venue and get a report image",
-    "🚀 /launchcalc - same simple report flow",
+    "🚀 /launchcalc - text capital quote by supply control or launch MC",
     "🔔 /reminders",
     "⏰ /setreminder WWR injection today at 8 PM ET",
     "💸 /payroll",
@@ -1439,10 +1439,10 @@ async function processState(token: string, chatId: number | string, telegramId: 
     return true
   }
 
-  if (String(state.action || "").startsWith("launch_calc")) {
+  const isLaunchCalculator = String(state.action || "").startsWith("launch_calc")
+  if (isLaunchCalculator && !canUseLaunchReports(context)) {
     await clearState(telegramId)
-    const view = launchMathHomeView()
-    await sendMessage(token, chatId, canUseLaunchReports(context) ? view.text : "Open a DM with GhostBot to create a launch report.", canUseLaunchReports(context) ? view.replyMarkup.inline_keyboard : undefined)
+    await sendMessage(token, chatId, "Launch estimates are available to active Ghost teammates in a DM or configured Launch, Trade or Management chat.")
     return true
   }
 
@@ -1455,7 +1455,7 @@ async function processState(token: string, chatId: number | string, telegramId: 
       : ["fee_project_search", "receipt_classification", "receipt_expectation", "add_payroll"].includes(String(state.action || ""))
         ? "finance"
         : chatPrimaryCapability(context)
-  if (!(await requireCapability(token, context, stateCapability))) {
+  if (!isLaunchCalculator && !(await requireCapability(token, context, stateCapability))) {
     await clearState(telegramId)
     return true
   }
@@ -2257,7 +2257,8 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   const callbackMessageId = Number(callbackMessage?.message_id || 0) || null
   const workflowReply = (text: string, buttons: InlineButton[][] = []) => editOrSendWorkflowMessage(token, chatId, callbackMessageId, text, buttons)
   const context = await botPermissions(telegramId, chatId)
-  if (area === "lm" || area === "launch") {
+  if (area === "launch" && !canUseLaunchReports(context)) return sendMessage(token, chatId, "Launch estimates are available to active Ghost teammates in a DM or configured Launch, Trade or Management chat.")
+  if (area === "lm") {
     if (!canUseLaunchReports(context)) return sendMessage(token, chatId, "Launch reports are available to active Ghost teammates. Open a DM with me, or use a configured Launch, Trade or Management chat.")
     await clearState(telegramId)
     const show = async (view: LaunchMathView) => {
@@ -2267,7 +2268,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       }
       return sendTelegramMessage(token, chatId, view.text, { replyMarkup: view.replyMarkup })
     }
-    const choice = area === "launch" ? { action: "home" as const } : parseLaunchMathCallback(data)
+    const choice = parseLaunchMathCallback(data)
     if (!choice) return show(launchMathHomeView())
     if (choice.action === "home") {
       const view = launchMathHomeView()
@@ -2305,7 +2306,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
         : area === "ai"
           ? aiPermissionPolicy(context).capability
           : null
-  if (callbackCapability && !(await requireCapability(token, context, callbackCapability))) return
+  if (area !== "launch" && callbackCapability && !(await requireCapability(token, context, callbackCapability))) return
 
   if (area === "schedule" && action === "open") {
     if (!canOpenTraderSchedule(context) || !(await managementScheduleMember(token, chatId, telegramId))) return workflowReply("⛔ The trader planner is available only to current members of the configured Management Chat.")
@@ -2858,6 +2859,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     const pad = launchPad(extra)
     const metric = id as LaunchTargetMetric
     if (!pad || !(["supply", "market_cap"] as string[]).includes(metric)) return sendLaunchCalculatorStart(token, chatId, telegramId, callbackMessageId)
+    await clearState(telegramId)
     if (pad.type === "amm") {
       return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId, state: { action: "launch_calc_lp", launchVenueId: pad.id, launchMetric: metric }, text: `💧 What initial LP should ${pad.name} use?\n\nThis sets the opening price. Type another amount or use the suggested default.`, buttons: [
           [{ text: `Use ${pad.defaultLp} ${pad.symbol}`, callback_data: `launch:lp:default:${pad.id}` }],
@@ -3398,7 +3400,11 @@ async function routeText(token: string, chatId: number | string, telegramId: num
     await clearState(telegramId)
     return startOrganicChannelSetup(token, chatId, telegramId, String(organicSetupCommand[1] || ""))
   }
-  if (text === "🚀 Launch Calc" || text === "📊 Launch Math" || isBotCommand(text, "launchcalc", "launchmath")) {
+  if (text === "🚀 Launch Calc" || isBotCommand(text, "launchcalc")) {
+    if (!canUseLaunchReports(context)) return sendMessage(token, chatId, "Launch estimates are available to active Ghost teammates in a DM or configured Launch, Trade or Management chat.")
+    return sendLaunchCalculatorStart(token, chatId, telegramId)
+  }
+  if (text === "📊 Launch Math" || isBotCommand(text, "launchmath")) {
     if (!canUseLaunchReports(context)) return sendMessage(token, chatId, "Launch reports are available to active Ghost teammates. Open a DM with me, or use a configured Launch, Trade or Management chat.")
     await clearState(telegramId)
     const view = launchMathHomeView()

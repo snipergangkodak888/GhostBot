@@ -1,9 +1,17 @@
-import type { LaunchOperations } from './types'
+import type { LaunchOperations, LaunchReportRequest } from './types'
 
 /** Ghost commercial policy. These prices are not network or launchpad fees. */
-export const GHOST_WALLET_PRICING = Object.freeze({ SOL: '0.10', ETH: '0.10', BNB: '0.02' })
+export const GHOST_WALLET_PRICING = Object.freeze({ SOL: '0.10', ETH: '0.01', BNB: '0.02' })
 export const GHOST_DEFAULT_AGED_WALLET_COUNT = 125
-export const GHOST_PRICING_VERSION = 'ghost-wallets-v1'
+export const GHOST_PRICING_VERSION = 'ghost-wallets-v2'
+
+/** Refresh old ETH setups at today's commercial rate; saved report rows stay intact. */
+export function currentWalletPricingDraft(request: LaunchReportRequest): LaunchReportRequest {
+  const next = structuredClone(request)
+  const native = next?.fundingConversion?.nativeOperations || next?.operations
+  if (native?.currencySymbol === 'ETH' && /^0\.10*$/.test(native.agedWalletUnitAmount)) native.agedWalletUnitAmount = GHOST_WALLET_PRICING.ETH
+  return next
+}
 
 export function getAgedWalletUnitAmount(symbol: string): string | undefined {
   return GHOST_WALLET_PRICING[symbol.toUpperCase() as keyof typeof GHOST_WALLET_PRICING]

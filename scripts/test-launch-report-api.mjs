@@ -45,7 +45,7 @@ try {
   assert.equal(catalogResponse.status, 200)
   assert.equal(catalogResponse.headers.get('cache-control'), 'no-store')
   const catalog = await catalogResponse.json()
-  assert.deepEqual(catalog.pricing, { SOL: '0.10', ETH: '0.10', BNB: '0.02' })
+  assert.deepEqual(catalog.pricing, { SOL: '0.10', ETH: '0.01', BNB: '0.02' })
   assert.ok(catalog.models.length >= 16)
   assert.equal((await post({}, { Origin: 'https://other.test' })).status, 403)
   assert.equal((await post('{bad json')).status, 400)

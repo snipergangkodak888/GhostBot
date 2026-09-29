@@ -6,6 +6,7 @@ import { convertNativeAmount, convertNativeOperations, nativeDecimals } from './
 import { formatAmount, parseAmount } from './utils'
 import { getModelCatalog } from './catalog'
 import { GHOST_INJECTION_VERSION, injectionReference } from './injection'
+import { currentWalletPricingDraft } from './pricing'
 
 async function spot(symbol: string) {
   if (!['SOL', 'ETH', 'BNB', 'USDC', 'USDT'].includes(symbol)) throw new Error('Select a supported quote currency or supply an explicit dated USD price.')
@@ -18,6 +19,7 @@ async function spot(symbol: string) {
 
 /** Validate editable inputs before public lookups, allowing explicitly native funding. */
 export function validateLaunchDraft(request: LaunchReportRequest) {
+  request = currentWalletPricingDraft(request)
   // A new generation applies the current policy and refreshes its captured FX.
   if (request?.injectionLiquidity) request = { ...request, injectionLiquidity: undefined }
   if (request?.fundingConversion) request = { ...request, operations: request.fundingConversion.nativeOperations, fundingConversion: undefined }
@@ -35,7 +37,7 @@ export function validateLaunchDraft(request: LaunchReportRequest) {
 /** Fetch protocol inputs for a new quote. A failed refresh never silently uses old terms. */
 export async function prepareLaunchReport(request: LaunchReportRequest): Promise<LaunchReportRequest> {
   validateLaunchDraft(request)
-  let next = structuredClone(request)
+  let next = currentWalletPricingDraft(request)
   delete next.injectionLiquidity
   const symbol = next.quote.symbol.toUpperCase()
   if (!next.quote.usdPrice || next.quote.priceSource === 'Coinbase spot') {
