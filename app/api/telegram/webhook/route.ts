@@ -52,34 +52,11 @@ function hasTelegramHtml(text: string) {
   return /<\/?(b|strong|i|em|u|s|code|pre|a)\b/i.test(text)
 }
 
-function replyKeyboard() {
-  return {
-    keyboard: [
-      [{ text: "🏠 Home" }, { text: "📁 Projects" }],
-      [{ text: "📈 Profit" }, { text: "💸 Payroll" }],
-      [{ text: "📅 Calendar" }, { text: "🚀 Launch Calc" }],
-      [{ text: "🔔 Reminders" }, { text: "📝 Notes" }],
-      [{ text: "🧠 AI" }, { text: "📊 Launch Math" }],
-    ],
-    resize_keyboard: true,
-    is_persistent: true,
-  }
-}
-
-function removeGroupKeyboard() {
-  return { remove_keyboard: true }
-}
-
 async function sendMessage(token: string, chatId: number | string, text: string, inline?: InlineButton[][]) {
-  const inGroup = isGroupChatId(chatId)
   return sendTelegramMessage(token, chatId, text, {
     parseMode: hasTelegramHtml(text) ? "HTML" : undefined,
     disableWebPagePreview: true,
-    replyMarkup: inline
-      ? { inline_keyboard: inline }
-      : inGroup
-        ? removeGroupKeyboard()
-        : replyKeyboard(),
+    replyMarkup: botReplyMarkup(inline),
   })
 }
 
@@ -111,17 +88,15 @@ async function editOrSendWorkflowMessage(
   return sendMessage(token, chatId, text, buttons.length ? buttons : undefined)
 }
 
-function botReplyMarkup(chatId: number | string, inline?: InlineButton[][]) {
+function botReplyMarkup(inline?: InlineButton[][]) {
   if (inline) return { inline_keyboard: inline }
-  if (isGroupChatId(chatId)) return removeGroupKeyboard()
-  return replyKeyboard()
+  return { remove_keyboard: true }
 }
 
-function botReplyOptions(chatId: number | string, text: string, inline?: InlineButton[][]) {
-  const replyMarkup = botReplyMarkup(chatId, inline)
+function botReplyOptions(text: string, inline?: InlineButton[][]) {
   return {
     parseMode: hasTelegramHtml(text) ? "HTML" as const : undefined,
-    ...(replyMarkup ? { replyMarkup } : {}),
+    replyMarkup: botReplyMarkup(inline),
   }
 }
 
@@ -151,7 +126,7 @@ async function sendAsyncResponse(
       const result = await work()
       return {
         text: result.text,
-        ...botReplyOptions(chatId, result.text, result.inline),
+        ...botReplyOptions(result.text, result.inline),
       }
     },
   })
@@ -209,9 +184,9 @@ function helpMessage() {
     "🛡️ Ghost Team bot is ready.",
     "",
     "In groups, @mention me, reply to my message, or use a /command.",
-    "Menu buttons only work in DMs — groups use @mention or /commands.",
+    "In DMs, just type what you need.",
     "",
-    "Use the stable buttons below, or type:",
+    "Available commands:",
     "📈 /profit",
     "📁 /projects",
     "📅 /calendar",

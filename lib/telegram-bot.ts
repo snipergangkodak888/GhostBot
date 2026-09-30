@@ -191,7 +191,10 @@ export async function withTelegramLoading(
 
   let loadingMessagePromise: Promise<number | null> | null = null
   const loadingTimer = setTimeout(() => {
-    loadingMessagePromise = sendTelegramMessage(token, chatId, loadingText)
+    // Clear legacy reply keyboards here because the final response edits this message.
+    loadingMessagePromise = sendTelegramMessage(token, chatId, loadingText, {
+      replyMarkup: { remove_keyboard: true },
+    })
   }, delayMs)
 
   const deliver = async (result: { text: string; parseMode?: "HTML"; replyMarkup?: Record<string, any> }) => {
