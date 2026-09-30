@@ -41,8 +41,8 @@ launchlab.termsSource = { kind: 'snapshot', label: 'Stonkfun standard SOL Launch
 const stonk = structuredClone(launchlab); stonk.modelId = 'stonkfun'
 
 const pons = baseRequest('pons', 'ETH', 18, 18)
-pons.terms = { phantomQuoteWei: '1680000000000000000', graduationThresholdWei: '4200000000000000000', curveFeeBps: 100, creatorTaxBps: 100, hookFeeBps: 100, poolFeePips: 0, tickSpacing: 200, tokenIsCurrency0: false }
-pons.operations = { ...pons.operations, setupAmount: '0.10', buyerGasAmount: '0.01', launchFeeAmount: '0.0005', poolBuyerCount: 2 }
+pons.terms = { phantomQuoteWei: '1680000000000000000', graduationThresholdWei: '4200000000000000000', curveFeeBps: 100, creatorTaxBps: 0, hookFeeBps: 100, poolFeePips: 0, tickSpacing: 200, tokenIsCurrency0: false }
+pons.operations = { ...pons.operations, setupAmount: '0.10', buyerGasAmount: '0.01', launchFeeAmount: '0.0005', buyerCount: 34, curveBuyerCount: 32, poolBuyerCount: 2 }
 
 const raydium = baseRequest('raydium-cpmm')
 raydium.targetsPct = [50, 60, 70, 80, 90]; raydium.liquidityAmounts = ['25', '30', '40', '50']

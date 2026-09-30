@@ -4,6 +4,7 @@ import { calculateLaunchReport } from './launch-reports/engine'
 import { prepareLaunchReport } from './launch-reports/prepare'
 import { launchReportCautions } from './launch-reports/client-summary'
 import { launchVenue } from './launch-reports/venues'
+import { applyLaunchTax, launchTaxLabel, launchTaxTargets, validateLaunchTax } from './launch-reports/tax'
 import { formatAmount, parseAmount } from './launch-reports/utils'
 import type { LaunchReport, LaunchReportRequest } from './launch-reports/types'
 
@@ -14,6 +15,7 @@ export type LaunchQuoteInput = {
   target: number
   initialLp?: number
   mmLiquidity?: number
+  taxPercent?: number
 }
 export type LaunchQuoteLine = { key: string; amount: string; raw: string; label: string }
 export type LaunchQuote = {
@@ -39,13 +41,15 @@ function validateInput(input: LaunchQuoteInput) {
   if (input.metric === 'supply' && Math.abs(input.target * 1e6 - Math.round(input.target * 1e6)) > 1e-6) throw new Error('Use at most 6 decimal places for supply control.')
   if (venue.requiresLiquidity && (!Number.isFinite(input.initialLp) || Number(input.initialLp) <= 0)) throw new Error('Initial LP must be greater than zero.')
   if (input.mmLiquidity != null && (!Number.isFinite(input.mmLiquidity) || input.mmLiquidity < 0)) throw new Error('MM liquidity must be a nonnegative amount.')
+  if (input.taxPercent != null) validateLaunchTax(input.venueId, input.taxPercent)
   return venue
 }
 
 /** Each quote refreshes the exact same FX and protocol settings as Launch Math once. */
 export async function prepareLaunchQuote(input: LaunchQuoteInput): Promise<LaunchQuote> {
   const venue = validateInput(input)
-  const request = createDefaultRequest(venue.id)
+  const base = createDefaultRequest(venue.id)
+  const request = input.taxPercent == null ? base : applyLaunchTax(base, input.taxPercent)
   if (venue.requiresLiquidity) request.liquidityAmounts = [plainAmount(input.initialLp!)]
   if (input.metric === 'supply') request.targetsPct = [input.target]
   const prepared = await prepareLaunchReport(request)
@@ -97,10 +101,11 @@ function solveMarketCap(request: LaunchReportRequest, target: number): LaunchRep
   const valid = (report: LaunchReport) => report.rows[0].status === 'ok' && Number(report.rows[0].fdvUsd) > 0
   const mc = (report: LaunchReport) => report.rows[0].fdvUsd!
   const close = (report: LaunchReport) => Math.abs(mc(report) - target) <= tolerance
-  const samples = createDefaultRequest(request.modelId).targetsPct.map(pct => {
+  const samples = launchTaxTargets(request, createDefaultRequest(request.modelId).targetsPct).map(pct => {
     const control = Math.round(pct * scale)
-    return { control, report: requireQuote(evaluate(control)) }
-  }).sort((a, b) => a.control - b.control)
+    return { control, report: evaluate(control) }
+  }).filter(sample => valid(sample.report)).sort((a, b) => a.control - b.control)
+  if (!samples.length) throw new Error('No scenarios are available for this tax and launch configuration.')
   for (const sample of samples) if (close(sample.report)) return sample.report
   // Extend only when necessary. Near-empty pools can be expensive to quote;
   // normal client targets never need a speculative purchase of almost 100%.
@@ -146,7 +151,8 @@ function solveMarketCap(request: LaunchReportRequest, target: number): LaunchRep
 export function calculateLaunchQuote(input: LaunchQuoteInput, prepared: LaunchReportRequest): LaunchQuote {
   const venue = validateInput(input)
   if (prepared.modelId !== venue.id || !prepared.injectionLiquidity) throw new Error('Refresh the venue settings before calculating a quote.')
-  const request = structuredClone(prepared)
+  const request = input.taxPercent == null ? structuredClone(prepared) : applyLaunchTax(prepared, input.taxPercent)
+  if (['stonkfun', 'launchlab'].includes(venue.id) && JSON.stringify(request.terms.transferFee) !== JSON.stringify(prepared.terms.transferFee)) throw new Error('Refresh Stonkfun settings after changing the holder tax.')
   request.liquidityAmounts = venue.requiresLiquidity ? [plainAmount(input.initialLp!)] : undefined
   const report = input.metric === 'supply'
     ? requireQuote(boundedReport({ ...request, targetsPct: [input.target] }))
@@ -184,6 +190,7 @@ export function formatLaunchQuote(quote: LaunchQuote) {
   const symbol = quote.venue.symbol, request = quote.report.request
   return [
     `<b>${quote.venue.name}</b>`,
+    ...(launchTaxLabel(request) ? [launchTaxLabel(request)!] : []),
     ...(quote.initialLp ? [`Assuming a ${display(quote.initialLp)} ${symbol} initial LP:`] : []),
     `Capital requirement: <b>${display(quote.capitalTotal)} ${symbol} total</b> — targeting <b>${display(quote.supplyControlPct, 2)}% supply control</b> with an estimated <b>~${compactUsd(quote.launchMarketCapUsd)} launch MC</b>.`,
     '', 'Breakdown:',

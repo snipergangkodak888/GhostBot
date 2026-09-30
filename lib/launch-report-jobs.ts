@@ -39,7 +39,7 @@ async function transition(job: LaunchReportJob, changes: Partial<LaunchReportJob
 export async function queueLaunchReport(params: { chatId: string | number; telegramId: number; messageId: number; selection: LaunchMathSelection }) {
   createTelegramLaunchRequest(params.selection) // Validate all choices before storage.
   if (!Number.isSafeInteger(params.messageId) || params.messageId <= 0) throw new Error('Open /launchmath to start a new report.')
-  const selection = { modelId: params.selection.modelId, liquidity: params.selection.liquidity || 'compare' }
+  const selection = { modelId: params.selection.modelId, liquidity: params.selection.liquidity || 'compare', ...(params.selection.taxPercent == null ? {} : { taxPercent: params.selection.taxPercent }) }
   const id = createHash('sha256').update(JSON.stringify([String(params.chatId), params.messageId, selection])).digest('hex').slice(0, 40)
   const current = (await readJobs({ id: `eq.${id}`, limit: '1' }))[0]
   if (current) {

@@ -1,5 +1,6 @@
 import type { LaunchReport } from './types'
 import { formatAmount, parseAmount } from './utils'
+import { launchTaxLabel } from './tax'
 
 /** Short client copy; the complete assumptions and warnings stay in the report data. */
 export function launchReportCautions(report: LaunchReport): string[] {
@@ -38,7 +39,7 @@ export function launchReportFootnotes(report: LaunchReport): string[] {
     : policy.referenceSymbol === 'SOL' ? '30 SOL through $500k MC; proportional above.'
       : '1.3 ETH through $300k MC; 2 ETH at $500k; $10k at $1m (min. 2 ETH). Scales between and above.'
   return [
-    `SUPPLY: ${supply}. MC = price after buys × total supply.`,
+    `SUPPLY: ${supply}. MC = price after buys × total supply.${launchTaxLabel(request) ? ` ${launchTaxLabel(request)}.` : ''}`,
     `AGED WALLETS: ${op.agedWalletCount} × ${wallet.agedWalletUnitAmount} ${wallet.currencySymbol} = ${walletTotal} ${wallet.currencySymbol}${converted}.`,
     `MM LIQUIDITY: ${mm}${policy && policy.referenceSymbol !== request.quote.symbol ? ` Converted to ${request.quote.symbol}.` : ''}`,
     policy ? 'TOTAL: Launch funding + aged wallets + MM liquidity. MM is separate from the initial pool; unused reserves remain capital.'

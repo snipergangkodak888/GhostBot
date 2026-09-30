@@ -81,9 +81,10 @@ function ponsAdapter(context: AdapterContext): AdapterResult {
   const creatorTaxBps = integerTerm(t, 'creatorTaxBps', 0, 9900)
   const initialState = buildPonsV2InitialCurveState({ supplyWei: supplyRaw, phantomQuoteWei, graduationThresholdWei: termBigInt(t, 'graduationThresholdWei'), curveFeeBps: integerTerm(t, 'curveFeeBps', undefined, 9900), creatorTaxBps })
   if (targetRaw <= initialState.sellableTokensWei) {
-    if (context.buyerCount > 32) throw new Error('Pons allows at most 32 curve wallets')
-    const plan = planPonsV2LaunchBuys({ initialState, allocations: splitRaw(targetRaw, context.buyerCount).filter(x => x > 0n).map((tokensOutWei, i) => ({ walletId: `curve-${i + 1}`, tokensOutWei })), slippageBps: 0 })
-    return { buyRaw: plan.totalGrossInputWei, actualBaseRaw: plan.totalTokensOutWei, fdvQuote: Number(plan.finalState.quoteReserveWei) / 1e18 / Number(plan.finalState.tokenReserveWei) * Number(supplyRaw), phase: 'Curve', details: { plan } }
+    const curveBuyers = request.operations.curveBuyerCount ?? context.buyerCount
+    if (curveBuyers > 32) throw new Error('Pons allows at most 32 curve wallets')
+    const plan = planPonsV2LaunchBuys({ initialState, allocations: splitRaw(targetRaw, curveBuyers).filter(x => x > 0n).map((tokensOutWei, i) => ({ walletId: `curve-${i + 1}`, tokensOutWei })), slippageBps: 0 })
+    return { buyRaw: plan.totalGrossInputWei, fundedBuyerCount: curveBuyers, actualBaseRaw: plan.totalTokensOutWei, fdvQuote: Number(plan.finalState.quoteReserveWei) / 1e18 / Number(plan.finalState.tokenReserveWei) * Number(supplyRaw), phase: 'Curve', details: { plan, count: { curve: curveBuyers, pool: 0 } } }
   }
   const counts = graduationCounts(context)
   if (counts.curve > 32 || counts.pool > 32) throw new Error('Pons supports at most 32 curve wallets and 32 pool wallets')
@@ -174,7 +175,8 @@ export function calculateLaunchReport(request: LaunchReportRequest): LaunchRepor
       if (result.actualBaseRaw > supplyRaw || result.buyRaw < 0n || (result.fdvQuote !== null && (!Number.isFinite(result.fdvQuote) || result.fdvQuote < 0))) throw new Error('Model returned an invalid amount or price')
       const initialLiquidity = op.includeInitialLiquidity ? result.initialLiquidityRaw ?? 0n : 0n
       const modelReserves = result.refundableReserveRaw ?? 0n
-      const baseFunding = result.buyRaw + initialLiquidity + operationalRaw + modelReserves
+      const rowOperations = operationalRaw + amount('buyerGasAmount') * BigInt((result.fundedBuyerCount ?? op.buyerCount) - op.buyerCount)
+      const baseFunding = result.buyRaw + initialLiquidity + rowOperations + modelReserves
       const providerFee = ceilDiv(baseFunding * 10_000n, 10_000n - BigInt(op.providerFeeBps)) - baseFunding
       const recipientBuffers = BigInt(op.recipientCount) * amount('recipientBufferAmount'), sourceGas = amount('sourceGasAmount')
       const funding = baseFunding + providerFee + recipientBuffers + sourceGas
@@ -182,7 +184,7 @@ export function calculateLaunchReport(request: LaunchReportRequest): LaunchRepor
       const fx = request.quote.usdPrice === undefined ? null : Number(request.quote.usdPrice)
       const mcUsd = fx === null || result.fdvQuote === null ? null : result.fdvQuote * fx
       const injectionLiquidity = injectionLiquidityRaw(request, mcUsd)
-      const raw = { buys: result.buyRaw, initialLiquidity, operations: operationalRaw, modelReserves, providerFee, recipientBuffers, sourceGas, funding, agedWallets, injectionLiquidity, total: funding + agedWallets + injectionLiquidity }
+      const raw = { buys: result.buyRaw, initialLiquidity, operations: rowOperations, modelReserves, providerFee, recipientBuffers, sourceGas, funding, agedWallets, injectionLiquidity, total: funding + agedWallets + injectionLiquidity }
       const amounts = Object.fromEntries(Object.entries(raw).map(([key, value]) => [key, formatAmount(value, decimals)])) as unknown as LaunchReportAmounts
       Object.assign(row, { status: 'ok', actualPct: Number(result.actualBaseRaw * 100_000_000n / supplyRaw) / 1e6, phase: result.phase, amounts, raw: Object.fromEntries(Object.entries(raw).map(([key, value]) => [key, value.toString()])), fdvQuote: result.fdvQuote, fdvUsd: fx === null || result.fdvQuote === null ? null : result.fdvQuote * fx, totalUsd: fx === null ? null : Number(amounts.total) * fx, details: jsonSafe(result.details), warnings: result.warnings ?? [] })
     } catch (error) { row.error = error instanceof Error ? error.message : 'Unable to calculate this scenario' }
@@ -193,9 +195,9 @@ export function calculateLaunchReport(request: LaunchReportRequest): LaunchRepor
     generatedAt: new Date().toISOString(), title: request.title, ...(request.client ? { client: request.client } : {}), modelId: request.modelId, request: structuredClone(request), rows, warnings,
     assumptions: [
       `Network: ${request.chain || 'As specified by the supplied launch configuration'}.`,
-      `Control includes ${op.retainedPct}% retained allocation; ordered purchases are split across ${op.buyerCount} buyers.`,
+      `Control includes ${op.retainedPct}% retained allocation; ordered purchases use up to ${op.buyerCount} buyers.${request.modelId === 'pons' && op.curveBuyerCount ? ` Pons uses ${op.curveBuyerCount} curve buyers, plus ${op.poolBuyerCount} buyers only for post-graduation purchases; gas is budgeted for participating buyers.` : ''}`,
       request.fundingConversion ? `Native ${request.fundingConversion.nativeOperations.currencySymbol} allowances were converted automatically into ${op.currencySymbol} at ${request.fundingConversion.nativeUsdPrice} USD per native coin and ${request.fundingConversion.quoteUsdPrice} USD per quote unit; ${request.fundingConversion.asOf}. Each allowance is rounded up to the quote currency's smallest unit.` : `All operating allowances are in ${op.currencySymbol}.`,
-      `Operating allowance = setup ${op.setupAmount} + ${op.buyerCount} × buyer gas ${op.buyerGasAmount} + cleanup ${op.cleanupAmount} + ${op.holderCount} × holder funding ${op.holderAmount} + tip ${op.tipAmount} + launch fee ${op.launchFeeAmount}.`,
+      `Operating allowance = setup ${op.setupAmount} + participating buyers × buyer gas ${op.buyerGasAmount} + cleanup ${op.cleanupAmount} + ${op.holderCount} × holder funding ${op.holderAmount} + tip ${op.tipAmount} + launch fee ${op.launchFeeAmount}.`,
       request.fundingConversion ? `Aged wallets = ${op.agedWalletCount} × ${request.fundingConversion.nativeOperations.agedWalletUnitAmount} ${request.fundingConversion.nativeOperations.currencySymbol}; fixed Ghost commercial pricing, converted to ${op.agedWalletUnitAmount} ${request.quote.symbol} each.` : `Aged wallets = ${op.agedWalletCount} × ${op.agedWalletUnitAmount} ${request.quote.symbol}; ${getAgedWalletUnitAmount(request.quote.symbol) ? 'fixed Ghost commercial pricing' : 'explicit quote-currency allowance'}.`,
       `Provider fee ${op.providerFeeBps} bps is grossed up on purchases, included liquidity, operating allowances and model reserves; recipient buffers and source gas are then added.`,
       injectionPolicyNote(request),

@@ -74,7 +74,7 @@ export async function testRefresh() {
     await assert.rejects(() => refreshLaunchTerms(createDefaultRequest('raydium-cpmm')), /creation fee/)
     rayConfig.createPoolFee = oldCreationFee
     const reward = createDefaultRequest('stonkfun'); reward.terms.transferFee = { basisPoints: 300, maximumFee: '1000' }
-    await assert.rejects(() => refreshLaunchTerms(reward), /untaxed/)
+    await assert.rejects(() => refreshLaunchTerms(reward), /transfer fee cap/)
     globalThis.fetch = async () => new Response('Unavailable', { status: 503 })
     await assert.rejects(() => refreshLaunchTerms(createDefaultRequest('pumpfun')), /HTTP 503/)
     await assert.rejects(() => refreshLaunchTerms(createDefaultRequest('uniswap-v2')), /not available/)

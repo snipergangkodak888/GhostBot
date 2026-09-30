@@ -135,6 +135,19 @@ try {
     assert.equal((await h.worker.queueLaunchReport(h.params())).duplicate, true)
   })
 
+  await test('custom tax survives durable storage, retries and deduplication', async () => {
+    const h = harness()
+    const selection = { modelId: 'pons', taxPercent: 2.5 }
+    const first = await h.worker.queueLaunchReport(h.params({ selection }))
+    assert.equal(h.job(first.job._id).selection.taxPercent, 2.5)
+    h.state.onGenerate = async selected => assert.equal(selected.taxPercent, 2.5)
+    await h.worker.runLaunchReportJobs()
+    assert.equal(h.job(first.job._id).selection.taxPercent, 2.5)
+    const next = await h.worker.queueLaunchReport(h.params({ selection: { ...selection, taxPercent: 0 } }))
+    assert.notEqual(next.job._id, first.job._id)
+    assert.equal(next.job.selection.taxPercent, 0)
+  })
+
   await test('independent workers claim the same queued job atomically', async () => {
     const h = harness()
     await h.worker.queueLaunchReport(h.params())

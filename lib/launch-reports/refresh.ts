@@ -6,6 +6,7 @@ import type { LaunchReportRequest } from './types'
 import { validateRequest } from './engine'
 import { createLaunchLabCurve } from './amm-math/launchlab-quote-math'
 import { formatAmount, integerTerm } from './utils'
+import { launchTaxPercent, validateLaunchTax } from './tax'
 import { refreshFlapTerms } from './refresh-flap'
 import { refreshFourMemeTerms } from './refresh-four'
 import { refreshPonsTerms } from './refresh-pons'
@@ -118,19 +119,26 @@ export function decodeStonkFees(globalAccount: JsonObject, platformAccount: Json
 }
 
 async function refreshStonk(request: LaunchReportRequest): Promise<LaunchReportRequest> {
-  if (request.quote.symbol !== 'SOL' || request.quote.decimals !== 9 || request.base.decimals !== 6 || request.terms.transferFee !== undefined) throw new Error('Automatic Stonkfun refresh supports standard untaxed SOL launches; other modes require their exact verified terms')
-  const [pricing, configs] = await Promise.all([fetchJson(STONK_PRICING), readSolanaLaunchAccounts(STONK_ACCOUNTS)])
+  if (request.quote.symbol !== 'SOL' || request.quote.decimals !== 9 || request.base.decimals !== 6) throw new Error('Automatic Stonkfun refresh currently supports SOL launches.')
+  const percent = launchTaxPercent(request) ?? 0
+  validateLaunchTax(request.modelId, percent)
+  const reward = percent > 0, mode = reward ? 'reward' : 'standard'
+  const accounts = [STONK_ACCOUNTS[0], reward ? '6BwHHDg3u1854jC8PDLXvR4spTcLNaoBxLJNGC4nTESt' : STONK_ACCOUNTS[1]]
+  const pricingUrl = STONK_PRICING.replace('mode=standard', `mode=${mode}`)
+  const [pricing, configs] = await Promise.all([fetchJson(pricingUrl), readSolanaLaunchAccounts(accounts)])
   const data = pricing.data
-  if (data?.quote?.mint !== 'So11111111111111111111111111111111111111112' || data.quote.decimals !== 9 || data.curve?.programId !== LAUNCHLAB_PROGRAM || data.curve.configId !== STONK_ACCOUNTS[0] || data.platform?.standard !== STONK_ACCOUNTS[1] || data.curve.curveType !== 'ConstantCurve' || data.curve.baseDecimals !== 6 || data.modes?.standard?.transferFee !== null) throw new Error('Stonkfun pricing identity or launch structure changed; verify the new configuration before continuing')
+  if (data?.quote?.mint !== 'So11111111111111111111111111111111111111112' || data.quote.decimals !== 9 || data.curve?.programId !== LAUNCHLAB_PROGRAM || data.curve.configId !== STONK_ACCOUNTS[0] || data.platform?.[mode] !== accounts[1] || data.curve.curveType !== 'ConstantCurve' || data.curve.baseDecimals !== 6 || data.modes?.standard?.transferFee !== null) throw new Error('Stonkfun pricing identity or launch structure changed; verify the new configuration before continuing')
+  if (reward && (!Array.isArray(data.modes?.reward?.transferFeeBps) || !data.modes.reward.transferFeeBps.includes(Math.round(percent * 100)) || data.modes.reward.baseTokenProgram !== 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb')) throw new Error('Stonkfun no longer offers this holder tax. Choose a current reward rate or standard 0%.')
+  if (request.terms.transferFee && String((request.terms.transferFee as { maximumFee: unknown }).maximumFee) !== String(data.curve.supply)) throw new Error('Stonkfun transfer fee cap must equal the full token supply.')
   const fees = decodeStonkFees(configs.value[0], configs.value[1])
   if (String(data.curve.migrateFeeRaw) !== fees.migrateFee) throw new Error('Stonkfun pricing and current global migration fee disagree; retry once the public configuration is consistent')
-  const terms = { supply: String(data.curve.supply), totalSellA: String(data.curve.totalSellA), totalLockedAmount: String(data.curve.vesting?.totalLockedAmount), totalFundRaisingB: String(data.raise?.raw), ...fees }
+  const terms = { supply: String(data.curve.supply), totalSellA: String(data.curve.totalSellA), totalLockedAmount: String(data.curve.vesting?.totalLockedAmount), totalFundRaisingB: String(data.raise?.raw), ...fees, ...(reward ? { transferFee: { basisPoints: Math.round(percent * 100), maximumFee: String(data.curve.supply) } } : {}) }
   const curve = createLaunchLabCurve(terms)
   if (curve.virtualBase.toString() !== data.curve.derived?.virtualA || curve.virtualQuote.toString() !== data.curve.derived?.virtualB) throw new Error('Stonkfun virtual reserves disagree with the supplied LaunchLab derivation')
   const next = structuredClone(request), asOf = new Date().toISOString()
   next.base.supply = formatAmount(BigInt(terms.supply), 6)
-  next.terms = { ...terms, _snapshot: { pricingUrl: STONK_PRICING, pricingGeneratedAt: pricing.meta?.generatedAt, rpc: configs.rpc, slot: configs.context.slot, commitment: 'finalized', accounts: STONK_ACCOUNTS, observedAt: asOf, responseSha256: snapshotHash({ pricing, configs: { context: configs.context, value: configs.value } }), layoutSource: 'https://github.com/raydium-io/raydium-sdk-V2/blob/master/src/raydium/launchpad/layout.ts' } }
-  next.termsSource = { kind: 'snapshot', label: `Stonkfun standard SOL pricing and LaunchLab fees, finalized Solana slot ${configs.context.slot}`, url: STONK_PRICING, asOf }
+  next.terms = { ...terms, _snapshot: { pricingUrl, mode, rewardTaxBpsOptions: data.modes?.reward?.transferFeeBps, pricingGeneratedAt: pricing.meta?.generatedAt, rpc: configs.rpc, slot: configs.context.slot, commitment: 'finalized', accounts, observedAt: asOf, responseSha256: snapshotHash({ pricing, configs: { context: configs.context, value: configs.value } }), layoutSource: 'https://github.com/raydium-io/raydium-sdk-V2/blob/master/src/raydium/launchpad/layout.ts' } }
+  next.termsSource = { kind: 'snapshot', label: `Stonkfun ${mode} SOL pricing and LaunchLab fees, finalized Solana slot ${configs.context.slot}`, url: pricingUrl, asOf }
   return next
 }
 

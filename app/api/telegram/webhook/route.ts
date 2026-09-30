@@ -26,6 +26,7 @@ import { receiptAvailableAmount, receiptAvailableUsd } from "@/lib/revenue-alloc
 import { LAUNCH_CHAINS, type LaunchChainId } from "@/lib/launch-math"
 import { operationalLaunchVenue, operationalVenuesForChain } from "@/lib/launch-venues"
 import { dailyProjectReviewButtons, dailyProjectReviewId, dailyProjectReviewText, type DailyProjectReviewRecord } from "@/lib/daily-project-review"
+import { launchTaxConfig, launchTaxPercent, validateLaunchTax } from "@/lib/launch-reports/tax"
 import { getLaunchVenues, launchVenue as launchPad, launchVenueGroups } from "@/lib/launch-reports/venues"
 import { prepareLaunchQuote, formatLaunchQuote, parseLaunchNumber, type LaunchTargetMetric } from "@/lib/launch-calculator"
 import { botPermissionDeniedMessage, canCollaborateOnLaunchDraft, canEditLaunchSchedule, canOpenTraderSchedule, canUseBotCapability, canUseLaunchReports, getBotPermissionContext, isLaunchDraftAction, type BotCapability, type BotPermissionContext } from "@/lib/bot-permissions"
@@ -873,7 +874,7 @@ async function sendCalculatedLaunchQuote(
   chatId: number | string,
   telegramId: number,
   state: Record<string, any>,
-  overrides: { target?: number; mmLiquidity?: number } = {},
+  overrides: { target?: number; mmLiquidity?: number; taxPercent?: number } = {},
   messageId?: number | null,
 ) {
   const pad = launchPad(String(state.launchVenueId || ""))
@@ -882,12 +883,14 @@ async function sendCalculatedLaunchQuote(
   if (!(["supply", "market_cap"] as string[]).includes(metric)) throw new Error("Choose a target type first.")
   const target = overrides.target ?? Number(state.launchTarget)
   const mmLiquidity = overrides.mmLiquidity ?? (state.launchMmOverride == null ? undefined : Number(state.launchMmOverride))
+  const taxPercent = overrides.taxPercent ?? (state.launchTaxPercent == null ? undefined : Number(state.launchTaxPercent))
   const quote = await prepareLaunchQuote({
     venueId: pad.id,
     metric,
     target,
     ...(pad.type === "amm" ? { initialLp: Number(state.launchInitialLp) } : {}),
     ...(mmLiquidity == null ? {} : { mmLiquidity }),
+    ...(taxPercent == null ? {} : { taxPercent }),
   })
   await setState(telegramId, {
     action: "launch_calc_result",
@@ -895,11 +898,13 @@ async function sendCalculatedLaunchQuote(
     launchMetric: metric,
     launchTarget: target,
     ...(pad.type === "amm" ? { launchInitialLp: quote.initialLp } : {}),
+    launchTaxPercent: launchTaxPercent(quote.report.request) ?? null,
     launchMmOverride: mmLiquidity ?? null,
     launchMmLiquidity: quote.lines.find((line) => line.key === "mm")?.amount,
   }, chatId)
   return editOrSendWorkflowMessage(token, chatId, messageId, formatLaunchQuote(quote), [
     [{ text: "🎯 Change target", callback_data: "launch:adjust:target" }, { text: "💧 Change MM reserve", callback_data: "launch:adjust:mm" }],
+    ...(launchTaxConfig(pad.id) ? [[{ text: "Change tax", callback_data: "launch:adjust:tax" }]] : []),
     [{ text: "🆕 New launch quote", callback_data: "launch:start" }],
   ])
 }
@@ -1416,7 +1421,7 @@ async function processState(token: string, chatId: number | string, telegramId: 
     return true
   }
 
-  const isLaunchCalculator = String(state.action || "").startsWith("launch_calc")
+  const isLaunchCalculator = String(state.action || "").startsWith("launch_calc") || state.action === "launch_math_tax"
   if (isLaunchCalculator && !canUseLaunchReports(context)) {
     await clearState(telegramId)
     await sendMessage(token, chatId, "Launch estimates are available to active Ghost teammates in a DM or configured Launch, Trade or Management chat.")
@@ -2021,6 +2026,26 @@ async function processState(token: string, chatId: number | string, telegramId: 
     return true
   }
 
+  if (state.action === "launch_calc_tax" || state.action === "launch_math_tax") {
+    const workflowMessageId = Number(state.reviewMessageId || state.promptMessageId || 0) || null
+    try {
+      const raw = text.trim().replace(/%$/, "").trim()
+      if (!/^\d+(?:\.\d{1,2})?$/.test(raw)) throw new Error("Enter a tax percentage, such as 0, 1 or 2.5%.")
+      const taxPercent = Number(raw)
+      const venueId = state.action === "launch_math_tax" ? state.launchMathSelection?.modelId : state.launchVenueId
+      validateLaunchTax(venueId, taxPercent)
+      if (state.action === "launch_math_tax") {
+        const view = launchMathReviewView({ ...state.launchMathSelection, taxPercent })
+        await clearState(telegramId)
+        await editOrSendWorkflowMessage(token, chatId, workflowMessageId, view.text, view.replyMarkup.inline_keyboard)
+      } else await sendCalculatedLaunchQuote(token, chatId, telegramId, state, { taxPercent }, workflowMessageId)
+    } catch (error) {
+      await editOrSendWorkflowMessage(token, chatId, workflowMessageId, `⚠️ ${error instanceof Error ? error.message : "I could not update the tax."}\n\nTry another tax or send /cancel.`)
+    }
+    await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
+    return true
+  }
+
   if (state.action === "launch_calc_mm") {
     const workflowMessageId = Number(state.reviewMessageId || state.promptMessageId || 0) || null
     const mmLiquidity = parseLaunchNumber(text)
@@ -2253,6 +2278,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       return sendTelegramMessage(token, chatId, view.text, { replyMarkup: view.replyMarkup })
     }
     if (choice.action === "group") return show(launchMathGroupView(choice.group))
+    if (choice.action === "tax") return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessage?.photo || callbackMessage?.document ? null : callbackMessageId, state: { action: "launch_math_tax", launchMathSelection: choice.selection }, text: "Enter the Pons creator tax from 0% to 10%, such as 2.5%. Default: 0%." })
     if (choice.action === "review" || callbackMessage?.document || callbackMessage?.photo) return show(launchMathReviewView(choice.selection))
     if (!callbackMessageId) return show(launchMathReviewView(choice.selection))
     try {
@@ -2885,10 +2911,24 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId, state: { ...state, action: "launch_calc_value", launchInitialLp: pad.defaultLp }, text: launchTargetPrompt(state.launchMetric as LaunchTargetMetric, pad.name) })
     }
   }
+  if (area === "launch" && action === "tax") {
+    const state = await takeState(telegramId, chatId)
+    if (!state || !["launch_calc_result", "launch_calc_tax"].includes(state.action)) return sendLaunchCalculatorStart(token, chatId, telegramId, callbackMessageId)
+    try {
+      if (!/^\d+(?:\.\d{1,2})?$/.test(id)) throw new Error("Choose a valid tax.")
+      validateLaunchTax(state.launchVenueId, Number(id))
+      return await sendCalculatedLaunchQuote(token, chatId, telegramId, state, { taxPercent: Number(id) }, callbackMessageId)
+    } catch (error) { return workflowReply(`⚠️ ${error instanceof Error ? error.message : "I could not update the tax."}`) }
+  }
   if (area === "launch" && action === "adjust") {
     const state = await takeState(telegramId, chatId)
     const pad = launchPad(String(state?.launchVenueId || ""))
     if (!pad || state?.action !== "launch_calc_result") return sendLaunchCalculatorStart(token, chatId, telegramId, callbackMessageId)
+    if (id === "tax") {
+      const tax = launchTaxConfig(pad.id)
+      if (!tax) return workflowReply("This venue does not offer a configurable launch tax.")
+      return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId, state: { ...state, action: "launch_calc_tax" }, text: `${tax.label}: ${state.launchTaxPercent ?? 0}%\n\n${tax.custom ? "Choose a tax or type any rate from 0% to 10%." : "Choose standard 0% or a supported Stonkfun holder tax."} Default: 0%.`, buttons: [tax.options.map(percent => ({ text: `${percent}%${percent === 0 ? " default" : ""}`, callback_data: `launch:tax:${percent}` }))] })
+    }
     if (id === "target") {
       return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId, state: { ...state, action: "launch_calc_value" }, text: launchTargetPrompt(state.launchMetric as LaunchTargetMetric, pad.name) })
     }

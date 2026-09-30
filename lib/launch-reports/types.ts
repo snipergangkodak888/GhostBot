@@ -72,6 +72,8 @@ export interface AdapterContext {
 
 export interface AdapterResult {
   buyRaw: bigint
+  /** Only buyers participating in this scenario need their gas allowance. */
+  fundedBuyerCount?: number
   /** Purchased plus explicitly retained supply, in base atomic units. */
   actualBaseRaw: bigint
   fdvQuote: number | null

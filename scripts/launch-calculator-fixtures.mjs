@@ -21,11 +21,12 @@ export async function prepareCalculatorFixture(request) {
       return Response.json({ data: { amount: { SOL: '100', ETH: '2000', BNB: '600', USDC: '1' }[symbol] } })
     }
     if (url.includes('cpmm-config')) return Response.json(fixture('raydium-configs'))
-    if (url.includes('stonkfun.xyz')) return Response.json(fixture('stonk-pricing'))
+    if (url.includes('stonkfun.xyz')) return Response.json(fixture(url.includes('mode=reward') ? 'stonk-reward-pricing' : 'stonk-pricing'))
     const body = JSON.parse(options.body)
     if (body.method === 'getMultipleAccounts') {
       const count = body.params[0].length
-      const payload = fixture(count === 4 ? 'pump-usdc-accounts' : count === 3 ? 'pump-accounts' : 'stonk-accounts')
+      const reward = body.params[0][1] === '6BwHHDg3u1854jC8PDLXvR4spTcLNaoBxLJNGC4nTESt'
+      const payload = fixture(reward ? 'stonk-reward-accounts' : count === 4 ? 'pump-usdc-accounts' : count === 3 ? 'pump-accounts' : 'stonk-accounts')
       payload.result.value = payload.result.value.slice(0, count)
       return Response.json(payload)
     }
