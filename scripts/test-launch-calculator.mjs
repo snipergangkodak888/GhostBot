@@ -25,6 +25,8 @@ for (const model of getModelCatalog()) {
   const report = calculateLaunchReport({ ...prepared, targetsPct: [input.target], liquidityAmounts: model.requiresLiquidity ? [String(input.initialLp)] : undefined })
   assert.equal(supply.capitalTotalRaw, report.rows[0].raw.total, `${model.id} text and image total must match exactly`)
   assert.equal(supply.capitalTotalRaw, supply.lines.reduce((sum, line) => sum + BigInt(line.raw), 0n).toString())
+  assert.equal(supply.lines.find(line => line.key === 'accumulation').label, 'for supply accumulation')
+  assert.equal(supply.lines.some(line => line.key === 'operations'), false, 'Operating allowances belong in the combined supply accumulation line')
   assert.match(formatLaunchQuote(supply), /Capital requirement:.*supply control.*launch MC/s)
   assert.doesNotMatch(formatLaunchQuote(supply), /FDV/)
   assert.equal(supply.lines.find(x => x.key === 'aged').amount, model.id === 'pumpfun-custom' ? '1250' : prepared.quote.symbol === 'SOL' ? '12.5' : prepared.quote.symbol === 'BNB' ? '2.5' : '1.25')
@@ -43,7 +45,9 @@ for (const model of getModelCatalog()) {
 }
 const pump = { venueId: 'pumpfun', metric: 'supply', target: 85 }
 const migrated = calculateLaunchQuote(pump, snapshots.get('pumpfun'))
-assert.match(formatLaunchQuote(migrated), /curve \+ migrated pool/)
+assert.match(migrated.report.rows[0].phase, /graduated pool/)
+assert.match(formatLaunchQuote(migrated), /for supply accumulation\n/)
+assert.doesNotMatch(formatLaunchQuote(migrated), /curve \+ migrated pool|launch fees, operations and funding buffers/)
 for (const change of [{ target: 100 }, { target: Infinity }, { target: NaN }, { target: 60.1234567 }, { mmLiquidity: Infinity }, { mmLiquidity: -1 }, { mmLiquidity: 1e-19 }, { metric: 'bad' }]) assert.throws(() => calculateLaunchQuote({ ...pump, ...change }, snapshots.get('pumpfun')))
 assert.throws(() => calculateLaunchQuote({ ...pump, venueId: 'meteora' }, snapshots.get('pumpfun')), /updated Launch Calc menu/)
 assert.throws(() => calculateLaunchQuote({ ...pump, venueId: 'stonkfun' }, snapshots.get('stonkfun')), /curve sale allocation/)

@@ -155,9 +155,8 @@ export function calculateLaunchQuote(input: LaunchQuoteInput, prepared: LaunchRe
   const wallet = request.fundingConversion?.nativeOperations || request.operations
   const lines: LaunchQuoteLine[] = []
   const add = (key: string, amount: bigint, label: string) => lines.push({ key, amount: formatAmount(amount, decimals), raw: amount.toString(), label })
-  add('accumulation', BigInt(raw.buys), `for supply accumulation${/graduated|PancakeSwap/i.test(row.phase || '') ? ' (curve + migrated pool)' : ''}`)
+  add('accumulation', BigInt(raw.funding) - BigInt(raw.initialLiquidity), 'for supply accumulation')
   if (BigInt(raw.initialLiquidity)) add('lp', BigInt(raw.initialLiquidity), 'for initial LP')
-  add('operations', BigInt(raw.funding) - BigInt(raw.buys) - BigInt(raw.initialLiquidity), 'for launch fees, operations and funding buffers')
   add('aged', BigInt(raw.agedWallets), `for ${request.operations.agedWalletCount} aged wallets × ${wallet.agedWalletUnitAmount} ${wallet.currencySymbol}${request.fundingConversion ? ` (converted to ${request.quote.symbol})` : ''}`)
   const mm = input.mmLiquidity == null ? BigInt(raw.injectionLiquidity!) : parseAmount(plainAmount(input.mmLiquidity), decimals, 'MM liquidity')
   add('mm', mm, `designated for initial MM trading liquidity${input.mmLiquidity == null ? '' : ' (custom)'}`)
