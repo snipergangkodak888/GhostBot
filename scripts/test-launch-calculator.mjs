@@ -28,7 +28,7 @@ for (const model of getModelCatalog()) {
   assert.equal(supply.lines.find(line => line.key === 'accumulation').label, 'for supply accumulation')
   assert.equal(supply.lines.some(line => line.key === 'operations'), false, 'Operating allowances belong in the combined supply accumulation line')
   assert.match(formatLaunchQuote(supply), /Capital requirement:.*supply control.*launch MC/s)
-  assert.doesNotMatch(formatLaunchQuote(supply), /FDV/)
+  assert.doesNotMatch(formatLaunchQuote(supply), /FDV|MM is held separately|aged wallets ×/)
   assert.equal(supply.lines.find(x => x.key === 'aged').amount, model.id === 'pumpfun-custom' ? '1250' : prepared.quote.symbol === 'SOL' ? '12.5' : prepared.quote.symbol === 'BNB' ? '2.5' : '1.25')
   for (const target of [67.37, ...prepared.targetsPct]) {
     const direct = calculateLaunchQuote({ ...input, target }, prepared)

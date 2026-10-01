@@ -158,12 +158,11 @@ export function calculateLaunchQuote(input: LaunchQuoteInput, prepared: LaunchRe
     ? requireQuote(boundedReport({ ...request, targetsPct: [input.target] }))
     : solveMarketCap(request, input.target)
   const row = report.rows[0], raw = row.raw!, decimals = request.quote.decimals
-  const wallet = request.fundingConversion?.nativeOperations || request.operations
   const lines: LaunchQuoteLine[] = []
   const add = (key: string, amount: bigint, label: string) => lines.push({ key, amount: formatAmount(amount, decimals), raw: amount.toString(), label })
   add('accumulation', BigInt(raw.funding) - BigInt(raw.initialLiquidity), 'for supply accumulation')
   if (BigInt(raw.initialLiquidity)) add('lp', BigInt(raw.initialLiquidity), 'for initial LP')
-  add('aged', BigInt(raw.agedWallets), `for ${request.operations.agedWalletCount} aged wallets × ${wallet.agedWalletUnitAmount} ${wallet.currencySymbol}${request.fundingConversion ? ` (converted to ${request.quote.symbol})` : ''}`)
+  add('aged', BigInt(raw.agedWallets), 'for aged wallets + Husher funding')
   const mm = input.mmLiquidity == null ? BigInt(raw.injectionLiquidity!) : parseAmount(plainAmount(input.mmLiquidity), decimals, 'MM liquidity')
   add('mm', mm, `designated for initial MM trading liquidity${input.mmLiquidity == null ? '' : ' (custom)'}`)
   const capitalTotalRaw = BigInt(raw.funding) + BigInt(raw.agedWallets) + mm
@@ -188,6 +187,10 @@ function display(value: number | string, digits = 4) {
 }
 export function formatLaunchQuote(quote: LaunchQuote) {
   const symbol = quote.venue.symbol, request = quote.report.request
+  const notes = [
+    ...(request.operations.retainedPct ? [`Control includes ${request.operations.retainedPct}% team allocation.`] : []),
+    ...launchReportCautions(quote.report),
+  ]
   return [
     `<b>${quote.venue.name}</b>`,
     ...(launchTaxLabel(request) ? [launchTaxLabel(request)!] : []),
@@ -195,8 +198,6 @@ export function formatLaunchQuote(quote: LaunchQuote) {
     `Capital requirement: <b>${display(quote.capitalTotal)} ${symbol} total</b> — targeting <b>${display(quote.supplyControlPct, 2)}% supply control</b> with an estimated <b>~${compactUsd(quote.launchMarketCapUsd)} launch MC</b>.`,
     '', 'Breakdown:',
     ...quote.lines.map(line => `• ~${display(line.amount)} ${symbol} ${line.label}`),
-    '',
-    request.operations.retainedPct ? `Control includes ${request.operations.retainedPct}% team allocation. MM is held separately.` : 'MM is held separately from launch purchases.',
-    ...launchReportCautions(quote.report),
+    ...(notes.length ? ['', ...notes] : []),
   ].join('\n')
 }

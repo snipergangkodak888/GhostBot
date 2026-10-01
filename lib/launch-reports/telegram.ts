@@ -134,8 +134,8 @@ export function launchMathReviewView(selection: LaunchMathSelection): LaunchMath
   const keyboard: LaunchMathButton[][] = [[{ text: '📊 Generate image', callback_data: selectionData('generate', checked) }]]
   const tax = launchTaxConfig(checked.modelId)
   if (tax) {
-    keyboard.push(tax.options.map(percent => ({ text: `${launchTaxPercent(request) === percent ? '✓ ' : ''}${percent}%${percent === 0 ? ' default' : ''}`, callback_data: selectionData('review', { ...checked, taxPercent: percent }) })))
-    if (tax.custom) keyboard.push([{ text: 'Custom creator tax', callback_data: selectionData('tax', checked) }])
+    if (tax.custom) keyboard.push([{ text: 'Change creator tax', callback_data: selectionData('tax', checked) }])
+    else keyboard.push(tax.options.map(percent => ({ text: `${launchTaxPercent(request) === percent ? '✓ ' : ''}${percent}%${percent === 0 ? ' default' : ''}`, callback_data: selectionData('review', { ...checked, taxPercent: percent }) })))
   }
   const amounts = createDefaultRequest(checked.modelId).liquidityAmounts
   if (amounts?.length) {

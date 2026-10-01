@@ -834,6 +834,8 @@ function estDateKey() {
   return `${value("year")}-${value("month")}-${value("day")}`
 }
 
+const ponsCreatorTaxPrompt = "Reply with the Pons creator tax (0–10%)."
+
 function launchTargetPrompt(metric: LaunchTargetMetric, venueName: string) {
   return metric === "supply"
     ? `🎯 Enter the desired total supply control for ${venueName}.\n\nExample: 67.37%\n\nSend /cancel to stop.`
@@ -2278,7 +2280,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
       return sendTelegramMessage(token, chatId, view.text, { replyMarkup: view.replyMarkup })
     }
     if (choice.action === "group") return show(launchMathGroupView(choice.group))
-    if (choice.action === "tax") return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessage?.photo || callbackMessage?.document ? null : callbackMessageId, state: { action: "launch_math_tax", launchMathSelection: choice.selection }, text: "Enter the Pons creator tax from 0% to 10%, such as 2.5%. Default: 0%." })
+    if (choice.action === "tax") return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessage?.photo || callbackMessage?.document ? null : callbackMessageId, state: { action: "launch_math_tax", launchMathSelection: choice.selection }, text: ponsCreatorTaxPrompt })
     if (choice.action === "review" || callbackMessage?.document || callbackMessage?.photo) return show(launchMathReviewView(choice.selection))
     if (!callbackMessageId) return show(launchMathReviewView(choice.selection))
     try {
@@ -2927,7 +2929,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     if (id === "tax") {
       const tax = launchTaxConfig(pad.id)
       if (!tax) return workflowReply("This venue does not offer a configurable launch tax.")
-      return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId, state: { ...state, action: "launch_calc_tax" }, text: `${tax.label}: ${state.launchTaxPercent ?? 0}%\n\n${tax.custom ? "Choose a tax or type any rate from 0% to 10%." : "Choose standard 0% or a supported Stonkfun holder tax."} Default: 0%.`, buttons: [tax.options.map(percent => ({ text: `${percent}%${percent === 0 ? " default" : ""}`, callback_data: `launch:tax:${percent}` }))] })
+      return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId, state: { ...state, action: "launch_calc_tax" }, text: tax.custom ? ponsCreatorTaxPrompt : `${tax.label}: ${state.launchTaxPercent ?? 0}%\n\nChoose standard 0% or a supported Stonkfun holder tax. Default: 0%.`, ...(tax.custom ? {} : { buttons: [tax.options.map(percent => ({ text: `${percent}%${percent === 0 ? " default" : ""}`, callback_data: `launch:tax:${percent}` }))] }) })
     }
     if (id === "target") {
       return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId, state: { ...state, action: "launch_calc_value" }, text: launchTargetPrompt(state.launchMetric as LaunchTargetMetric, pad.name) })
