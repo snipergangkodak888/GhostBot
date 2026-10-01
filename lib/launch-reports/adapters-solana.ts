@@ -1,3 +1,4 @@
+import { grossForNetTransfer, parseToken2022TransferFee, type Token2022TransferFeeTerms } from './amm-math/token-2022-transfer-fee'
 import { applyLaunchLabBuy, createLaunchLabCurve, sizeLaunchLabBuy, type LaunchLabCurveTerms } from './amm-math/launchlab-quote-math'
 import { buyPumpQuoteExactOut, buyPumpQuoteAmmExactIn, createPumpQuoteCurve, migratePumpQuoteCurve, pumpQuoteGross, sizePumpQuoteBuy, type PumpfunCustomQuoteTerms, type PumpQuoteAmm, type PumpQuoteCurve } from './amm-math/pumpfun-quote-math'
 import { uniswapV2GetAmountOut } from './amm-math/uniswap-v2'
@@ -70,7 +71,7 @@ function calculatePump(context: AdapterContext): AdapterResult {
   const { request, targetRaw, supplyRaw } = context
   if (request.base.decimals !== 6 || supplyRaw !== 1_000_000_000_000_000n) throw new Error('The supplied Pump model requires 1 billion tokens with 6 decimals')
   const terms = request.terms
-  const native = request.modelId === 'pumpfun'
+  const native = request.modelId === 'pumpfun' && !request.stockQuoteId
   const stable = !native && terms.quoteSchedule === 'stable'
   if (stable && (request.quote.symbol !== 'USDC' || request.quote.decimals !== 6)) throw new Error('Pump stable fee schedules require mainnet USDC with 6 decimals')
   if (native && (request.quote.symbol !== 'SOL' || request.quote.decimals !== 9)) throw new Error('Native Pump requires SOL with 9 decimals; use Pump custom quote for other currencies')
@@ -105,7 +106,9 @@ function calculatePump(context: AdapterContext): AdapterResult {
     finalAmm = migratePumpQuoteCurve({ ...curve, realQuoteReserves: curve.realQuoteReserves - migrationFeeRaw })
     if (stable && termBigInt(terms, 'nativeMigrationCostLamports', 0n) > 0n) nativeMigrationFundingRaw = termBigInt(terms, 'nativeMigrationFundingQuoteRaw')
     const tiers = (native || stable) && usesPool ? pumpFeeTiers(terms) : []
-    const quote = native || stable ? (state: PumpQuoteAmm, input: bigint) => nativeAmmBuy(state, input, tiers, supplyRaw) : buyPumpQuoteAmmExactIn
+    const customFees = terms.stockPoolFees as { lp: number; protocol: number; creator: number } | undefined
+    if (customFees) finalAmm.creatorFeeBps = quoteTerms.creatorFeeOverrideBps || customFees.creator
+    const quote = native || stable ? (state: PumpQuoteAmm, input: bigint) => nativeAmmBuy(state, input, tiers, supplyRaw) : customFees ? (state: PumpQuoteAmm, input: bigint) => nativeAmmBuy(state, input, [{ thresholdRaw: 0n, lpFeeBps: customFees.lp, protocolFeeBps: customFees.protocol, creatorFeeBps: state.creatorFeeBps }], supplyRaw) : buyPumpQuoteAmmExactIn
     for (const nominal of usesPool ? splitRaw(targetRaw - curveSupply, counts.pool) : []) {
       const before = { ...finalAmm }
       const sized = sizePumpQuoteBuy(finalAmm, nominal, quote)
@@ -135,7 +138,8 @@ function calculateLaunchLab(context: AdapterContext): AdapterResult {
     const buy = sizeLaunchLabBuy(curve, target)
     if (buy.tokenOutRaw < target) throw new Error('The curve cannot deliver this wallet target after token transfer fees')
     applyLaunchLabBuy(curve, buy)
-    buyRaw += buy.quoteAtomic; actualBaseRaw += buy.tokenOutRaw; buys.push(buy)
+    const grossQuote = grossForNetTransfer(buy.quoteAtomic, parseToken2022TransferFee(request.terms.quoteTransferFee as Token2022TransferFeeTerms | undefined))
+    buyRaw += grossQuote; actualBaseRaw += buy.tokenOutRaw; buys.push({ ...buy, grossQuoteAtomic: grossQuote, quoteTransferFeeRaw: grossQuote - buy.quoteAtomic })
   }
   return { buyRaw, actualBaseRaw, fdvQuote: Number(curve.virtualQuote + curve.realQuote) / 10 ** request.quote.decimals / Number(curve.virtualBase - curve.realBase) * Number(supplyRaw), phase: 'LaunchLab curve', details: { buys, finalCurve: curve }, warnings: terms.transferFee ? ['Control is tokens retained after transfer fees; transfer-fee withholding consumes curve inventory.'] : [] }
 }

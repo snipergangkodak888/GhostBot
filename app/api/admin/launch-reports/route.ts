@@ -1,3 +1,5 @@
+import { listStockPairs } from '@/lib/launch-reports/stock-pairs'
+import { fundStockReport } from '@/lib/launch-reports/stock-funding'
 import { NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { verifyAdminToken } from '@/lib/auth'
@@ -18,8 +20,13 @@ async function authorized() {
 }
 const headers = { 'Cache-Control': 'no-store' }
 
-export async function GET() {
+export async function GET(req: Request) {
   if (!(await authorized())) return NextResponse.json({ error: 'Admin sign-in required.' }, { status: 401, headers })
+  const params = req ? new URL(req.url).searchParams : null
+  if (params?.has('stockModel')) {
+    try { return NextResponse.json({ pairs: await listStockPairs(params.get('stockModel')!, (params.get('q') || '').slice(0, 100)) }, { headers }) }
+    catch (e) { return NextResponse.json({ error: e instanceof Error ? e.message : 'Stock catalogue unavailable.' }, { status: 400, headers }) }
+  }
   const models = getModelCatalog()
   return NextResponse.json({ models, presets: Object.fromEntries(models.map(m => [m.id, createDefaultRequest(m.id)])), pricing: GHOST_WALLET_PRICING, pricingVersion: GHOST_PRICING_VERSION, source: manifest }, { headers })
 }
@@ -41,7 +48,9 @@ export async function POST(req: Request) {
     const format = body.format || 'json'
     if (!['json', 'csv', 'svg', 'png'].includes(format)) throw new Error('Choose JSON, CSV, SVG or PNG.')
     const request = body.refresh === true ? await prepareLaunchReport(body.request) : body.request
-    const report = calculateLaunchReport(request)
+    const calculated = calculateLaunchReport(request)
+    const report = body.refresh === true ? await fundStockReport(calculated) : calculated
+    if (request.stockQuoteId && !report.fundingCurrency) throw new Error('Generate with live settings to price this stock pair before using a saved report.')
     const filename = `ghost-${report.modelId}-launch-report`
     if (format === 'json') return NextResponse.json({ report, source: manifest, pricingVersion: GHOST_PRICING_VERSION }, { headers })
     const content = format === 'png' ? new Uint8Array(renderLaunchReportPng(report)) : format === 'svg' ? renderLaunchReportSvg(report) : launchReportCsv(report)

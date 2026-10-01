@@ -108,10 +108,19 @@ function load(file, extra = '') {
   loaded._compile(code, absolute)
   return loaded.exports
 }
+const stockPairFixtures = [{ id:'9a25b687886d', symbol:'NVDAX', name:'NVIDIA', address:'Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh', decimals:8 }]
+overrides['@/lib/launch-reports/stock-pairs'] = {
+  ...load('lib/launch-reports/stock-pairs.ts'),
+  listStockPairs: async (model, query = '') => stockPairFixtures.filter(p => `${p.symbol} ${p.name} ${p.address}`.toLowerCase().includes(query.toLowerCase())),
+  resolveStockPair: async (model, id) => { const p = stockPairFixtures.find(p => p.id === id); if (!p) throw new Error('Unknown fixture stock'); return p },
+}
+// The flow tests isolate pair lookup; live math is exercised by the stock suite.
+overrides['./stock-pairs'] = overrides['@/lib/launch-reports/stock-pairs']
 overrides['@/lib/launch-calculator'] = {
   ...load('lib/launch-calculator.ts'),
   prepareLaunchQuote: async input => {
     const base = load('lib/launch-reports/catalog.ts').createDefaultRequest(input.venueId)
+    if (input.stockQuoteId) base.stockQuoteId = input.stockQuoteId
     const draft = input.taxPercent == null ? base : load('lib/launch-reports/tax.ts').applyLaunchTax(base, input.taxPercent)
     return load('lib/launch-calculator.ts').calculateLaunchQuote(input, await prepareCalculatorFixture(draft))
   },
@@ -142,9 +151,13 @@ const payload = {
 async function draft(id, changes = {}) {
   await db.collection('opsAiActions').insertOne({ _id: id, actionType: 'create_project', telegramId: 1, chatId: String(chatId), permissionScope: 'launch', allowedActionTypes: ['create_project'], status: 'pending', payload: clone(payload), ...changes })
 }
-async function callback(user, data, sourceChat = chatId) {
+async function callback(user, data, sourceChat = chatId, useNative = true) {
   messages.length = 0
   await webhook.handleCallback('test', sourceChat, user, data, req, { message_id: 100, chat: { id: sourceChat } })
+  if (useNative && (/^launch:venue:/.test(data) || /^lm:review:/.test(data))) {
+    const native = lastButtons().find(b => /^ls:choose:.*:native$/.test(b.callback_data))
+    if (native) { messages.length = 0; await webhook.handleCallback('test', sourceChat, user, native.callback_data, req, {message_id:100, chat:{id:sourceChat}}) }
+  }
   return messages.map(message => message.text).join('\n')
 }
 
@@ -220,6 +233,39 @@ for (const group of ['solana', 'bnb', 'robinhood', 'dex']) {
   await callback(memberId, `launch:chain:${group}`)
   assert.deepEqual(lastButtons().filter(button => button.callback_data.startsWith('launch:venue:')).map(button => button.callback_data.slice('launch:venue:'.length)), catalogue.filter(venue => venue.chainId === group).map(venue => venue.id))
 }
+for (const venueId of ['pumpfun', 'stonkfun', 'pons']) {
+  assert.match(await callback(memberId, `launch:venue:${venueId}`, chatId, false), /Choose a pair/)
+  const stockButton = lastButtons().find(b => b.callback_data.endsWith(':9a25b687886d'))
+  assert(stockButton)
+  assert.match(await callback(adminId, stockButton.callback_data), /expired/, 'Another teammate cannot use this pending pair selection')
+  assert.match(await callback(memberId, stockButton.callback_data, -200), /expired/, 'A stock choice stays in its originating chat')
+  assert.match(await callback(memberId, stockButton.callback_data), /creator fee|creator tax|holder tax/i)
+  await callback(memberId, `launch:initialtax:0:${venueId}`)
+  const target = lastButtons().find(b => b.callback_data.startsWith('launch:metric:supply:'))
+  assert(target.callback_data.endsWith(':9a25b687886d'))
+  await callback(memberId, target.callback_data)
+  const state = await db.collection('opsBotStates').findOne({telegramId:memberId})
+  assert.equal(state.launchStockQuoteId, '9a25b687886d')
+  await timingReply('/cancel')
+}
+await callback(memberId, 'launch:venue:pumpfun', chatId, false)
+assert.match(await timingReply('NVDA'), /NVDAX|Choose a pair/)
+const staleStockButton = lastButtons().find(b => b.callback_data.endsWith(':9a25b687886d'))
+await timingReply('/cancel')
+assert.match(await callback(memberId, staleStockButton.callback_data), /expired/)
+assert.match(await callback(memberId, 'lm:review:pons:compare', chatId, false), /Choose a pair/)
+await callback(memberId, lastButtons().find(b => b.callback_data.endsWith(':9a25b687886d')).callback_data)
+assert(messages.at(-1).text.includes('NVDAX'))
+await callback(memberId, lastButtons().find(b => b.callback_data.startsWith('lm:wallets:')).callback_data)
+await timingReply('50')
+const stockGenerate = lastButtons().find(b => b.callback_data.startsWith('lm:generate:'))
+assert(stockGenerate.callback_data.endsWith(':9a25b687886d'))
+await callback(memberId, stockGenerate.callback_data)
+assert.equal(reportJobs.at(-1).selection.stockQuoteId,'9a25b687886d')
+assert.equal(reportJobs.at(-1).selection.agedWalletCount,50)
+assert.equal(reportWorkerRuns, 1, 'Stock image generation starts the durable worker')
+reportJobs.length = 0
+reportWorkerRuns = 0
 assert.match(await callback(memberId, 'launch:venue:pumpfun'), /solve for/)
 assert.match(await callback(memberId, 'launch:metric:supply:pumpfun'), /desired total supply control/)
 assert.match(await timingReply('70%'), /Capital requirement:.*70% supply control/s)

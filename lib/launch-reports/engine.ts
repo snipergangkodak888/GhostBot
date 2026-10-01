@@ -1,3 +1,4 @@
+import { applyStockFunding } from './stock-funding-math'
 import { calculateSolana, graduationCounts } from './adapters-solana'
 import { calculateEvm } from './adapters-evm'
 import { buildPonsV2InitialCurveState, planPonsV2GraduationBundle, planPonsV2LaunchBuys } from './amm-math/pons-v2-curve'
@@ -26,6 +27,7 @@ function validDate(value: unknown, label: string) {
 }
 
 export function validateRequest(request: LaunchReportRequest): void {
+  if (request?.stockQuoteId && (!/^[a-f0-9]{12}$/.test(request.stockQuoteId) || !['pumpfun', 'pumpfun-custom', 'stonkfun', 'launchlab', 'pons'].includes(request.modelId))) throw new Error('Choose a supported stock pair.')
   if (!request || request.schemaVersion !== 1) throw new Error('A version 1 launch report request is required')
   if (typeof request.title !== 'string' || !request.title.trim() || request.title.length > 160) throw new Error('Report title is required and must be at most 160 characters')
   if (request.client !== undefined && (typeof request.client !== 'string' || request.client.length > 160)) throw new Error('Client label must be at most 160 characters')
@@ -61,7 +63,7 @@ export function validateRequest(request: LaunchReportRequest): void {
   if (request.termsSource?.asOf !== undefined) validDate(request.termsSource.asOf, 'Terms snapshot timestamp')
   if (request.fundingConversion) {
     const conversion = request.fundingConversion, native = conversion.nativeOperations
-    if (!['USDC', 'USDT'].includes(request.quote.symbol)) throw new Error('Funding conversion requires a supported stablecoin quote.')
+    if (!request.stockQuoteId && !['USDC', 'USDT'].includes(request.quote.symbol)) throw new Error('Funding conversion requires a supported stablecoin quote.')
     validDate(conversion.asOf, 'Native funding exchange-rate timestamp')
     if (typeof conversion.source !== 'string' || !conversion.source.trim() || conversion.source.length > 1000) throw new Error('Funding conversion requires a price source.')
     if (conversion.quoteUsdPrice !== request.quote.usdPrice) throw new Error('Funding conversion does not match the report USD price. Generate again.')
@@ -74,7 +76,7 @@ export function validateRequest(request: LaunchReportRequest): void {
 
 function ponsAdapter(context: AdapterContext): AdapterResult {
   const { request, supplyRaw, targetRaw } = context
-  if (request.base.decimals !== 18 || request.quote.decimals !== 18) throw new Error('Pons V2 uses 18-decimal token and quote amounts')
+  if (request.base.decimals !== 18 || (!request.stockQuoteId && request.quote.decimals !== 18)) throw new Error('Pons V2 uses 18-decimal token and quote amounts')
   if (context.retainedRaw !== 0n || context.liquidityRaw !== 0n) throw new Error('Pons derives its initial curve and pool inventory; use zero retained supply and no initial-liquidity sweep')
   const t = request.terms
   const phantomQuoteWei = termBigInt(t, 'phantomQuoteWei')
@@ -84,18 +86,24 @@ function ponsAdapter(context: AdapterContext): AdapterResult {
     const curveBuyers = request.operations.curveBuyerCount ?? context.buyerCount
     if (curveBuyers > 32) throw new Error('Pons allows at most 32 curve wallets')
     const plan = planPonsV2LaunchBuys({ initialState, allocations: splitRaw(targetRaw, curveBuyers).filter(x => x > 0n).map((tokensOutWei, i) => ({ walletId: `curve-${i + 1}`, tokensOutWei })), slippageBps: 0 })
-    return { buyRaw: plan.totalGrossInputWei, fundedBuyerCount: curveBuyers, actualBaseRaw: plan.totalTokensOutWei, fdvQuote: Number(plan.finalState.quoteReserveWei) / 1e18 / Number(plan.finalState.tokenReserveWei) * Number(supplyRaw), phase: 'Curve', details: { plan, count: { curve: curveBuyers, pool: 0 } } }
+    return { buyRaw: plan.totalGrossInputWei, fundedBuyerCount: curveBuyers, actualBaseRaw: plan.totalTokensOutWei, fdvQuote: Number(plan.finalState.quoteReserveWei) / 10 ** request.quote.decimals / Number(plan.finalState.tokenReserveWei) * Number(supplyRaw), phase: 'Curve', details: { plan, count: { curve: curveBuyers, pool: 0 } } }
   }
   const counts = graduationCounts(context)
   if (counts.curve > 32 || counts.pool > 32) throw new Error('Pons supports at most 32 curve wallets and 32 pool wallets')
   const plan = planPonsV2GraduationBundle({
     initialState, allocations: splitRaw(initialState.sellableTokensWei, counts.curve).map((tokensOutWei, i) => ({ walletId: `curve-${i + 1}`, tokensOutWei })),
     poolAllocations: splitRaw(targetRaw - initialState.sellableTokensWei, counts.pool).map((tokensOutWei, i) => ({ walletId: `pool-${i + 1}`, tokensOutWei })),
-    slippageBps: 0, phantomQuoteWei, tokenIsCurrency0: t.tokenIsCurrency0 === true,
+    slippageBps: 0, phantomQuoteWei, tokenIsCurrency0: request.stockQuoteId ? undefined : t.tokenIsCurrency0 === true,
     poolTerms: { hookFeeBps: integerTerm(t, 'hookFeeBps', undefined, 9999), creatorTaxBps, poolFeePips: integerTerm(t, 'poolFeePips', undefined, 999999), tickSpacing: integerTerm(t, 'tickSpacing', undefined, 32767) },
   })
-  const final = plan.finalPoolStates[0]
-  return { buyRaw: plan.totalCurveInputWei + plan.totalPoolInputWei, actualBaseRaw: plan.curve.totalTokensOutWei + sumRaw(plan.poolBuys.map(row => row.expectedTokensOutWei)), fdvQuote: Number(calculatePonsV2PoolSpotPriceWad(final)) / 1e18 * (Number(supplyRaw) / 1e18), phase: 'Curve + graduated pool', details: { plan, count: counts } }
+  const poolMc = (state: typeof plan.finalPoolStates[number]) => {
+    if (!request.stockQuoteId) return Number(calculatePonsV2PoolSpotPriceWad(state)) / 1e18 * (Number(supplyRaw) / 10 ** request.quote.decimals)
+    // Multiply by supply before dividing; a raw WAD spot price loses precision
+    // when a stock's decimals are lower than the launch token's 18 decimals.
+    const squared = state.range.sqrtPriceX96 ** 2n, q192 = 1n << 192n
+    return Number(state.tokenIsCurrency0 ? squared * supplyRaw / q192 : q192 * supplyRaw / squared) / 10 ** request.quote.decimals
+  }
+  return { buyRaw: plan.totalCurveInputWei + plan.totalPoolInputWei, actualBaseRaw: plan.curve.totalTokensOutWei + sumRaw(plan.poolBuys.map(row => row.expectedTokensOutWei)), fdvQuote: Math.min(...plan.finalPoolStates.map(poolMc)), phase: 'Curve + graduated pool', details: { plan, count: counts }, ...(request.stockQuoteId ? { warnings: ['Funding covers both token orderings; MC shows the lower modeled outcome.'] } : {}) }
 }
 
 function v2Adapter(context: AdapterContext): AdapterResult {
@@ -190,7 +198,7 @@ export function calculateLaunchReport(request: LaunchReportRequest): LaunchRepor
     } catch (error) { row.error = error instanceof Error ? error.message : 'Unable to calculate this scenario' }
     rows.push(row)
   }
-  return {
+  const report: LaunchReport = {
     schemaVersion: 1, modelVersion: MODEL_VERSION, sourceVersion: `${sourceManifest.package}@${sourceManifest.version}`, sourceHashes: sourceManifest.files, pricingVersion: GHOST_PRICING_VERSION,
     generatedAt: new Date().toISOString(), title: request.title, ...(request.client ? { client: request.client } : {}), modelId: request.modelId, request: structuredClone(request), rows, warnings,
     assumptions: [
@@ -207,4 +215,5 @@ export function calculateLaunchReport(request: LaunchReportRequest): LaunchRepor
       'MC (market cap) = spot price after the modeled buys × total token supply.',
     ],
   }
+  return request.stockQuoteId && request.stockFundingQuotes ? applyStockFunding(report) : report
 }

@@ -4,11 +4,14 @@ export interface LaunchReportRequest {
   title: string
   client?: string
   modelId: string
+  /** Opaque ID from the server's verified stock-pair catalogue. */
+  stockQuoteId?: string
   chain?: string
   targetsPct: number[]
   liquidityAmounts?: string[]
   base: { symbol: string; decimals: number; supply: string }
-  quote: { symbol: string; decimals: number; usdPrice?: string; priceAsOf?: string; priceSource?: string }
+  quote: { symbol: string; decimals: number; address?: string; usdPrice?: string; priceAsOf?: string; priceSource?: string }
+  stockFundingQuotes?: StockFundingQuote[]
   /** Adapter-specific configuration. Raw integer fields are explicitly named *Raw / *Wei. */
   terms: Record<string, unknown>
   operations: LaunchOperations
@@ -17,6 +20,18 @@ export interface LaunchReportRequest {
   /** Ghost MM reserve policy and frozen reference FX; absent on legacy snapshots. */
   injectionLiquidity?: { policyVersion: 'ghost-injection-v1'; referenceSymbol: 'SOL' | 'ETH'; referenceUsdPrice: string; quoteUsdPrice: string; asOf: string; source: string }
   termsSource?: { label: string; url?: string; asOf?: string; kind: 'snapshot' | 'user' | 'code-default' }
+}
+
+export interface StockFundingQuote {
+  quoteId: string
+  quoteRaw: string
+  nativeRaw: string
+  minimumOutputRaw: string
+  provider: string
+  asOf: string
+  slippageBps: number
+  treasuryFeeBps: number
+  gasRaw: string
 }
 
 export interface LaunchOperations {
@@ -126,6 +141,8 @@ export interface LaunchReport {
   client?: string
   modelId: string
   request: LaunchReportRequest
+  /** Stock-pair capital rows are funded in the native currency, not stock units. */
+  fundingCurrency?: { symbol: string; decimals: number }
   rows: LaunchReportRow[]
   warnings: string[]
   assumptions: string[]

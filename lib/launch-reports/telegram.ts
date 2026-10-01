@@ -1,3 +1,5 @@
+import { supportsStockPairs, validateStockId, resolveStockPair } from './stock-pairs'
+import { fundStockReport } from './stock-funding'
 import { createDefaultRequest, getModelCatalog } from './catalog'
 import { renderLaunchReportPng } from './render'
 import { injectionReference } from './injection'
@@ -7,7 +9,7 @@ import { formatAmount, parseAmount } from './utils'
 import { applyAgedWalletCount, validateAgedWalletCount } from './pricing'
 import type { LaunchReport, LaunchReportRequest } from './types'
 
-export interface LaunchMathSelection { modelId: string; liquidity?: string; taxPercent?: number; agedWalletCount?: number }
+export interface LaunchMathSelection { modelId: string; stockQuoteId?: string; liquidity?: string; taxPercent?: number; agedWalletCount?: number }
 export interface LaunchMathButton { text: string; callback_data: string }
 export interface LaunchMathView {
   text: string
@@ -18,26 +20,27 @@ import { launchVenueGroups as groups, groupFor, venueName, type LaunchVenueGroup
 export type LaunchMathAction =
   | { action: 'home' }
   | { action: 'group'; group: LaunchMathGroup }
-  | { action: 'review' | 'generate' | 'tax' | 'wallets'; selection: LaunchMathSelection }
+  | { action: 'review' | 'generate' | 'tax' | 'wallets' | 'pair'; selection: LaunchMathSelection }
 
 function checkedSelection(selection: LaunchMathSelection): LaunchMathSelection & { liquidity: string } {
   if (!selection || typeof selection.modelId !== 'string' || !getModelCatalog().some(model => model.id === selection.modelId)) {
     throw new Error('Choose a venue from the Launch Math menu.')
   }
+  if (selection.stockQuoteId) { validateStockId(selection.stockQuoteId); if (!supportsStockPairs(selection.modelId)) throw new Error('Unsupported stock venue.') }
   const liquidity = selection.liquidity ?? 'compare'
   const preset = createDefaultRequest(selection.modelId)
   if (liquidity !== 'compare' && !preset.liquidityAmounts?.includes(liquidity)) {
     throw new Error('Choose an initial liquidity amount from the Launch Math menu.')
   }
-  if (selection.taxPercent != null) validateLaunchTax(selection.modelId, selection.taxPercent)
+  if (selection.taxPercent != null) validateLaunchTax(selection.modelId, selection.taxPercent, selection.stockQuoteId)
   if (selection.agedWalletCount != null) validateAgedWalletCount(selection.agedWalletCount)
-  return { modelId: selection.modelId, liquidity, ...(selection.taxPercent == null ? {} : { taxPercent: selection.taxPercent }), ...(selection.agedWalletCount == null ? {} : { agedWalletCount: selection.agedWalletCount }) }
+  return { modelId: selection.modelId, liquidity, ...(selection.stockQuoteId ? { stockQuoteId: selection.stockQuoteId } : {}), ...(selection.taxPercent == null ? {} : { taxPercent: selection.taxPercent }), ...(selection.agedWalletCount == null ? {} : { agedWalletCount: selection.agedWalletCount }) }
 }
 
-function selectionData(action: 'review' | 'generate' | 'tax' | 'wallets', selection: LaunchMathSelection) {
+function selectionData(action: 'review' | 'generate' | 'tax' | 'wallets' | 'pair', selection: LaunchMathSelection) {
   const checked = checkedSelection(selection)
-  const tax = checked.taxPercent == null && checked.agedWalletCount == null ? '' : `:${checked.taxPercent ?? ''}`
-  return `lm:${action}:${checked.modelId}:${checked.liquidity}${tax}${checked.agedWalletCount == null ? '' : `:${checked.agedWalletCount}`}`
+  const tax = checked.taxPercent == null && checked.agedWalletCount == null && !checked.stockQuoteId ? '' : `:${checked.taxPercent ?? ''}`
+  return `lm:${action}:${checked.modelId}:${checked.liquidity}${tax}${checked.agedWalletCount == null && !checked.stockQuoteId ? '' : `:${checked.agedWalletCount ?? ''}`}${checked.stockQuoteId ? `:${checked.stockQuoteId}` : ''}`
 }
 
 /** Stateless, bounded callbacks carry preset choices only, never editable protocol inputs. */
@@ -48,13 +51,14 @@ export function parseLaunchMathCallback(data: unknown): LaunchMathAction | null 
   if (parts.length === 3 && parts[0] === 'lm' && parts[1] === 'group' && Object.hasOwn(groups, parts[2])) {
     return { action: 'group', group: parts[2] as LaunchMathGroup }
   }
-  if (![4, 5, 6].includes(parts.length) || parts[0] !== 'lm' || !['review', 'generate', 'tax', 'wallets'].includes(parts[1])) return null
+  if (![4, 5, 6, 7].includes(parts.length) || parts[0] !== 'lm' || !['review', 'generate', 'tax', 'wallets', 'pair'].includes(parts[1])) return null
   try {
-    if (parts.length >= 5 && !(parts.length === 6 && parts[4] === '') && !/^\d+(?:\.\d{1,2})?$/.test(parts[4])) return null
-    if (parts.length === 6 && !/^\d+$/.test(parts[5])) return null
-    const selection = checkedSelection({ modelId: parts[2], liquidity: parts[3], ...(parts.length >= 5 && parts[4] !== '' ? { taxPercent: Number(parts[4]) } : {}), ...(parts.length === 6 ? { agedWalletCount: Number(parts[5]) } : {}) })
-    if (parts[1] === 'tax' && !launchTaxConfig(selection.modelId)?.custom) return null
-    return { action: parts[1] as 'review' | 'generate' | 'tax' | 'wallets', selection }
+    if (parts.length >= 5 && !(parts.length >= 6 && parts[4] === '') && !/^\d+(?:\.\d{1,2})?$/.test(parts[4])) return null
+    if (parts.length >= 6 && !(parts.length === 7 && parts[5] === '') && !/^\d+$/.test(parts[5])) return null
+    const selection = checkedSelection({ modelId: parts[2], liquidity: parts[3], ...(parts.length >= 5 && parts[4] !== '' ? { taxPercent: Number(parts[4]) } : {}), ...(parts.length >= 6 && parts[5] !== '' ? { agedWalletCount: Number(parts[5]) } : {}), ...(parts.length === 7 ? { stockQuoteId: parts[6] } : {}) })
+    if (parts[1] === 'pair' && !supportsStockPairs(selection.modelId)) return null
+    if (parts[1] === 'tax' && !launchTaxConfig(selection.modelId, selection.stockQuoteId)?.custom) return null
+    return { action: parts[1] as 'review' | 'generate' | 'tax' | 'wallets' | 'pair', selection }
   } catch { return null }
 }
 
@@ -86,6 +90,7 @@ export function launchMathGroupView(group: LaunchMathGroup): LaunchMathView {
 export function createTelegramLaunchRequest(selection: LaunchMathSelection): LaunchReportRequest {
   const checked = checkedSelection(selection)
   const base = createDefaultRequest(checked.modelId)
+  if (checked.stockQuoteId) base.stockQuoteId = checked.stockQuoteId
   let request = checked.taxPercent == null ? base : applyLaunchTax(base, checked.taxPercent)
   if (checked.agedWalletCount != null) request = applyAgedWalletCount(request, checked.agedWalletCount)
   request.targetsPct = launchTaxTargets(request)
@@ -121,7 +126,7 @@ export function launchMathReviewView(selection: LaunchMathSelection): LaunchMath
     `Compare token ownership: ${request.targetsPct.map(target => `${target}%`).join(', ')}.`,
     `Every total includes ${walletLine(request)}.`,
   ]
-  if (request.quote.symbol !== request.operations.currencySymbol) lines.push(`Native operating and wallet costs convert into ${request.quote.symbol} automatically.`)
+  if (!checked.stockQuoteId && request.quote.symbol !== request.operations.currencySymbol) lines.push(`Native operating and wallet costs convert into ${request.quote.symbol} automatically.`)
   if (request.liquidityAmounts?.length) {
     lines.push(`Initial liquidity: ${request.liquidityAmounts.join(' / ')} ${request.quote.symbol} (included in funding).`)
     lines.push(`${request.operations.retainedPct}% of tokens are kept by the team; the report includes them in ownership.`)
@@ -137,8 +142,9 @@ export function launchMathReviewView(selection: LaunchMathSelection): LaunchMath
   lines.push('', isDex ? 'Current USD prices load when you generate.' : 'Current launch settings and USD prices load when you generate.')
   lines.push('The image shows estimated funding, fees and reserves. It does not launch a token or move funds.')
   const keyboard: LaunchMathButton[][] = [[{ text: '📊 Generate image', callback_data: selectionData('generate', checked) }]]
+  if (supportsStockPairs(checked.modelId)) keyboard.push([{ text: 'Change pair', callback_data: selectionData('pair', checked) }])
   keyboard.push([{ text: `Change aged wallets (${request.operations.agedWalletCount})`, callback_data: selectionData('wallets', checked) }])
-  const tax = launchTaxConfig(checked.modelId)
+  const tax = launchTaxConfig(checked.modelId, checked.stockQuoteId)
   if (tax) {
     if (tax.custom) keyboard.push([{ text: 'Change creator tax', callback_data: selectionData('tax', checked) }])
     else keyboard.push(tax.options.map(percent => ({ text: `${launchTaxPercent(request) === percent ? '✓ ' : ''}${percent}%${percent === 0 ? ' default' : ''}`, callback_data: selectionData('review', { ...checked, taxPercent: percent }) })))
@@ -181,7 +187,7 @@ export function launchMathResultCaption(report: LaunchReport): string {
   const available = report.rows.filter(row => row.status === 'ok').length
   const missing = report.rows.length - available
   return [
-    `Ghost · ${venueName(report.modelId)}${launchTaxLabel(report.request) ? ` · ${launchTaxLabel(report.request)}` : ''}`,
+    `Ghost · ${venueName(report.modelId)}${report.request.stockQuoteId ? ` · ${report.request.quote.symbol} pair` : ''}${launchTaxLabel(report.request) ? ` · ${launchTaxLabel(report.request)}` : ''}`,
     `${available} scenarios · ${report.request.operations.agedWalletCount} aged wallets${report.request.injectionLiquidity ? ' + MM liquidity' : ''} included.`,
     !report.request.injectionLiquidity ? 'MM excluded from this saved report; refresh to include.' : '',
     launchReportCautions(report).filter(note => /excluded|excludes|refresh/i.test(note)).join(' '),
@@ -196,7 +202,8 @@ export async function generateTelegramLaunchReport(selection: LaunchMathSelectio
   const [{ prepareLaunchReport }, { calculateLaunchReport }] = await Promise.all([import('./prepare'), import('./engine')])
   const checked = checkedSelection(selection)
   const request = await prepareLaunchReport(createTelegramLaunchRequest(checked))
-  const report = calculateLaunchReport(request)
+  if (checked.stockQuoteId) request.title = `${venueName(checked.modelId).replace(/ · (SOL|USDC)$/, '')} · ${request.quote.symbol} pair`
+  const report = await fundStockReport(calculateLaunchReport(request))
   return renderTelegramLaunchReport(report, checked)
 }
 
@@ -205,7 +212,7 @@ export function renderTelegramLaunchReport(report: LaunchReport, selection: Laun
   report: LaunchReport; png: Buffer; filename: string; caption: string; replyMarkup: LaunchMathView['replyMarkup']
 } {
   const checked = checkedSelection(selection)
-  if (report.modelId !== checked.modelId) throw new Error('The saved report does not match the selected venue.')
+  if (report.modelId !== checked.modelId || report.request.stockQuoteId !== checked.stockQuoteId) throw new Error('The saved report does not match the selected venue.')
   if (!report.rows.some(row => row.status === 'ok')) throw new Error('No funding scenarios could be calculated with the current launch settings.')
   const png = renderLaunchReportPng(report)
   return {
@@ -216,4 +223,12 @@ export function renderTelegramLaunchReport(report: LaunchReport, selection: Laun
       [{ text: 'New report', callback_data: 'lm:home' }],
     ] },
   }
+}
+
+export async function launchMathReviewWithPair(selection: LaunchMathSelection): Promise<LaunchMathView> {
+  const view = launchMathReviewView(selection)
+  if (!selection.stockQuoteId) return view
+  const pair = await resolveStockPair(selection.modelId, selection.stockQuoteId)
+  view.text = view.text.replace('\n\n', `\nPair: ${pair.symbol}\n\n`)
+  return view
 }

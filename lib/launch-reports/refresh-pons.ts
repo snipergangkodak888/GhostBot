@@ -31,7 +31,7 @@ function bounded(value: bigint, minimum: bigint, maximum: bigint, label: string)
 /** Read the fixed, native-ETH Pons config at one block. Never silently reuse stale values. */
 export async function refreshPonsTerms(request: LaunchReportRequest): Promise<LaunchReportRequest> {
   if (request.modelId !== 'pons') throw new Error('The Pons refresher only accepts the Pons model.');
-  if (request.quote.symbol.toUpperCase() !== 'ETH' || request.quote.decimals !== 18 || request.base.decimals !== 18) {
+  if ((!request.stockQuoteId && (request.quote.symbol.toUpperCase() !== 'ETH' || request.quote.decimals !== 18)) || request.base.decimals !== 18) {
     throw new Error('Pons configuration 0 requires native ETH and an 18-decimal launch token.');
   }
   if (request.operations.currencySymbol.toUpperCase() !== 'ETH') {
@@ -73,7 +73,24 @@ export async function refreshPonsTerms(request: LaunchReportRequest): Promise<La
     throw new Error('Pons launch configuration does not match the supported seven-field ABI.');
   }
   const words = configRaw.slice(2).match(/.{64}/g)!.map((hex) => BigInt(`0x${hex}`));
-  const [supply, curveFee, phantomQuote, graduationThreshold, poolFee, tickSpacing, enabled] = words;
+  const [supply, curveFee, nativePhantom, nativeThreshold, poolFee, tickSpacing, enabled] = words;
+  let phantomQuote = nativePhantom, graduationThreshold = nativeThreshold;
+  let pairRaw: unknown;
+  if (request.stockQuoteId) {
+    const address = request.quote.address;
+    if (!/^0x[0-9a-fA-F]{40}$/.test(address || '')) throw new Error('Choose a valid Pons stock pair.');
+    const arg = address!.slice(2).toLowerCase().padStart(64, '0');
+    const [approved, economics, decimals] = await Promise.all([
+      read(FACTORY, toFunctionSelector('approvedPairTokens(address)') + arg),
+      read(FACTORY, toFunctionSelector('pairTokenEconomics(address)') + arg),
+      read(address!, toFunctionSelector('decimals()')),
+    ]);
+    if (word(approved, 'pair approval') !== 1n || typeof economics !== 'string' || !/^0x[0-9a-fA-F]{192}$/.test(economics)) throw new Error('This stock is not an approved Pons pair. Choose another stock.');
+    const values = economics.slice(2).match(/.{64}/g)!.map(v => BigInt('0x' + v));
+    [phantomQuote, graduationThreshold] = values;
+    if (values[2] !== word(decimals, 'pair decimals') || values[2] !== BigInt(request.quote.decimals)) throw new Error('Pons quote decimals do not match its factory settings.');
+    pairRaw = { address, approved, economics, decimals };
+  }
   if (enabled !== 1n) throw new Error('Pons launch configuration 0 is disabled.');
   if (supply <= 0n || supply > 2n ** 128n - 1n || phantomQuote <= 0n || graduationThreshold <= 0n) {
     throw new Error('Pons launch configuration has invalid supply or curve reserves.');
@@ -107,13 +124,13 @@ export async function refreshPonsTerms(request: LaunchReportRequest): Promise<La
     _snapshot: {
       kind: 'public-rpc', chainId: CHAIN_ID, rpc: RPC, factory: FACTORY, hook: HOOK,
       configId: CONFIG_ID, blockNumber: block.toString(), blockHash: header.hash,
-      blockTime, observedAt, configRaw, launchFeeRaw, hookFeeRaw,
+      blockTime, observedAt, configRaw, launchFeeRaw, hookFeeRaw, ...(pairRaw ? { pairRaw } : {}),
     },
   };
   // The protocol creation fee changes with the factory. Ghost commercial inputs stay fixed.
   result.operations.launchFeeAmount = formatAmount(launchFee, 18);
   result.termsSource = {
-    kind: 'snapshot', label: `Pons native config 0 and hook fees, Robinhood Chain block ${block}`,
+    kind: 'snapshot', label: `Pons ${request.stockQuoteId ? request.quote.symbol + ' pair' : 'native config 0'} and hook fees, Robinhood Chain block ${block}`,
     url: 'https://docs.ponsfamily.com/v2', asOf: observedAt,
   };
   return result;

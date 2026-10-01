@@ -63,10 +63,10 @@ The catalogue covers the sixteen report entries below. Coverage refers to these 
 
 | Model ID | Practical scope |
 |---|---|
-| `pumpfun` | Native SOL bonding curve and graduated PumpSwap pool; current global settings and dynamic fee tiers. |
-| `pumpfun-custom` | Mainnet USDC, six decimals; current Pump whitelist, stablecoin fee tiers and conversion of SOL operating/migration funding. Other quote tokens are not the automatic profile. |
-| `launchlab` | LaunchLab using Stonkfun's current standard SOL launch profile. |
-| `stonkfun` | The same standard SOL LaunchLab profile, identified as Stonkfun. Reward mode and other quote profiles require separate verified integration. |
+| `pumpfun` | SOL or approved stock pairs, bonding curve and graduated PumpSwap pool; live registry, reserve and fee settings. |
+| `pumpfun-custom` | USDC by default, plus the same verified stock-pair selection. Stock capital is reported in SOL. |
+| `launchlab` | Stonkfun LaunchLab curve, native or supported custom pairs, standard/reward profiles. |
+| `stonkfun` | Stonkfun LaunchLab curve with SOL or supported custom pairs and 0/1/3% holder tax. Targets stop at net curve inventory. |
 | `pons` | Pons V2 on Robinhood Chain, including curve, graduated pool and creator/hook fees. |
 | `raydium-cpmm` | Chosen SOL liquidity with current CPMM configuration 0 and creator fees disabled. |
 | `uniswap-v2` | A new constant-product pool with chosen liquidity, allocation and fee; assumes no transfer tax. |
@@ -81,6 +81,22 @@ The catalogue covers the sixteen report entries below. Coverage refers to these 
 | `fourmeme` | Standard native BNB curve and PancakeSwap V2 migration; two matching current launches and exact helper quotes verify the profile. Creator buy tax is a launch choice. Stablecoin, stock and alternate launch modes are outside this profile. |
 
 Supply control includes an explicitly chosen retained allocation where the model supports it. The MC column is total token supply multiplied by the marginal price after the ordered buys, rather than circulating market cap. Targets outside a model's supported curve or pool range remain unavailable with a reason; a capped result is never relabeled as a larger target.
+
+## Stock and custom quote pairs
+
+Pump.fun, Stonkfun/LaunchLab and Pons offer a searchable pair menu before the tax and target questions. Keep the default native pair or search by ticker, name or token address. The web builder has the same selection. Both `/launchcalc` text and `/launchmath` images preserve the pair through tax, target, wallet edits and delivery retries.
+
+- **Pump.fun:** only stock mints in the live Pump quote registry, with current custom-quote curve reserves and curve/pool fees. Creator fee 0 keeps the venue default; a custom fee is checked against the live limit. Active quote transfer taxes and unsupported Token-2022 transfer hooks are rejected.
+- **Stonkfun/LaunchLab:** launchable pairs from the Stonkfun API, with pair-specific raise, curve and platform settings verified against RPC accounts. The current quote transfer tax, epoch and fee cap come from the mint. Each buyer's quote transfer is grossed up separately. The launched token's optional holder tax remains independent. This adapter covers the curve only.
+- **Pons:** canonical Robinhood assets approved by the factory, with on-chain pair economics and decimals. Stock prices account for the issuer's corporate-action multiplier. Before a launch address exists, the graduated pool is modeled for both currency orderings: fund the more expensive result and show the lower MC. Arbitrary taxed ERC-20 tokens are not admitted; there is no universal ERC-20 tax getter.
+
+The output remains native **SOL or ETH**, with supply accumulation, aged wallets + Husher funding, and MM liquidity. Stock funding has no additional USD-equivalent total; MC stays in USD. The original AMM files are unchanged.
+
+Native-to-stock funding uses a read-only Jupiter Swap V2 quote (Raydium fallback) on Solana or KyberSwap on Robinhood. Funding is quoted at the actual purchase size and rechecked until output covers the plan, including a 2% slippage allowance and Sumo's default 0.5% treasury conversion fee. Native swap gas, existing launch operations and the funding-provider fee are included. Neither MM nor aged-wallet acquisition is swapped into the stock. No swap, approval or wallet transaction is executed.
+
+Quote-token fees are fetched from Token-2022 mint data using the same RPC epoch snapshot; unknown token behavior, stale prices, a changed curve or unavailable swap route stops that scenario instead of estimating through it. Frozen reports retain the pair, mint, tax schedule, curve settings, funding route and timestamps, and reproduce native totals without requesting a newer price. New generations refresh these inputs. Catalogues cache for 60 seconds; the live launch settings and funding quotes are refreshed.
+
+Sources: [Pump IDL](https://github.com/pump-fun/pump-public-docs/blob/main/idl/pump.json), [Stonkfun public API](https://www.stonkfun.xyz/api/public/v1/openapi.json), [Pons V2](https://docs.ponsfamily.com/v2), [Robinhood stock-token API](https://docs.robinhood.com/chain/stock-token-apis/), [Sumo custom swap](https://docs.sumo.trade/treasury/custom-swap).
 
 ## Current reports and reproducible snapshots
 

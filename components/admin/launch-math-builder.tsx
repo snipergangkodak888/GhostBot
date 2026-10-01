@@ -12,10 +12,10 @@ const human = (key: string) => key.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/
 const number = (value: number | null | undefined, digits = 2) => value == null || !Number.isFinite(value) ? '—' : value.toLocaleString('en-US', { maximumFractionDigits: digits })
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value))
 const VENUE_HELP: Record<string, string> = {
-  pumpfun: 'Standard SOL launch on Pump.fun, including purchases after graduation.',
+  pumpfun: 'Pump.fun launch with SOL or a supported stock pair, including purchases after graduation.',
   'pumpfun-custom': 'USDC launch on Pump.fun. SOL wallet and running costs are converted automatically.',
-  launchlab: 'Stonkfun’s standard SOL launch settings on Raydium LaunchLab.',
-  stonkfun: 'Stonkfun’s standard SOL launch. Other launch modes are outside this report.',
+  launchlab: 'Stonkfun on Raydium LaunchLab, with native or supported stock pairs and optional holder tax.',
+  stonkfun: 'Stonkfun curve launch with SOL or a supported stock pair and optional holder tax.',
   pons: 'Pons V2 on Robinhood Chain, including purchases after graduation.',
   'raydium-cpmm': 'A new SOL pool on Raydium. Compare the funding needed at different pool sizes.',
   'uniswap-v2': 'A new V2-style pool. The standard example uses ETH, a 0.30% swap fee and no token tax.',
@@ -55,6 +55,10 @@ const readJson = async <T,>(response: Response): Promise<T> => {
 
 export function LaunchMathBuilder() {
   const [catalog, setCatalog] = useState<Catalog | null>(null)
+  const [stockPairs, setStockPairs] = useState<{id: string; symbol: string; name: string}[]>([])
+  const [stockSearch, setStockSearch] = useState('')
+  const [stockError, setStockError] = useState('')
+  const [stockLoading, setStockLoading] = useState(false)
   const [draft, setDraft] = useState<LaunchReportRequest | null>(null)
   const [targets, setTargets] = useState('')
   const [liquidity, setLiquidity] = useState('')
@@ -93,6 +97,17 @@ export function LaunchMathBuilder() {
     try { const values = JSON.parse(localStorage.getItem(STORAGE) || '[]'); if (Array.isArray(values)) setSaved(values) } catch { /* A bad saved draft never prevents a fresh report. */ }
     return () => { active = false }
   }, [])
+  useEffect(() => {
+    let active = true
+    setStockPairs([]); setStockSearch(''); setStockError('')
+    if (!draft || !['pumpfun','pumpfun-custom','stonkfun','launchlab','pons'].includes(draft.modelId)) return
+    setStockLoading(true)
+    requestData(`/api/admin/launch-reports?stockModel=${encodeURIComponent(draft.modelId)}`, {}, readJson<{pairs: {id:string;symbol:string;name:string}[]}>, 30_000)
+      .then(data => { if (active) setStockPairs(data.pairs) })
+      .catch(e => { if (active) setStockError(e.message) })
+      .finally(() => { if (active) setStockLoading(false) })
+    return () => { active = false }
+  }, [draft?.modelId])
   useEffect(() => {
     if (busy !== 'generate') return
     setGenerationSeconds(0)
@@ -199,10 +214,19 @@ export function LaunchMathBuilder() {
       <div className="lm-grid"><fieldset className="lm-config" disabled={!!busy}>
         <div className="lm-panel"><div className="lm-panel-heading"><Layers size={17} /><h2>Launch setup</h2></div>
           <label>Launchpad / DEX<select value={draft.modelId} onChange={e => load(catalog.presets[e.target.value])}>{[...new Set(catalog.models.map(m => m.group))].map(group => <optgroup key={group} label={group}>{catalog.models.filter(m => m.group === group).map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</optgroup>)}</select></label><p className="lm-help">{VENUE_HELP[draft.modelId] || model?.description}</p>
-          {launchTaxConfig(draft.modelId) && <label>{launchTaxConfig(draft.modelId)!.label} (%)
-            {launchTaxConfig(draft.modelId)!.custom ? <input type="number" min="0" max="10" step="0.01" value={launchTaxPercent(draft) ?? 0} onChange={e => { try { const next = applyLaunchTax(draft, Number(e.target.value)); setDraft(next); setTerms(JSON.stringify(next.terms, null, 2)); setError('') } catch (error) { setError(error instanceof Error ? error.message : 'Invalid tax') } }} />
-              : <select value={launchTaxPercent(draft) ?? 0} onChange={e => { const next = applyLaunchTax(draft, Number(e.target.value)); setDraft(next); setTerms(JSON.stringify(next.terms, null, 2)); setTargets(launchTaxTargets(next, catalog.presets[draft.modelId].targetsPct).join(', ')); setUseLiveSettings(true) }}>{launchTaxConfig(draft.modelId)!.options.map(percent => <option key={percent} value={percent}>{percent}%{percent === 0 ? ' · standard default' : ' · holder rewards'}</option>)}</select>}
-            <span className="lm-help">Default 0%. The selected tax is included in the quote.</span>
+          {['pumpfun','pumpfun-custom','stonkfun','launchlab','pons'].includes(draft.modelId) && <div>
+            <label>Find a stock / ETF<input value={stockSearch} placeholder="Search ticker or name" onChange={e => setStockSearch(e.target.value)} /></label>
+            <label>Pair<select value={draft.stockQuoteId || ''} onChange={e => { const next = clone(catalog.presets[draft.modelId]); next.client = draft.client; next.title = draft.title; next.operations.agedWalletCount = draft.operations.agedWalletCount; if (e.target.value) next.stockQuoteId = e.target.value; load(next); setUseLiveSettings(true) }}>
+              <option value="">{catalog.presets[draft.modelId].quote.symbol} (default)</option>
+              {stockPairs.filter(p => p.id === draft.stockQuoteId || `${p.symbol} ${p.name}`.toLowerCase().includes(stockSearch.toLowerCase())).map(p => <option key={p.id} value={p.id}>{p.symbol} · {p.name}</option>)}
+            </select></label>
+            {stockLoading && <p role="status" className="lm-help">Loading available pairs…</p>}
+            {stockError && <p role="alert" className="lm-help">{stockError}</p>}
+          </div>}
+          {launchTaxConfig(draft.modelId, draft.stockQuoteId) && <label>{launchTaxConfig(draft.modelId, draft.stockQuoteId)!.label} (%)
+            {launchTaxConfig(draft.modelId, draft.stockQuoteId)!.custom ? <input type="number" min="0" max="10" step="0.01" value={launchTaxPercent(draft) ?? 0} onChange={e => { try { const next = applyLaunchTax(draft, Number(e.target.value)); setDraft(next); setTerms(JSON.stringify(next.terms, null, 2)); setError('') } catch (error) { setError(error instanceof Error ? error.message : 'Invalid tax') } }} />
+              : <select value={launchTaxPercent(draft) ?? 0} onChange={e => { const next = applyLaunchTax(draft, Number(e.target.value)); setDraft(next); setTerms(JSON.stringify(next.terms, null, 2)); setTargets(launchTaxTargets(next, catalog.presets[draft.modelId].targetsPct).join(', ')); setUseLiveSettings(true) }}>{launchTaxConfig(draft.modelId, draft.stockQuoteId)!.options.map(percent => <option key={percent} value={percent}>{percent}%{percent === 0 ? ' · standard default' : ' · holder rewards'}</option>)}</select>}
+            <span className="lm-help">{draft.stockQuoteId && draft.modelId.startsWith('pumpfun') ? '0 keeps the venue default. Custom fees are checked against the current on-chain limit.' : 'Default 0%. The selected tax is included in the quote.'}</span>
           </label>}
           <label>Client name <span className="lm-optional">Optional</span><input value={draft.client || ''} placeholder="Client or project name" maxLength={100} onChange={e => field('client', e.target.value)} /></label>
           {model?.requiresLiquidity && <div className="lm-liquidity"><label>Pool funds to compare ({draft.quote.symbol})<input value={liquidity} onChange={e => setLiquidity(e.target.value)} placeholder={standardLiquidity.join(', ') || 'Enter an amount'} /><span className="lm-help">Money supplied to the new pool before purchases. Enter up to four amounts, separated by commas.</span></label>{standardLiquidity.length > 0 && <><p className="lm-help">Standard comparison: {standardLiquidity.join(', ')} {draft.quote.symbol}.</p><div className="lm-chips">{standardLiquidity.map(value => <button key={value} aria-pressed={liquidity.trim() === value} onClick={() => setLiquidity(value)}>{value} {draft.quote.symbol}</button>)}<button aria-pressed={liquidity === standardLiquidity.join(', ')} onClick={() => setLiquidity(standardLiquidity.join(', '))}>Compare all</button></div></>}</div>}
@@ -223,7 +247,7 @@ export function LaunchMathBuilder() {
           {draft.modelId === 'letscash' && <label>Launch configuration<select value={String(current?.terms.configId || 1000)} onChange={e => launchChoice('configId', Number(e.target.value))}>{[1000,1001,1002,1004,1006,1016,1017,1018,1020,1022].map(id => <option key={id} value={id}>Configuration {id}{id === 1000 ? ' · standard' : ''}</option>)}</select></label>}
           <div className="lm-top-actions"><input ref={upload} type="file" accept=".json,application/json" hidden onChange={e => importSetup(e.target.files?.[0])} /><button disabled={!!busy} onClick={() => upload.current?.click()}><Upload size={15} /> Import settings</button><button onClick={saveSetup} disabled={!!busy}><Save size={15} /> Save setup</button></div>
         </details>
-        <details className="lm-panel lm-advanced"><summary>USD conversion · automatic<ChevronDown size={16} /></summary><div className="lm-panel-heading"><FileText size={17} /><h2>Exchange rate</h2><button className="lm-icon" title="Refresh USD price" aria-label="Refresh USD price" disabled={!!busy} onClick={refreshPrice}><RefreshCw size={15} /></button></div><label>1 {draft.quote.symbol} in USD<input value={draft.quote.usdPrice || ''} placeholder="Optional — leave blank for native values" onChange={e => setDraft(d => d && ({ ...d, quote: { ...d.quote, usdPrice: e.target.value || undefined, priceSource: 'User-entered price', priceAsOf: new Date().toISOString() } }))} /></label><p className="lm-help">{draft.quote.usdPrice ? `${draft.quote.priceSource || 'User supplied'} · ${draft.quote.priceAsOf ? new Date(draft.quote.priceAsOf).toLocaleString() : 'Undated'}` : 'The current USD price is included automatically when you generate.'}</p></details>
+        <details className="lm-panel lm-advanced"><summary>USD conversion · automatic<ChevronDown size={16} /></summary><div className="lm-panel-heading"><FileText size={17} /><h2>Exchange rate</h2><button className="lm-icon" title={draft.stockQuoteId ? "Stock prices refresh when generating" : "Refresh USD price"} aria-label="Refresh USD price" disabled={!!busy || !!draft.stockQuoteId} onClick={refreshPrice}><RefreshCw size={15} /></button></div><label>1 {draft.quote.symbol} in USD<input value={draft.quote.usdPrice || ''} placeholder="Optional — leave blank for native values" onChange={e => setDraft(d => d && ({ ...d, quote: { ...d.quote, usdPrice: e.target.value || undefined, priceSource: 'User-entered price', priceAsOf: new Date().toISOString() } }))} /></label><p className="lm-help">{draft.quote.usdPrice ? `${draft.quote.priceSource || 'User supplied'} · ${draft.quote.priceAsOf ? new Date(draft.quote.priceAsOf).toLocaleString() : 'Undated'}` : 'The current USD price is included automatically when you generate.'}</p></details>
         <details className="lm-panel lm-advanced"><summary>Advanced launch settings · optional<ChevronDown size={16} /></summary><p className="lm-help">Standard settings are already included. These controls are for someone who knows the specific launch setup; most reports need no changes.</p>
           <div className="lm-pair"><label>Token supply<input value={draft.base.supply} onChange={e => setDraft(d => d && ({ ...d, base: { ...d.base, supply: e.target.value } }))} /></label><label>Token decimals<input type="number" value={draft.base.decimals} onChange={e => setDraft(d => d && ({ ...d, base: { ...d.base, decimals: Number(e.target.value) } }))} /></label></div>
           <label>Token symbol<input value={draft.base.symbol} maxLength={16} onChange={e => setDraft(d => d && ({ ...d, base: { ...d.base, symbol: e.target.value } }))} /></label>
@@ -255,18 +279,18 @@ export function LaunchMathBuilder() {
           <div className="lm-mobile-scenarios" aria-label="Launch funding scenarios">
             {report.rows.map(row => <article className="lm-panel lm-scenario" key={row.id}>
               <div className="lm-scenario-heading"><div><h3>{row.targetPct}% of supply</h3>{row.status === 'ok' && <p>{row.phase}</p>}</div>
-                {row.status === 'ok' && <div className="lm-scenario-total"><small>Total funding</small><strong>{number(Number(row.amounts?.total))} {report.request.quote.symbol}</strong>{row.totalUsd != null && <span>≈ ${number(row.totalUsd, 0)}</span>}</div>}
+                {row.status === 'ok' && <div className="lm-scenario-total"><small>Total funding</small><strong>{number(Number(row.amounts?.total))} {report.fundingCurrency?.symbol || report.request.quote.symbol}</strong>{row.totalUsd != null && <span>≈ ${number(row.totalUsd, 0)}</span>}</div>}
               </div>
               {row.status !== 'ok' ? <p className="lm-scenario-error">{row.error}</p> : <dl>
                 <div><dt>Market cap (MC)</dt><dd>{report.request.quote.usdPrice ? `$${number(row.fdvUsd, 0)}` : `${number(row.fdvQuote, 0)} ${report.request.quote.symbol}`}</dd></div>
                 {reportNeedsLiquidity && <div><dt>Initial liquidity</dt><dd>{row.liquidity} {report.request.quote.symbol}</dd></div>}
-                <div><dt>Launch funding</dt><dd>{number(Number(row.amounts?.funding))} {report.request.quote.symbol}</dd></div>
-                <div><dt>Aged wallets</dt><dd>{number(Number(row.amounts?.agedWallets))} {report.request.quote.symbol}</dd></div>
-                <div><dt>Injection / MM liquidity</dt><dd>{number(Number(row.amounts?.injectionLiquidity || 0))} {report.request.quote.symbol}</dd></div>
+                <div><dt>Launch funding</dt><dd>{number(Number(row.amounts?.funding))} {report.fundingCurrency?.symbol || report.request.quote.symbol}</dd></div>
+                <div><dt>Aged wallets</dt><dd>{number(Number(row.amounts?.agedWallets))} {report.fundingCurrency?.symbol || report.request.quote.symbol}</dd></div>
+                <div><dt>Injection / MM liquidity</dt><dd>{number(Number(row.amounts?.injectionLiquidity || 0))} {report.fundingCurrency?.symbol || report.request.quote.symbol}</dd></div>
               </dl>}
             </article>)}
           </div>
-          <div className="lm-panel lm-table-panel"><div className="lm-table-scroll"><table><thead><tr><th>Supply share</th>{reportNeedsLiquidity && <th>Initial liquidity</th>}<th>Phase</th><th>MC {report.request.quote.usdPrice ? '(USD)' : `(${report.request.quote.symbol})`}</th><th>Launch funding</th><th>Aged wallets</th><th>Injection / MM</th><th>Total {report.request.quote.symbol}</th></tr></thead><tbody>{report.rows.map(row => <tr key={row.id}><td><b>{row.targetPct}%</b></td>{row.status !== 'ok' ? <td className="lm-row-error" colSpan={reportNeedsLiquidity ? 7 : 6}>{row.error}</td> : <>{reportNeedsLiquidity && <td>{row.liquidity}</td>}<td><span className="lm-phase">{row.phase}</span></td><td>{report.request.quote.usdPrice ? '$' : ''}{number(report.request.quote.usdPrice ? row.fdvUsd : row.fdvQuote, 0)}</td><td>{number(Number(row.amounts?.funding))}</td><td>{number(Number(row.amounts?.agedWallets))}</td><td>{number(Number(row.amounts?.injectionLiquidity || 0))}</td><td className="lm-total">{number(Number(row.amounts?.total))}{row.totalUsd != null && <small>≈ ${number(row.totalUsd, 0)}</small>}</td></>}</tr>)}</tbody></table></div></div>
+          <div className="lm-panel lm-table-panel"><div className="lm-table-scroll"><table><thead><tr><th>Supply share</th>{reportNeedsLiquidity && <th>Initial liquidity</th>}<th>Phase</th><th>MC {report.request.quote.usdPrice ? '(USD)' : `(${report.request.quote.symbol})`}</th><th>Launch funding</th><th>Aged wallets</th><th>Injection / MM</th><th>Total {report.fundingCurrency?.symbol || report.request.quote.symbol}</th></tr></thead><tbody>{report.rows.map(row => <tr key={row.id}><td><b>{row.targetPct}%</b></td>{row.status !== 'ok' ? <td className="lm-row-error" colSpan={reportNeedsLiquidity ? 7 : 6}>{row.error}</td> : <>{reportNeedsLiquidity && <td>{row.liquidity}</td>}<td><span className="lm-phase">{row.phase}</span></td><td>{report.request.quote.usdPrice ? '$' : ''}{number(report.request.quote.usdPrice ? row.fdvUsd : row.fdvQuote, 0)}</td><td>{number(Number(row.amounts?.funding))}</td><td>{number(Number(row.amounts?.agedWallets))}</td><td>{number(Number(row.amounts?.injectionLiquidity || 0))}</td><td className="lm-total">{number(Number(row.amounts?.total))}{row.totalUsd != null && <small>≈ ${number(row.totalUsd, 0)}</small>}</td></>}</tr>)}</tbody></table></div></div>
           <div className="lm-panel"><h2>Included assumptions</h2><ul className="lm-assumptions">{report.assumptions.map((v, i) => <li key={i}>{v}</li>)}</ul>{reportNotes.length > 0 && <div className="lm-report-notes">{reportNotes.map((v, i) => <p key={i}>{v}</p>)}</div>}<div className="lm-report-stamp">Generated {new Date(report.generatedAt).toLocaleString()} · Saved inputs travel with the JSON report.</div></div>
         </>}
       </div></div>

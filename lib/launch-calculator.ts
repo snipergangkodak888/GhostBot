@@ -1,3 +1,4 @@
+import { fundStockReport } from './launch-reports/stock-funding'
 import { runInNewContext } from 'node:vm'
 import { createDefaultRequest } from './launch-reports/catalog'
 import { calculateLaunchReport } from './launch-reports/engine'
@@ -12,6 +13,7 @@ import type { LaunchReport, LaunchReportRequest } from './launch-reports/types'
 export type LaunchTargetMetric = 'supply' | 'market_cap'
 export type LaunchQuoteInput = {
   venueId: string
+  stockQuoteId?: string
   metric: LaunchTargetMetric
   target: number
   initialLp?: number
@@ -43,7 +45,7 @@ function validateInput(input: LaunchQuoteInput) {
   if (input.metric === 'supply' && Math.abs(input.target * 1e6 - Math.round(input.target * 1e6)) > 1e-6) throw new Error('Use at most 6 decimal places for supply control.')
   if (venue.requiresLiquidity && (!Number.isFinite(input.initialLp) || Number(input.initialLp) <= 0)) throw new Error('Initial LP must be greater than zero.')
   if (input.mmLiquidity != null && (!Number.isFinite(input.mmLiquidity) || input.mmLiquidity < 0)) throw new Error('MM liquidity must be a nonnegative amount.')
-  if (input.taxPercent != null) validateLaunchTax(input.venueId, input.taxPercent)
+  if (input.taxPercent != null) validateLaunchTax(input.venueId, input.taxPercent, input.stockQuoteId)
   if (input.agedWalletCount != null) validateAgedWalletCount(input.agedWalletCount)
   return venue
 }
@@ -52,12 +54,14 @@ function validateInput(input: LaunchQuoteInput) {
 export async function prepareLaunchQuote(input: LaunchQuoteInput): Promise<LaunchQuote> {
   const venue = validateInput(input)
   const base = createDefaultRequest(venue.id)
+  if (input.stockQuoteId) base.stockQuoteId = input.stockQuoteId
   let request = input.taxPercent == null ? base : applyLaunchTax(base, input.taxPercent)
   if (input.agedWalletCount != null) request = applyAgedWalletCount(request, input.agedWalletCount)
   if (venue.requiresLiquidity) request.liquidityAmounts = [plainAmount(input.initialLp!)]
   if (input.metric === 'supply') request.targetsPct = [input.target]
   const prepared = await prepareLaunchReport(request)
-  return calculateLaunchQuote(input, prepared)
+  const quote = calculateLaunchQuote(input, prepared)
+  return input.stockQuoteId ? projectLaunchQuote(input, await fundStockReport(quote.report)) : quote
 }
 
 function plainAmount(value: number) {
@@ -154,7 +158,7 @@ function solveMarketCap(request: LaunchReportRequest, target: number): LaunchRep
 /** Pure text projection of a shared report snapshot; no alternate venue formulas. */
 export function calculateLaunchQuote(input: LaunchQuoteInput, prepared: LaunchReportRequest): LaunchQuote {
   const venue = validateInput(input)
-  if (prepared.modelId !== venue.id || !prepared.injectionLiquidity) throw new Error('Refresh the venue settings before calculating a quote.')
+  if (prepared.modelId !== venue.id || prepared.stockQuoteId !== input.stockQuoteId || !prepared.injectionLiquidity) throw new Error('Refresh the venue settings before calculating a quote.')
   let request = input.taxPercent == null ? structuredClone(prepared) : applyLaunchTax(prepared, input.taxPercent)
   if (input.agedWalletCount != null) request = applyAgedWalletCount(request, input.agedWalletCount)
   if (['stonkfun', 'launchlab'].includes(venue.id) && JSON.stringify(request.terms.transferFee) !== JSON.stringify(prepared.terms.transferFee)) throw new Error('Refresh Stonkfun settings after changing the holder tax.')
@@ -162,7 +166,12 @@ export function calculateLaunchQuote(input: LaunchQuoteInput, prepared: LaunchRe
   const report = input.metric === 'supply'
     ? requireQuote(boundedReport({ ...request, targetsPct: [input.target] }))
     : solveMarketCap(request, input.target)
-  const row = report.rows[0], raw = row.raw!, decimals = request.quote.decimals
+  return projectLaunchQuote(input, report)
+}
+
+function projectLaunchQuote(input: LaunchQuoteInput, report: LaunchReport): LaunchQuote {
+  const venue = validateInput(input), request = report.request
+  const row = requireQuote(report).rows[0], raw = row.raw!, decimals = report.fundingCurrency?.decimals ?? request.quote.decimals
   const lines: LaunchQuoteLine[] = []
   const add = (key: string, amount: bigint, label: string) => lines.push({ key, amount: formatAmount(amount, decimals), raw: amount.toString(), label })
   add('accumulation', BigInt(raw.funding) - BigInt(raw.initialLiquidity), 'for supply accumulation')
@@ -191,13 +200,14 @@ function display(value: number | string, digits = 4) {
   return Number(value).toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: digits })
 }
 export function formatLaunchQuote(quote: LaunchQuote) {
-  const symbol = quote.venue.symbol, request = quote.report.request
+  const symbol = quote.report.fundingCurrency?.symbol || quote.venue.symbol, request = quote.report.request
   const notes = [
     ...(request.operations.retainedPct ? [`Control includes ${request.operations.retainedPct}% team allocation.`] : []),
+    ...(request.stockQuoteId && Number((request.terms.stockQuoteTax as { basisPoints?: number } | undefined)?.basisPoints) > 0 ? [`Quote tax: ${Number((request.terms.stockQuoteTax as { basisPoints: number }).basisPoints) / 100}% (included).`] : []),
     ...launchReportCautions(quote.report),
   ]
   return [
-    `<b>${quote.venue.name}</b>`,
+    `<b>${request.stockQuoteId ? quote.venue.name.replace(/ · (SOL|USDC)$/, '') : quote.venue.name}${request.stockQuoteId ? ` · ${request.quote.symbol} pair` : ''}</b>`,
     ...(launchTaxLabel(request) ? [launchTaxLabel(request)!] : []),
     ...(quote.initialLp ? [`Assuming a ${display(quote.initialLp)} ${symbol} initial LP:`] : []),
     `Capital requirement: <b>${display(quote.capitalTotal)} ${symbol} total</b> — targeting <b>${display(quote.supplyControlPct, 2)}% supply control</b> with an estimated <b>~${compactUsd(quote.launchMarketCapUsd)} launch MC</b>.`,

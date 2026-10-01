@@ -8,7 +8,7 @@ import { getModelCatalog } from './catalog'
 import { GHOST_INJECTION_VERSION, injectionReference } from './injection'
 import { currentWalletPricingDraft } from './pricing'
 
-async function spot(symbol: string) {
+export async function spot(symbol: string) {
   if (!['SOL', 'ETH', 'BNB', 'USDC', 'USDT'].includes(symbol)) throw new Error('Select a supported quote currency or supply an explicit dated USD price.')
   const response = await fetchLaunchData(`https://api.coinbase.com/v2/prices/${symbol}-USD/spot`, { cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(15000) }, 'USD price service')
   if (!response.ok) throw new Error(`Could not refresh ${symbol}/USD. Retry when the price service is available.`)
@@ -24,7 +24,7 @@ export function validateLaunchDraft(request: LaunchReportRequest) {
   if (request?.injectionLiquidity) request = { ...request, injectionLiquidity: undefined }
   if (request?.fundingConversion) request = { ...request, operations: request.fundingConversion.nativeOperations, fundingConversion: undefined }
   if (request?.operations?.currencySymbol && request?.quote?.symbol && request.operations.currencySymbol !== request.quote.symbol) {
-    if (!['USDC', 'USDT'].includes(request.quote.symbol)) throw new Error('Native funding conversion is supported for USDC and USDT quotes.')
+    if (!request.stockQuoteId && !['USDC', 'USDT'].includes(request.quote.symbol)) throw new Error('Native funding conversion is supported for USDC and USDT quotes.')
     if (!Number.isInteger(request.quote.decimals) || request.quote.decimals < 0 || request.quote.decimals > 30) throw new Error('Quote decimals must be between 0 and 30.')
     const decimals = nativeDecimals(request.operations.currencySymbol)
     // Quote-liquidity values retain their own decimals; native allowances use native decimals.
@@ -37,6 +37,12 @@ export function validateLaunchDraft(request: LaunchReportRequest) {
 /** Fetch protocol inputs for a new quote. A failed refresh never silently uses old terms. */
 export async function prepareLaunchReport(request: LaunchReportRequest): Promise<LaunchReportRequest> {
   validateLaunchDraft(request)
+  if (request.stockQuoteId) {
+    const { prepareStockReport } = await import('./stock-prepare')
+    const stock = await prepareStockReport(currentWalletPricingDraft(request), spot)
+    validateRequest(stock)
+    return stock
+  }
   let next = currentWalletPricingDraft(request)
   delete next.injectionLiquidity
   const symbol = next.quote.symbol.toUpperCase()

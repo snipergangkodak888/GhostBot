@@ -1,20 +1,22 @@
 import type { LaunchReportRequest } from './types'
 import { parseAmount } from './utils'
 
-export function launchTaxConfig(modelId: string) {
+export function launchTaxConfig(modelId: string, stockQuoteId?: string) {
+  if (modelId.startsWith('pumpfun') && stockQuoteId) return { label: 'Creator fee', options: [0], custom: true }
   if (modelId === 'pons') return { label: 'Creator tax', options: [0, 1, 3, 5, 10], custom: true }
   if (modelId === 'stonkfun' || modelId === 'launchlab') return { label: 'Holder tax', options: [0, 1, 3], custom: false }
   return null
 }
 
 export function launchTaxPercent(request: LaunchReportRequest): number | undefined {
-  if (!launchTaxConfig(request.modelId)) return undefined
+  if (!launchTaxConfig(request.modelId, request.stockQuoteId)) return undefined
+  if (request.modelId.startsWith('pumpfun')) return Number(request.terms.creatorFeeOverrideBps || 0) / 100
   return request.modelId === 'pons' ? Number(request.terms.creatorTaxBps ?? 0) / 100
     : Number((request.terms.transferFee as { basisPoints?: number } | undefined)?.basisPoints ?? 0) / 100
 }
 
-export function validateLaunchTax(modelId: string, percent: number) {
-  const config = launchTaxConfig(modelId)
+export function validateLaunchTax(modelId: string, percent: number, stockQuoteId?: string) {
+  const config = launchTaxConfig(modelId, stockQuoteId)
   if (!config) throw new Error('This venue does not offer a configurable launch tax.')
   if (!Number.isFinite(percent) || percent < 0 || percent > 10 || Math.abs(percent * 100 - Math.round(percent * 100)) > 1e-8) throw new Error('Enter a tax from 0% to 10%, with at most two decimal places.')
   if (!config.custom && !config.options.includes(percent)) throw new Error('Choose 0% standard, 1% or 3% Stonkfun holder tax. Available reward rates are verified when generating.')
@@ -22,9 +24,13 @@ export function validateLaunchTax(modelId: string, percent: number) {
 
 /** Client choice; protocol fees remain separate and are refreshed from the venue. */
 export function applyLaunchTax(request: LaunchReportRequest, percent: number): LaunchReportRequest {
-  validateLaunchTax(request.modelId, percent)
+  validateLaunchTax(request.modelId, percent, request.stockQuoteId)
   const next = structuredClone(request), bps = Math.round(percent * 100)
-  if (next.modelId === 'pons') next.terms.creatorTaxBps = bps
+  if (next.modelId.startsWith('pumpfun')) {
+    if (bps) next.terms.creatorFeeOverrideBps = bps
+    else delete next.terms.creatorFeeOverrideBps
+  }
+  else if (next.modelId === 'pons') next.terms.creatorTaxBps = bps
   else if (bps) next.terms.transferFee = { basisPoints: bps, maximumFee: parseAmount(next.base.supply, next.base.decimals).toString() }
   else delete next.terms.transferFee
   return next
@@ -42,6 +48,6 @@ export function launchTaxTargets(request: LaunchReportRequest, targets = request
 }
 
 export function launchTaxLabel(request: LaunchReportRequest): string | undefined {
-  const config = launchTaxConfig(request.modelId), percent = launchTaxPercent(request)
-  return config ? `${config.label}: ${percent}%` : undefined
+  const config = launchTaxConfig(request.modelId, request.stockQuoteId), percent = launchTaxPercent(request)
+  return config ? request.modelId.startsWith('pumpfun') && !percent ? 'Creator fee: venue default' : `${config.label}: ${percent}%` : undefined
 }

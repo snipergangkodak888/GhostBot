@@ -31,17 +31,21 @@ export function launchReportFootnotes(report: LaunchReport): string[] {
   const wallet = request.fundingConversion?.nativeOperations || op
   const decimals = request.fundingConversion ? (wallet.currencySymbol === 'SOL' ? 9 : 18) : request.quote.decimals
   const walletTotal = formatAmount(parseAmount(wallet.agedWalletUnitAmount, decimals) * BigInt(op.agedWalletCount), decimals)
-  const converted = wallet.currencySymbol !== request.quote.symbol ? `; converted to ${request.quote.symbol}` : ''
+  const converted = !request.stockQuoteId && wallet.currencySymbol !== request.quote.symbol ? `; converted to ${request.quote.symbol}` : ''
   const supply = op.retainedPct > 0 ? `purchased tokens + ${op.retainedPct}% team allocation` : 'purchased tokens'
   const policy = request.injectionLiquidity
   const cautions = launchReportCautions(report)
+  if (request.stockQuoteId) {
+    const tax = request.terms.stockQuoteTax as { basisPoints?: number } | undefined
+    cautions.push(`Stock conversion: 2% slippage allowance + 0.5% treasury fee.${tax?.basisPoints ? ` Quote tax ${tax.basisPoints / 100}% included.` : ''}`)
+  }
   const mm = !policy ? 'Excluded from this saved report; refresh to include.'
     : policy.referenceSymbol === 'SOL' ? '30 SOL through $500k MC; proportional above.'
       : '1.3 ETH through $300k MC; 2 ETH at $500k; $10k at $1m (min. 2 ETH). Scales between and above.'
   return [
     `SUPPLY: ${supply}. MC = price after buys × total supply.${launchTaxLabel(request) ? ` ${launchTaxLabel(request)}.` : ''}`,
     `AGED WALLETS: ${op.agedWalletCount} × ${wallet.agedWalletUnitAmount} ${wallet.currencySymbol} = ${walletTotal} ${wallet.currencySymbol}${converted}.`,
-    `MM LIQUIDITY: ${mm}${policy && policy.referenceSymbol !== request.quote.symbol ? ` Converted to ${request.quote.symbol}.` : ''}`,
+    `MM LIQUIDITY: ${mm}${policy && !request.stockQuoteId && policy.referenceSymbol !== request.quote.symbol ? ` Converted to ${request.quote.symbol}.` : ''}`,
     policy ? 'TOTAL: Launch funding + aged wallets + MM liquidity. MM is separate from the initial pool; unused reserves remain capital.'
       : 'TOTAL: Launch funding + aged wallets. Unused reserves remain capital.',
     ...(cautions.length ? [`NOTES: ${cautions.join(' ')}`] : []),

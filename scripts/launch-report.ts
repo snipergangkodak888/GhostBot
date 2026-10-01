@@ -1,3 +1,4 @@
+import { fundStockReport } from '../lib/launch-reports/stock-funding'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { getModelCatalog, createDefaultRequest } from '../lib/launch-reports/catalog'
@@ -86,7 +87,7 @@ export async function runLaunchReportCli(args: string[]) {
 
   const savedRequest = await readRequest(positional[0])
   const request = snapshot ? savedRequest : await prepareLaunchReport(savedRequest)
-  const report = calculateLaunchReport(request)
+  const report = snapshot ? calculateLaunchReport(request) : await fundStockReport(calculateLaunchReport(request))
   const successful = report.rows.filter(row => row.status === 'ok').length
   if (!successful) throw new Error(`No requested scenario could be calculated: ${Array.from(new Set(report.rows.map(row => row.error).filter(Boolean))).join('; ')}`)
   // The shared web renderer resolves bundled fonts/logo from the application root.

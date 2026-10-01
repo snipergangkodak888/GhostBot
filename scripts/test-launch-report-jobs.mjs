@@ -98,6 +98,7 @@ function harness() {
         const report = copy(fixture)
         report.request.modelId = selection.modelId
         report.modelId = selection.modelId
+        if (selection.stockQuoteId) report.request.stockQuoteId = selection.stockQuoteId
         return fakeResult(report)
       },
       renderTelegramLaunchReport: (report, selection) => {
@@ -119,7 +120,19 @@ function harness() {
 }
 
 try {
-  await test('duplicate clicks create one durable job and one delivery', async () => {
+  await test('stock selection survives queue storage, worker restart and duplicate detection', async () => {
+  const h = harness()
+  const params = h.params({ selection:{modelId:'pons',stockQuoteId:'4284d6048c6a',taxPercent:2.5,agedWalletCount:50} })
+  const {job} = await h.worker.queueLaunchReport(params)
+  assert.equal(h.job(job._id).selection.stockQuoteId,'4284d6048c6a')
+  await h.loadWorker().runLaunchReportJobs()
+  assert.equal(h.job(job._id).report.request.stockQuoteId,'4284d6048c6a')
+  assert.equal((await h.worker.queueLaunchReport(params)).duplicate,true)
+  const different = await h.worker.queueLaunchReport({...params, selection:{...params.selection,stockQuoteId:'123456789abc'}})
+  assert.notEqual(different.job._id,job._id)
+})
+
+await test('duplicate clicks create one durable job and one delivery', async () => {
     const h = harness()
     const clicked = await Promise.all([h.worker.queueLaunchReport(h.params()), h.worker.queueLaunchReport(h.params())])
     assert.equal(h.state.rows.size, 1)

@@ -20,7 +20,9 @@ const wrap = (value: string, width = 142) => {
 export function renderLaunchReportSvg(report: LaunchReport): string {
   if (!report.rows.some(r => r.status === 'ok')) throw new Error('Calculate at least one valid scenario before exporting an image.')
   if (report.rows.length > 64) throw new Error('An image can contain at most 64 scenarios.')
-  const q = report.request.quote
+  if (report.request.stockQuoteId && !report.fundingCurrency) throw new Error('Generate live stock funding before exporting this report.')
+  const q = report.request.quote, fundingAsset = report.fundingCurrency || q
+  const showUsdTotal = !!q.usdPrice && !report.request.stockQuoteId
   const stamp = new Date(report.generatedAt).toISOString().replace('T', ' ').slice(0, 16) + ' UTC'
   const notes = launchReportFootnotes(report).flatMap(s => wrap(s))
   const height = 348 + report.rows.length * 61 + notes.length * 24 + 48
@@ -37,11 +39,11 @@ export function renderLaunchReportSvg(report: LaunchReport): string {
   line(112); t(short(report.title, 68), 44, 160, 32, '#f1f5ff', 700)
   t(short(`${report.client ? `${report.client} · ` : ''}${report.modelId} · ${report.request.chain || q.symbol} · ${report.request.base.supply} ${report.request.base.symbol} total supply`, 150), 44, 193, 15, '#9dafc7')
   t(short(`Terms: ${report.request.termsSource?.label || 'User-supplied inputs'}${report.request.termsSource?.asOf ? ` · ${report.request.termsSource.asOf}` : ''}`, 158), 44, 223, 12, '#9dafc7')
-  t(q.usdPrice ? `FX: 1 ${q.symbol} = $${q.usdPrice} · ${q.priceSource || 'User supplied'} · ${q.priceAsOf || 'No date supplied'}` : `Native ${q.symbol} estimates · USD conversion not supplied`, 44, 246, 12, '#9dafc7')
+  t(report.request.stockQuoteId ? `Pair: ${q.symbol} · Funding: ${fundingAsset.symbol}` : q.usdPrice ? `FX: 1 ${q.symbol} = $${q.usdPrice} · ${q.priceSource || 'User supplied'} · ${q.priceAsOf || 'No date supplied'}` : `Native ${q.symbol} estimates · USD conversion not supplied`, 44, 246, 12, '#9dafc7')
   const hasLp = report.rows.some(row => row.liquidity !== '0')
   const cols = hasLp ? [44, 205, 405, 655, 890, 1115, 1450] : [44, 310, 580, 845, 1115, 1450]
   const mc = hasLp ? 2 : 1, funding = mc + 1, wallets = mc + 2, injection = mc + 3, total = mc + 4
-  const headers = ['CONTROL', ...(hasLp ? [`INITIAL LP (${q.symbol})`] : []), q.usdPrice ? 'MC (USD)' : `MC (${q.symbol})`, `LAUNCH (${q.symbol})`, `WALLETS (${q.symbol})`, `INJECTION / MM (${q.symbol})`, `TOTAL (${q.symbol})`]
+  const headers = ['CONTROL', ...(hasLp ? [`INITIAL LP (${q.symbol})`] : []), q.usdPrice ? 'MC (USD)' : `MC (${q.symbol})`, `LAUNCH (${fundingAsset.symbol})`, `WALLETS (${fundingAsset.symbol})`, `INJECTION / MM (${fundingAsset.symbol})`, `TOTAL (${fundingAsset.symbol})`]
   headers.forEach((s, i) => t(s, cols[i], 286, 11, i === total ? '#84b9ff' : '#9dafc7', 600, i === 0 ? 'start' : 'middle')); line(303)
   report.rows.forEach((row, i) => {
     const y = 312 + i * 61
@@ -52,13 +54,13 @@ export function renderLaunchReportSvg(report: LaunchReport): string {
     if (hasLp) t(short(row.liquidity, 14), cols[1], y + 31, 18, '#ecf3ff', 400, 'middle')
     t(`${q.usdPrice ? '$' : ''}${cash(q.usdPrice ? row.fdvUsd : row.fdvQuote)}`, cols[mc], y + 31, 20, '#f1f5ff', 400, 'middle')
     // Displayed components must sum to the displayed total after rounding.
-    const walletCents = cents(row.raw.agedWallets, q.decimals), injectionCents = cents(row.raw.injectionLiquidity || '0', q.decimals), totalCents = cents(row.raw.total, q.decimals)
+    const walletCents = cents(row.raw.agedWallets, fundingAsset.decimals), injectionCents = cents(row.raw.injectionLiquidity || '0', fundingAsset.decimals), totalCents = cents(row.raw.total, fundingAsset.decimals)
     t(fixed(totalCents - walletCents - injectionCents), cols[funding], y + 31, 20, '#f1f5ff', 400, 'middle')
     t(fixed(walletCents), cols[wallets], y + 31, 20, '#9dafc7', 400, 'middle')
     t(fixed(injectionCents), cols[injection], y + 31, 20, '#b8d4fb', 400, 'middle')
     parts.push(`<rect x="1340" y="${y - 2}" width="216" height="58" rx="4" fill="#152b49"/>`)
-    t(fixed(totalCents), cols[total], y + (q.usdPrice ? 24 : 32), 24, '#84b9ff', 700, 'middle')
-    if (q.usdPrice) t(`≈ $${cash(Number(fixed(totalCents)) * Number(q.usdPrice))}`, cols[total], y + 45, 11, '#a6bbd6', 400, 'middle')
+    t(fixed(totalCents), cols[total], y + (showUsdTotal ? 24 : 32), 24, '#84b9ff', 700, 'middle')
+    if (showUsdTotal) t(`≈ $${cash(Number(fixed(totalCents)) * Number(q.usdPrice))}`, cols[total], y + 45, 11, '#a6bbd6', 400, 'middle')
   })
   const foot = 326 + report.rows.length * 61; line(foot)
   notes.forEach((note, i) => t(note, 44, foot + 28 + i * 24, 14, i === 0 ? '#84b9ff' : '#9dafc7'))
@@ -74,8 +76,9 @@ export function renderLaunchReportPng(report: LaunchReport): Buffer {
 }
 
 export function launchReportCsv(report: LaunchReport): string {
+  if (report.request.stockQuoteId && !report.fundingCurrency) throw new Error('Generate live stock funding before exporting this report.')
   const cell = (v: unknown) => { const s = String(v ?? ''); return `"${(/^[=+\-@\t\r]/.test(s) ? "'" + s : s).replace(/"/g, '""')}"` }
   const headers = ['model', 'quote', 'target_percent', 'actual_percent', 'initial_liquidity', 'phase', 'purchases', 'operations', 'model_reserves', 'provider_fee', 'recipient_buffers', 'source_gas', 'funding', 'aged_wallets', 'injection_mm_liquidity', 'total', 'mc_quote', 'mc_usd', 'status', 'notes']
-  const rows = report.rows.map(r => [report.modelId, report.request.quote.symbol, r.targetPct, r.actualPct, r.amounts?.initialLiquidity, r.phase, r.amounts?.buys, r.amounts?.operations, r.amounts?.modelReserves, r.amounts?.providerFee, r.amounts?.recipientBuffers, r.amounts?.sourceGas, r.amounts?.funding, r.amounts?.agedWallets, r.amounts?.injectionLiquidity ?? (r.status === 'ok' ? '0' : ''), r.amounts?.total, r.fdvQuote, r.fdvUsd, r.status, r.error || r.warnings.join('; ')])
+  const rows = report.rows.map(r => [report.modelId, (report.fundingCurrency?.symbol || report.request.quote.symbol), r.targetPct, r.actualPct, r.amounts?.initialLiquidity, r.phase, r.amounts?.buys, r.amounts?.operations, r.amounts?.modelReserves, r.amounts?.providerFee, r.amounts?.recipientBuffers, r.amounts?.sourceGas, r.amounts?.funding, r.amounts?.agedWallets, r.amounts?.injectionLiquidity ?? (r.status === 'ok' ? '0' : ''), r.amounts?.total, r.fdvQuote, r.fdvUsd, r.status, r.error || r.warnings.join('; ')])
   return [headers, ...rows].map(row => row.map(cell).join(',')).join('\r\n') + '\r\n'
 }
