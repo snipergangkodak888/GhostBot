@@ -5,6 +5,19 @@ export const GHOST_WALLET_PRICING = Object.freeze({ SOL: '0.10', ETH: '0.01', BN
 export const GHOST_DEFAULT_AGED_WALLET_COUNT = 125
 export const GHOST_PRICING_VERSION = 'ghost-wallets-v2'
 
+export function validateAgedWalletCount(count: number) {
+  if (!Number.isSafeInteger(count) || count < 0 || count > 10000) throw new Error('Enter a whole number of aged wallets from 0 to 10,000.')
+}
+
+/** Keep the native and converted funding snapshots consistent when changing the count. */
+export function applyAgedWalletCount(request: LaunchReportRequest, count: number): LaunchReportRequest {
+  validateAgedWalletCount(count)
+  const next = structuredClone(request)
+  next.operations.agedWalletCount = count
+  if (next.fundingConversion) next.fundingConversion.nativeOperations.agedWalletCount = count
+  return next
+}
+
 /** Refresh old ETH setups at today's commercial rate; saved report rows stay intact. */
 export function currentWalletPricingDraft(request: LaunchReportRequest): LaunchReportRequest {
   const next = structuredClone(request)

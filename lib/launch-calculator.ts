@@ -6,6 +6,7 @@ import { launchReportCautions } from './launch-reports/client-summary'
 import { launchVenue } from './launch-reports/venues'
 import { applyLaunchTax, launchTaxLabel, launchTaxTargets, validateLaunchTax } from './launch-reports/tax'
 import { formatAmount, parseAmount } from './launch-reports/utils'
+import { applyAgedWalletCount, validateAgedWalletCount } from './launch-reports/pricing'
 import type { LaunchReport, LaunchReportRequest } from './launch-reports/types'
 
 export type LaunchTargetMetric = 'supply' | 'market_cap'
@@ -16,6 +17,7 @@ export type LaunchQuoteInput = {
   initialLp?: number
   mmLiquidity?: number
   taxPercent?: number
+  agedWalletCount?: number
 }
 export type LaunchQuoteLine = { key: string; amount: string; raw: string; label: string }
 export type LaunchQuote = {
@@ -42,6 +44,7 @@ function validateInput(input: LaunchQuoteInput) {
   if (venue.requiresLiquidity && (!Number.isFinite(input.initialLp) || Number(input.initialLp) <= 0)) throw new Error('Initial LP must be greater than zero.')
   if (input.mmLiquidity != null && (!Number.isFinite(input.mmLiquidity) || input.mmLiquidity < 0)) throw new Error('MM liquidity must be a nonnegative amount.')
   if (input.taxPercent != null) validateLaunchTax(input.venueId, input.taxPercent)
+  if (input.agedWalletCount != null) validateAgedWalletCount(input.agedWalletCount)
   return venue
 }
 
@@ -49,7 +52,8 @@ function validateInput(input: LaunchQuoteInput) {
 export async function prepareLaunchQuote(input: LaunchQuoteInput): Promise<LaunchQuote> {
   const venue = validateInput(input)
   const base = createDefaultRequest(venue.id)
-  const request = input.taxPercent == null ? base : applyLaunchTax(base, input.taxPercent)
+  let request = input.taxPercent == null ? base : applyLaunchTax(base, input.taxPercent)
+  if (input.agedWalletCount != null) request = applyAgedWalletCount(request, input.agedWalletCount)
   if (venue.requiresLiquidity) request.liquidityAmounts = [plainAmount(input.initialLp!)]
   if (input.metric === 'supply') request.targetsPct = [input.target]
   const prepared = await prepareLaunchReport(request)
@@ -151,7 +155,8 @@ function solveMarketCap(request: LaunchReportRequest, target: number): LaunchRep
 export function calculateLaunchQuote(input: LaunchQuoteInput, prepared: LaunchReportRequest): LaunchQuote {
   const venue = validateInput(input)
   if (prepared.modelId !== venue.id || !prepared.injectionLiquidity) throw new Error('Refresh the venue settings before calculating a quote.')
-  const request = input.taxPercent == null ? structuredClone(prepared) : applyLaunchTax(prepared, input.taxPercent)
+  let request = input.taxPercent == null ? structuredClone(prepared) : applyLaunchTax(prepared, input.taxPercent)
+  if (input.agedWalletCount != null) request = applyAgedWalletCount(request, input.agedWalletCount)
   if (['stonkfun', 'launchlab'].includes(venue.id) && JSON.stringify(request.terms.transferFee) !== JSON.stringify(prepared.terms.transferFee)) throw new Error('Refresh Stonkfun settings after changing the holder tax.')
   request.liquidityAmounts = venue.requiresLiquidity ? [plainAmount(input.initialLp!)] : undefined
   const report = input.metric === 'supply'

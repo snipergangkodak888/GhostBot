@@ -4,9 +4,10 @@ import { injectionReference } from './injection'
 import { applyLaunchTax, launchTaxConfig, launchTaxLabel, launchTaxPercent, launchTaxTargets, validateLaunchTax } from './tax'
 import { launchReportCautions } from './client-summary'
 import { formatAmount, parseAmount } from './utils'
+import { applyAgedWalletCount, validateAgedWalletCount } from './pricing'
 import type { LaunchReport, LaunchReportRequest } from './types'
 
-export interface LaunchMathSelection { modelId: string; liquidity?: string; taxPercent?: number }
+export interface LaunchMathSelection { modelId: string; liquidity?: string; taxPercent?: number; agedWalletCount?: number }
 export interface LaunchMathButton { text: string; callback_data: string }
 export interface LaunchMathView {
   text: string
@@ -17,7 +18,7 @@ import { launchVenueGroups as groups, groupFor, venueName, type LaunchVenueGroup
 export type LaunchMathAction =
   | { action: 'home' }
   | { action: 'group'; group: LaunchMathGroup }
-  | { action: 'review' | 'generate' | 'tax'; selection: LaunchMathSelection }
+  | { action: 'review' | 'generate' | 'tax' | 'wallets'; selection: LaunchMathSelection }
 
 function checkedSelection(selection: LaunchMathSelection): LaunchMathSelection & { liquidity: string } {
   if (!selection || typeof selection.modelId !== 'string' || !getModelCatalog().some(model => model.id === selection.modelId)) {
@@ -29,12 +30,14 @@ function checkedSelection(selection: LaunchMathSelection): LaunchMathSelection &
     throw new Error('Choose an initial liquidity amount from the Launch Math menu.')
   }
   if (selection.taxPercent != null) validateLaunchTax(selection.modelId, selection.taxPercent)
-  return { modelId: selection.modelId, liquidity, ...(selection.taxPercent == null ? {} : { taxPercent: selection.taxPercent }) }
+  if (selection.agedWalletCount != null) validateAgedWalletCount(selection.agedWalletCount)
+  return { modelId: selection.modelId, liquidity, ...(selection.taxPercent == null ? {} : { taxPercent: selection.taxPercent }), ...(selection.agedWalletCount == null ? {} : { agedWalletCount: selection.agedWalletCount }) }
 }
 
-function selectionData(action: 'review' | 'generate' | 'tax', selection: LaunchMathSelection) {
+function selectionData(action: 'review' | 'generate' | 'tax' | 'wallets', selection: LaunchMathSelection) {
   const checked = checkedSelection(selection)
-  return `lm:${action}:${checked.modelId}:${checked.liquidity}${checked.taxPercent == null ? '' : `:${checked.taxPercent}`}`
+  const tax = checked.taxPercent == null && checked.agedWalletCount == null ? '' : `:${checked.taxPercent ?? ''}`
+  return `lm:${action}:${checked.modelId}:${checked.liquidity}${tax}${checked.agedWalletCount == null ? '' : `:${checked.agedWalletCount}`}`
 }
 
 /** Stateless, bounded callbacks carry preset choices only, never editable protocol inputs. */
@@ -45,12 +48,13 @@ export function parseLaunchMathCallback(data: unknown): LaunchMathAction | null 
   if (parts.length === 3 && parts[0] === 'lm' && parts[1] === 'group' && Object.hasOwn(groups, parts[2])) {
     return { action: 'group', group: parts[2] as LaunchMathGroup }
   }
-  if (![4, 5].includes(parts.length) || parts[0] !== 'lm' || !['review', 'generate', 'tax'].includes(parts[1])) return null
+  if (![4, 5, 6].includes(parts.length) || parts[0] !== 'lm' || !['review', 'generate', 'tax', 'wallets'].includes(parts[1])) return null
   try {
-    if (parts.length === 5 && !/^\d+(?:\.\d{1,2})?$/.test(parts[4])) return null
-    const selection = checkedSelection({ modelId: parts[2], liquidity: parts[3], ...(parts.length === 5 ? { taxPercent: Number(parts[4]) } : {}) })
+    if (parts.length >= 5 && !(parts.length === 6 && parts[4] === '') && !/^\d+(?:\.\d{1,2})?$/.test(parts[4])) return null
+    if (parts.length === 6 && !/^\d+$/.test(parts[5])) return null
+    const selection = checkedSelection({ modelId: parts[2], liquidity: parts[3], ...(parts.length >= 5 && parts[4] !== '' ? { taxPercent: Number(parts[4]) } : {}), ...(parts.length === 6 ? { agedWalletCount: Number(parts[5]) } : {}) })
     if (parts[1] === 'tax' && !launchTaxConfig(selection.modelId)?.custom) return null
-    return { action: parts[1] as 'review' | 'generate' | 'tax', selection }
+    return { action: parts[1] as 'review' | 'generate' | 'tax' | 'wallets', selection }
   } catch { return null }
 }
 
@@ -82,7 +86,8 @@ export function launchMathGroupView(group: LaunchMathGroup): LaunchMathView {
 export function createTelegramLaunchRequest(selection: LaunchMathSelection): LaunchReportRequest {
   const checked = checkedSelection(selection)
   const base = createDefaultRequest(checked.modelId)
-  const request = checked.taxPercent == null ? base : applyLaunchTax(base, checked.taxPercent)
+  let request = checked.taxPercent == null ? base : applyLaunchTax(base, checked.taxPercent)
+  if (checked.agedWalletCount != null) request = applyAgedWalletCount(request, checked.agedWalletCount)
   request.targetsPct = launchTaxTargets(request)
   request.title = `${venueName(checked.modelId)} · launch funding`
   if (checked.liquidity !== 'compare') request.liquidityAmounts = [checked.liquidity]
@@ -132,6 +137,7 @@ export function launchMathReviewView(selection: LaunchMathSelection): LaunchMath
   lines.push('', isDex ? 'Current USD prices load when you generate.' : 'Current launch settings and USD prices load when you generate.')
   lines.push('The image shows estimated funding, fees and reserves. It does not launch a token or move funds.')
   const keyboard: LaunchMathButton[][] = [[{ text: '📊 Generate image', callback_data: selectionData('generate', checked) }]]
+  keyboard.push([{ text: `Change aged wallets (${request.operations.agedWalletCount})`, callback_data: selectionData('wallets', checked) }])
   const tax = launchTaxConfig(checked.modelId)
   if (tax) {
     if (tax.custom) keyboard.push([{ text: 'Change creator tax', callback_data: selectionData('tax', checked) }])
@@ -139,11 +145,11 @@ export function launchMathReviewView(selection: LaunchMathSelection): LaunchMath
   }
   const amounts = createDefaultRequest(checked.modelId).liquidityAmounts
   if (amounts?.length) {
-    keyboard.push([{ text: `${checked.liquidity === 'compare' ? '✓ ' : ''}Compare all liquidity amounts`, callback_data: selectionData('review', { modelId: checked.modelId }) }])
+    keyboard.push([{ text: `${checked.liquidity === 'compare' ? '✓ ' : ''}Compare all liquidity amounts`, callback_data: selectionData('review', { ...checked, liquidity: 'compare' }) }])
     // Two buttons per row stay readable on small phones.
     for (let i = 0; i < amounts.length; i += 2) keyboard.push(amounts.slice(i, i + 2).map(amount => ({
       text: `${checked.liquidity === amount ? '✓ ' : ''}${amount} ${request.quote.symbol} only`,
-      callback_data: selectionData('review', { modelId: checked.modelId, liquidity: amount }),
+      callback_data: selectionData('review', { ...checked, liquidity: amount }),
     })))
   }
   keyboard.push([{ text: '← Change venue', callback_data: `lm:group:${groupFor(checked.modelId)}` }])

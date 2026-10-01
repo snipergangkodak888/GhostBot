@@ -27,6 +27,7 @@ import { LAUNCH_CHAINS, type LaunchChainId } from "@/lib/launch-math"
 import { operationalLaunchVenue, operationalVenuesForChain } from "@/lib/launch-venues"
 import { dailyProjectReviewButtons, dailyProjectReviewId, dailyProjectReviewText, type DailyProjectReviewRecord } from "@/lib/daily-project-review"
 import { launchTaxConfig, launchTaxPercent, validateLaunchTax } from "@/lib/launch-reports/tax"
+import { GHOST_DEFAULT_AGED_WALLET_COUNT, validateAgedWalletCount } from "@/lib/launch-reports/pricing"
 import { getLaunchVenues, launchVenue as launchPad, launchVenueGroups } from "@/lib/launch-reports/venues"
 import { prepareLaunchQuote, formatLaunchQuote, parseLaunchNumber, type LaunchTargetMetric } from "@/lib/launch-calculator"
 import { botPermissionDeniedMessage, canCollaborateOnLaunchDraft, canEditLaunchSchedule, canOpenTraderSchedule, canUseBotCapability, canUseLaunchReports, getBotPermissionContext, isLaunchDraftAction, type BotCapability, type BotPermissionContext } from "@/lib/bot-permissions"
@@ -836,6 +837,10 @@ function estDateKey() {
 
 const ponsCreatorTaxPrompt = "Reply with the Pons creator tax (0–10%)."
 
+function agedWalletPrompt(count: number) {
+  return `How many aged wallets? Current: ${count}.\n\nReply with a whole number, or 0 to use existing wallets.`
+}
+
 function launchTargetPrompt(metric: LaunchTargetMetric, venueName: string) {
   return metric === "supply"
     ? `🎯 Enter the desired total supply control for ${venueName}.\n\nExample: 67.37%\n\nSend /cancel to stop.`
@@ -876,7 +881,7 @@ async function sendCalculatedLaunchQuote(
   chatId: number | string,
   telegramId: number,
   state: Record<string, any>,
-  overrides: { target?: number; mmLiquidity?: number; taxPercent?: number } = {},
+  overrides: { target?: number; mmLiquidity?: number; taxPercent?: number; agedWalletCount?: number } = {},
   messageId?: number | null,
 ) {
   const pad = launchPad(String(state.launchVenueId || ""))
@@ -886,6 +891,7 @@ async function sendCalculatedLaunchQuote(
   const target = overrides.target ?? Number(state.launchTarget)
   const mmLiquidity = overrides.mmLiquidity ?? (state.launchMmOverride == null ? undefined : Number(state.launchMmOverride))
   const taxPercent = overrides.taxPercent ?? (state.launchTaxPercent == null ? undefined : Number(state.launchTaxPercent))
+  const agedWalletCount = overrides.agedWalletCount ?? (state.launchAgedWalletCount == null ? undefined : Number(state.launchAgedWalletCount))
   const quote = await prepareLaunchQuote({
     venueId: pad.id,
     metric,
@@ -893,6 +899,7 @@ async function sendCalculatedLaunchQuote(
     ...(pad.type === "amm" ? { initialLp: Number(state.launchInitialLp) } : {}),
     ...(mmLiquidity == null ? {} : { mmLiquidity }),
     ...(taxPercent == null ? {} : { taxPercent }),
+    ...(agedWalletCount == null ? {} : { agedWalletCount }),
   })
   await setState(telegramId, {
     action: "launch_calc_result",
@@ -901,11 +908,13 @@ async function sendCalculatedLaunchQuote(
     launchTarget: target,
     ...(pad.type === "amm" ? { launchInitialLp: quote.initialLp } : {}),
     launchTaxPercent: launchTaxPercent(quote.report.request) ?? null,
+    launchAgedWalletCount: quote.report.request.operations.agedWalletCount,
     launchMmOverride: mmLiquidity ?? null,
     launchMmLiquidity: quote.lines.find((line) => line.key === "mm")?.amount,
   }, chatId)
   return editOrSendWorkflowMessage(token, chatId, messageId, formatLaunchQuote(quote), [
     [{ text: "🎯 Change target", callback_data: "launch:adjust:target" }, { text: "💧 Change MM reserve", callback_data: "launch:adjust:mm" }],
+    [{ text: `Change aged wallets (${quote.report.request.operations.agedWalletCount})`, callback_data: "launch:adjust:wallets" }],
     ...(launchTaxConfig(pad.id) ? [[{ text: "Change tax", callback_data: "launch:adjust:tax" }]] : []),
     [{ text: "🆕 New launch quote", callback_data: "launch:start" }],
   ])
@@ -1423,7 +1432,7 @@ async function processState(token: string, chatId: number | string, telegramId: 
     return true
   }
 
-  const isLaunchCalculator = String(state.action || "").startsWith("launch_calc") || state.action === "launch_math_tax"
+  const isLaunchCalculator = String(state.action || "").startsWith("launch_calc") || String(state.action || "").startsWith("launch_math_")
   if (isLaunchCalculator && !canUseLaunchReports(context)) {
     await clearState(telegramId)
     await sendMessage(token, chatId, "Launch estimates are available to active Ghost teammates in a DM or configured Launch, Trade or Management chat.")
@@ -2028,6 +2037,25 @@ async function processState(token: string, chatId: number | string, telegramId: 
     return true
   }
 
+  if (state.action === "launch_calc_wallets" || state.action === "launch_math_wallets") {
+    const workflowMessageId = Number(state.reviewMessageId || state.promptMessageId || 0) || null
+    try {
+      const raw = text.trim()
+      if (!/^\d+$/.test(raw)) throw new Error("Enter a whole number of aged wallets from 0 to 10,000.")
+      const agedWalletCount = Number(raw)
+      validateAgedWalletCount(agedWalletCount)
+      if (state.action === "launch_math_wallets") {
+        const view = launchMathReviewView({ ...state.launchMathSelection, agedWalletCount })
+        await clearState(telegramId)
+        await editOrSendWorkflowMessage(token, chatId, workflowMessageId, view.text, view.replyMarkup.inline_keyboard)
+      } else await sendCalculatedLaunchQuote(token, chatId, telegramId, state, { agedWalletCount }, workflowMessageId)
+    } catch (error) {
+      await editOrSendWorkflowMessage(token, chatId, workflowMessageId, `⚠️ ${error instanceof Error ? error.message : "I could not update the wallet count."}\n\nTry another count or send /cancel.`)
+    }
+    await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
+    return true
+  }
+
   if (state.action === "launch_calc_tax" || state.action === "launch_math_tax") {
     const workflowMessageId = Number(state.reviewMessageId || state.promptMessageId || 0) || null
     try {
@@ -2281,6 +2309,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     }
     if (choice.action === "group") return show(launchMathGroupView(choice.group))
     if (choice.action === "tax") return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessage?.photo || callbackMessage?.document ? null : callbackMessageId, state: { action: "launch_math_tax", launchMathSelection: choice.selection }, text: ponsCreatorTaxPrompt })
+    if (choice.action === "wallets") return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessage?.photo || callbackMessage?.document ? null : callbackMessageId, state: { action: "launch_math_wallets", launchMathSelection: choice.selection }, text: agedWalletPrompt(choice.selection.agedWalletCount ?? GHOST_DEFAULT_AGED_WALLET_COUNT) })
     if (choice.action === "review" || callbackMessage?.document || callbackMessage?.photo) return show(launchMathReviewView(choice.selection))
     if (!callbackMessageId) return show(launchMathReviewView(choice.selection))
     try {
@@ -2933,6 +2962,9 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     }
     if (id === "target") {
       return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId, state: { ...state, action: "launch_calc_value" }, text: launchTargetPrompt(state.launchMetric as LaunchTargetMetric, pad.name) })
+    }
+    if (id === "wallets") {
+      return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId, state: { ...state, action: "launch_calc_wallets" }, text: agedWalletPrompt(state.launchAgedWalletCount ?? GHOST_DEFAULT_AGED_WALLET_COUNT) })
     }
     if (id === "mm") {
       return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId, state: { ...state, action: "launch_calc_mm" }, text: `💧 Enter the ${pad.symbol} amount to reserve for initial MM trading.\n\nCurrent reserve: ${state.launchMmLiquidity} ${pad.symbol}\n\nSend /cancel to stop.` })

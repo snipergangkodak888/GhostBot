@@ -46,6 +46,14 @@ for (const action of homeActions) {
     assert.match(review.text, /Every total includes 125 aged wallets/)
     assert.match(review.text, /does not launch a token or move funds/)
     for (const option of buttons(review)) assert.ok(callback(option), 'Liquidity and navigation callbacks must parse')
+    const custom = flow.launchMathReviewView({ ...choice.selection, agedWalletCount: 50 })
+    assert.match(custom.text, /Every total includes 50 aged wallets/)
+    for (const button of buttons(custom)) {
+      assert(Buffer.byteLength(button.callback_data, 'utf8') <= 64)
+      const parsed = callback(button)
+      assert(parsed)
+      if (parsed.selection) assert.equal(parsed.selection.agedWalletCount, 50, 'Tax, liquidity and generation choices preserve the custom count')
+    }
   }
 }
 assert.deepEqual([...discovered].sort(), getModelCatalog().map(model => model.id).sort())
@@ -56,6 +64,8 @@ for (const data of [
   'lm:generate:missing:compare', 'lm:generate:pumpfun:25', 'lm:generate:raydium-cpmm:0',
   'lm:generate:uniswap-v2:2.1', 'lm:generate:pumpfun:', 'lm:generate:pumpfun:compare:extra',
   'lm:generate:pumpfun:compare\n', `lm:${'x'.repeat(65)}`, 'launch:generate',
+  'lm:generate:pumpfun:compare::-1', 'lm:generate:pumpfun:compare::10001',
+  'lm:generate:pumpfun:compare::1.5', 'lm:generate:pumpfun:compare::', 'lm:generate:pumpfun:compare:0:50',
 ]) assert.equal(flow.parseLaunchMathCallback(data), null, `Reject invalid callback ${String(data)}`)
 assert.throws(() => flow.createTelegramLaunchRequest({ modelId: 'not-supported' }), /Choose a venue/)
 assert.throws(() => flow.createTelegramLaunchRequest({ modelId: 'uniswap-v3', liquidity: '-1' }), /liquidity/)
@@ -75,6 +85,8 @@ first.targetsPct[0] = 1
 const second = flow.createTelegramLaunchRequest({ modelId: 'pumpfun' })
 assert.equal(second.operations.agedWalletCount, 125)
 assert.equal(second.targetsPct[0], 40)
+assert.equal(flow.createTelegramLaunchRequest({ modelId: 'pons', taxPercent: 2.5, agedWalletCount: 0 }).operations.agedWalletCount, 0)
+assert.equal(callback(buttons(flow.launchMathReviewView({ modelId: 'pons', taxPercent: 2.5, agedWalletCount: 50 }))[0]).selection.taxPercent, 2.5)
 
 const raydium = flow.createTelegramLaunchRequest({ modelId: 'raydium-cpmm', liquidity: '30' })
 assert.deepEqual(raydium.liquidityAmounts, ['30'])
@@ -138,4 +150,9 @@ assert.ok(v2.caption.length <= 1024)
 const failing = createSourceLoader({ './prepare': { prepareLaunchReport: async () => { throw new Error('Fixture refresh unavailable') } } })(path.join(projectRoot, 'lib/launch-reports/telegram.ts'))
 await assert.rejects(failing.generateTelegramLaunchReport({ modelId: 'pumpfun' }), /Fixture refresh unavailable/, 'Live refresh failure must never silently use stale defaults')
 assert.equal(prepareCalls, 3)
+const customWallets = await flow.generateTelegramLaunchReport({ modelId: 'pumpfun', agedWalletCount: 50 })
+assert.equal(customWallets.report.request.operations.agedWalletCount, 50)
+assert(customWallets.report.rows.every(row => row.amounts.agedWallets === '5'))
+assert.match(customWallets.caption, /50 aged wallets/)
+for (const button of buttons(customWallets)) if (callback(button).selection) assert.equal(callback(button).selection.agedWalletCount, 50)
 process.stdout.write(`PASS: Telegram menu reaches all ${discovered.size} venues; fixed pricing, callback validation, defaults, progress/retry, live preparation, shared engine, PNG output and frozen delivery retries. No Telegram messages were sent.\n`)
