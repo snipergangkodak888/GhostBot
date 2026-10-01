@@ -866,14 +866,52 @@ async function sendLaunchVenuePicker(token: string, chatId: number | string, cha
   ])
 }
 
-async function sendLaunchMetricPicker(token: string, chatId: number | string, venueId: string, messageId?: number | null) {
+async function sendLaunchMetricPicker(token: string, chatId: number | string, venueId: string, messageId?: number | null, taxPercent?: number) {
   const pad = launchPad(venueId)
   if (!pad) return editOrSendWorkflowMessage(token, chatId, messageId, "Choose a venue from the updated Launch Calc menu.", [[{ text: "Choose venue", callback_data: "launch:start" }]])
-  return editOrSendWorkflowMessage(token, chatId, messageId, `${pad.name}\n\nWhat should the calculator solve for?`, [
-    [{ text: "🎯 Desired supply control", callback_data: `launch:metric:supply:${pad.id}` }],
-    [{ text: "💵 Desired launch MC", callback_data: `launch:metric:market_cap:${pad.id}` }],
+  if (taxPercent != null) validateLaunchTax(pad.id, taxPercent)
+  const tax = taxPercent == null ? '' : `:${taxPercent}`
+  return editOrSendWorkflowMessage(token, chatId, messageId, `${pad.name}${taxPercent == null ? '' : `\n${launchTaxConfig(pad.id)!.label}: ${taxPercent}%`}\n\nWhat should the calculator solve for?`, [
+    [{ text: "🎯 Desired supply control", callback_data: `launch:metric:supply:${pad.id}${tax}` }],
+    [{ text: "💵 Desired launch MC", callback_data: `launch:metric:market_cap:${pad.id}${tax}` }],
     [{ text: "⬅️ Venues", callback_data: `launch:chain:${pad.chainId}` }],
   ])
+}
+
+async function sendLaunchInitialTax(token: string, chatId: number | string, telegramId: number, venueId: string, messageId?: number | null, metric?: LaunchTargetMetric) {
+  const pad = launchPad(venueId), tax = launchTaxConfig(venueId)
+  if (!pad || !tax) return sendLaunchCalculatorStart(token, chatId, telegramId, messageId)
+  await clearState(telegramId)
+  return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: messageId,
+    state: { action: "launch_calc_initial_tax", launchVenueId: venueId, ...(metric ? { launchMetric: metric } : {}) },
+    text: tax.custom ? ponsCreatorTaxPrompt : `${pad.name}\n\nChoose the holder tax.`,
+    buttons: [
+      tax.custom ? [{ text: "Use 0% (default)", callback_data: `launch:initialtax:0:${venueId}` }]
+        : tax.options.map(percent => ({ text: `${percent}%${percent === 0 ? " (default)" : ""}`, callback_data: `launch:initialtax:${percent}:${venueId}` })),
+      [{ text: "⬅️ Venues", callback_data: `launch:chain:${pad.chainId}` }],
+    ],
+  })
+}
+
+async function beginLaunchTarget(token: string, chatId: number | string, telegramId: number, venueId: string, metric: LaunchTargetMetric, messageId?: number | null, taxPercent?: number) {
+  const pad = launchPad(venueId)
+  if (!pad || !(["supply", "market_cap"] as string[]).includes(metric)) return sendLaunchCalculatorStart(token, chatId, telegramId, messageId)
+  if (taxPercent != null) validateLaunchTax(venueId, taxPercent)
+  await clearState(telegramId)
+  const state = { launchVenueId: venueId, launchMetric: metric, ...(taxPercent == null ? {} : { launchTaxPercent: taxPercent }) }
+  if (pad.type === "amm") return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: messageId, state: { ...state, action: "launch_calc_lp" }, text: `💧 What initial LP should ${pad.name} use?\n\nThis sets the opening price. Type another amount or use the suggested default.`, buttons: [
+    [{ text: `Use ${pad.defaultLp} ${pad.symbol}`, callback_data: `launch:lp:default:${pad.id}` }],
+    [{ text: "⬅️ Target type", callback_data: `launch:venue:${pad.id}` }],
+  ] })
+  return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: messageId, state: { ...state, action: "launch_calc_value" }, text: launchTargetPrompt(metric, pad.name) })
+}
+
+async function acceptLaunchInitialTax(token: string, chatId: number | string, telegramId: number, state: Record<string, any>, taxPercent: number, messageId?: number | null) {
+  validateLaunchTax(state.launchVenueId, taxPercent)
+  // Older target-type buttons still start with tax before asking for the target value.
+  if (state.launchMetric) return beginLaunchTarget(token, chatId, telegramId, state.launchVenueId, state.launchMetric, messageId, taxPercent)
+  await clearState(telegramId)
+  return sendLaunchMetricPicker(token, chatId, state.launchVenueId, messageId, taxPercent)
 }
 
 async function sendCalculatedLaunchQuote(
@@ -2056,7 +2094,7 @@ async function processState(token: string, chatId: number | string, telegramId: 
     return true
   }
 
-  if (state.action === "launch_calc_tax" || state.action === "launch_math_tax") {
+  if (["launch_calc_initial_tax", "launch_calc_tax", "launch_math_tax"].includes(state.action)) {
     const workflowMessageId = Number(state.reviewMessageId || state.promptMessageId || 0) || null
     try {
       const raw = text.trim().replace(/%$/, "").trim()
@@ -2064,7 +2102,9 @@ async function processState(token: string, chatId: number | string, telegramId: 
       const taxPercent = Number(raw)
       const venueId = state.action === "launch_math_tax" ? state.launchMathSelection?.modelId : state.launchVenueId
       validateLaunchTax(venueId, taxPercent)
-      if (state.action === "launch_math_tax") {
+      if (state.action === "launch_calc_initial_tax") {
+        await acceptLaunchInitialTax(token, chatId, telegramId, state, taxPercent, workflowMessageId)
+      } else if (state.action === "launch_math_tax") {
         const view = launchMathReviewView({ ...state.launchMathSelection, taxPercent })
         await clearState(telegramId)
         await editOrSendWorkflowMessage(token, chatId, workflowMessageId, view.text, view.replyMarkup.inline_keyboard)
@@ -2919,20 +2959,32 @@ async function handleCallback(token: string, chatId: number | string, telegramId
   }
 
   if (area === "launch" && action === "start") return sendLaunchCalculatorStart(token, chatId, telegramId, callbackMessageId)
-  if (area === "launch" && action === "chain") return sendLaunchVenuePicker(token, chatId, id as LaunchChainId, callbackMessageId)
-  if (area === "launch" && action === "venue") return sendLaunchMetricPicker(token, chatId, id, callbackMessageId)
+  if (area === "launch" && action === "chain") {
+    await clearState(telegramId)
+    return sendLaunchVenuePicker(token, chatId, id as LaunchChainId, callbackMessageId)
+  }
+  if (area === "launch" && action === "venue") {
+    await clearState(telegramId)
+    return launchTaxConfig(id) ? sendLaunchInitialTax(token, chatId, telegramId, id, callbackMessageId) : sendLaunchMetricPicker(token, chatId, id, callbackMessageId)
+  }
+  if (area === "launch" && action === "initialtax") {
+    const state = await takeState(telegramId, chatId)
+    if (state?.action !== "launch_calc_initial_tax" || state.launchVenueId !== extra) return workflowReply("This tax selection has expired. Choose a venue to start again.", [[{ text: "Choose venue", callback_data: "launch:start" }]])
+    try {
+      if (!/^\d+(?:\.\d{1,2})?$/.test(id)) throw new Error("Choose a valid tax.")
+      return await acceptLaunchInitialTax(token, chatId, telegramId, state, Number(id), callbackMessageId)
+    } catch (error) { return workflowReply(`⚠️ ${error instanceof Error ? error.message : "I could not select the tax."}\n\nTry another tax or send /cancel.`) }
+  }
   if (area === "launch" && action === "metric") {
     const pad = launchPad(extra)
     const metric = id as LaunchTargetMetric
     if (!pad || !(["supply", "market_cap"] as string[]).includes(metric)) return sendLaunchCalculatorStart(token, chatId, telegramId, callbackMessageId)
-    await clearState(telegramId)
-    if (pad.type === "amm") {
-      return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId, state: { action: "launch_calc_lp", launchVenueId: pad.id, launchMetric: metric }, text: `💧 What initial LP should ${pad.name} use?\n\nThis sets the opening price. Type another amount or use the suggested default.`, buttons: [
-          [{ text: `Use ${pad.defaultLp} ${pad.symbol}`, callback_data: `launch:lp:default:${pad.id}` }],
-          [{ text: "⬅️ Target type", callback_data: `launch:venue:${pad.id}` }],
-        ] })
-    }
-    return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId, state: { action: "launch_calc_value", launchVenueId: pad.id, launchMetric: metric }, text: launchTargetPrompt(metric, pad.name) })
+    const parts = data.split(":"), rawTax = parts[4]
+    if (parts.length > 5 || (rawTax != null && !/^\d+(?:\.\d{1,2})?$/.test(rawTax))) return workflowReply("Choose a valid tax before entering a target.")
+    if (launchTaxConfig(pad.id) && rawTax == null) return sendLaunchInitialTax(token, chatId, telegramId, pad.id, callbackMessageId, metric)
+    try {
+      return await beginLaunchTarget(token, chatId, telegramId, pad.id, metric, callbackMessageId, rawTax == null ? undefined : Number(rawTax))
+    } catch (error) { return workflowReply(`⚠️ ${error instanceof Error ? error.message : "I could not start that quote."}`) }
   }
   if (area === "launch" && action === "lp") {
     const pad = launchPad(extra)

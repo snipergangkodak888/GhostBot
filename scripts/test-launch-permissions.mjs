@@ -241,6 +241,7 @@ assert.match(await timingReply('45'), /45 SOL designated for initial MM/)
 await callback(memberId, 'launch:adjust:target')
 assert.match(await timingReply('$2m'), /45 SOL designated for initial MM/, 'An explicit custom reserve persists when changing the target')
 await callback(memberId, 'launch:metric:supply:pons')
+assert.match(await callback(memberId, 'launch:initialtax:0:pons'), /desired total supply control/)
 assert.match(await timingReply('82.97'), /Creator tax: 0%/)
 assert(lastButtons().some(button => button.callback_data === 'launch:adjust:tax'))
 assert.equal(await callback(memberId, 'launch:adjust:tax'), 'Reply with the Pons creator tax (0–10%).')
@@ -265,6 +266,7 @@ await callback(memberId, 'launch:adjust:wallets')
 assert.match(await timingReply('0'), /~0 ETH for aged wallets \+ Husher funding/)
 assert.match(messages.at(-1).text, /1.8 ETH designated/)
 await callback(memberId, 'launch:metric:market_cap:stonkfun')
+assert.match(await callback(memberId, 'launch:initialtax:0:stonkfun'), /launch market cap/)
 assert.match(await timingReply('$15k'), /Holder tax: 0%/)
 await callback(memberId, 'launch:adjust:tax')
 assert.match(await callback(memberId, 'launch:tax:3'), /Holder tax: 3%/)
@@ -294,6 +296,7 @@ for (const venue of catalogue) {
   const quote = load('lib/launch-calculator.ts').calculateLaunchQuote({ venueId: venue.id, metric: 'supply', target: 67.37, ...(venue.requiresLiquidity ? { initialLp: venue.defaultLp } : {}) }, prepared)
   for (const [metric, value] of [['supply', '67.37%'], ['market_cap', String(quote.launchMarketCapUsd)]]) {
     await callback(memberId, `launch:metric:${metric}:${venue.id}`)
+    if (load('lib/launch-reports/tax.ts').launchTaxConfig(venue.id)) await callback(memberId, `launch:initialtax:0:${venue.id}`)
     if (venue.requiresLiquidity) await callback(memberId, `launch:lp:default:${venue.id}`)
     assert.match(await timingReply(value), /Capital requirement/, `${venue.id} ${metric} Telegram flow`)
     assert(messages.at(-1).text.length < 4096, `${venue.id} text fits Telegram`)
@@ -304,6 +307,40 @@ for (const venue of catalogue) {
     assert(lastButtons().some(button => button.text === 'Change aged wallets (50)'))
   }
 }
+// A new taxed quote chooses its rate immediately after the venue, before either target mode.
+for (const [venueId, rates, label, marketCap] of [
+  ['pons', [0, 2.5, 10], 'Creator tax', '$300k'],
+  ['stonkfun', [0, 1, 3], 'Holder tax', '$15k'],
+  ['launchlab', [0, 1, 3], 'Holder tax', '$15k'],
+]) for (const taxPercent of rates) for (const metric of ['supply', 'market_cap']) {
+  const prompt = await callback(memberId, `launch:venue:${venueId}`)
+  assert.match(prompt, venueId === 'pons' ? /Pons creator tax \(0–10%\)/ : /Choose the holder tax/)
+  assert.doesNotMatch(prompt, /Capital requirement/)
+  assert(lastButtons().some(button => button.callback_data === `launch:initialtax:0:${venueId}`), 'Keep a default shortcut at the start')
+  const chosen = venueId === 'pons' && taxPercent > 0 ? await timingReply(`${taxPercent}%`) : await callback(memberId, `launch:initialtax:${taxPercent}:${venueId}`)
+  assert.match(chosen, /solve for/)
+  assert(chosen.includes(`${label}: ${taxPercent}%`))
+  const targetButton = lastButtons().find(button => button.callback_data === `launch:metric:${metric}:${venueId}:${taxPercent}`)
+  assert(targetButton, 'Each target-mode choice carries the selected tax')
+  await callback(memberId, targetButton.callback_data)
+  const quoteText = await timingReply(metric === 'supply' ? '60%' : marketCap)
+  assert.match(quoteText, /Capital requirement/)
+  assert(quoteText.includes(`${label}: ${taxPercent}%`), 'The first quote must use the chosen tax')
+  assert.equal(reportJobs.length, 0)
+}
+await callback(memberId, 'launch:venue:pons')
+for (const invalid of ['10.01', '-1', '2.555']) assert.match(await timingReply(invalid), /tax.*percentage|tax from 0% to 10%/)
+assert.match(await timingReply('/cancel'), /Cancelled/)
+assert.match(await callback(memberId, 'launch:initialtax:0:pons'), /expired/)
+await callback(memberId, 'launch:venue:stonkfun')
+assert.match(await callback(memberId, 'launch:initialtax:2:stonkfun'), /Choose 0% standard, 1% or 3%/)
+assert.match(await timingReply('3%'), /Holder tax: 3%/)
+await callback(memberId, 'launch:venue:pons')
+await callback(memberId, 'launch:chain:solana')
+assert.equal(await db.collection('opsBotStates').findOne({telegramId:memberId}), null, 'Backing out clears the pending tax reply')
+assert.match(await callback(memberId, 'launch:initialtax:3:stonkfun'), /expired/)
+assert.match(await callback(memberId, 'launch:metric:supply:pons:11'), /0% to 10%/)
+assert.match(await callback(memberId, 'launch:metric:supply:pumpfun:1'), /does not offer/)
 for (const [user, sourceChat] of [[memberId, memberId], [memberId, -200], [adminId, -200]]) {
   assert.match(await timingReply('/launchcalc', user, sourceChat), /Launch capital calculator/)
   await callback(user, 'launch:metric:supply:pumpfun', sourceChat)
