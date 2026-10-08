@@ -48,6 +48,7 @@ import { renderPublishedTraderSchedulePng } from "@/lib/trader-schedule-image"
 import { launchMathHomeView, launchMathGroupView, launchMathReviewView, launchMathReviewWithPair, launchMathProgressView, launchMathErrorView, parseLaunchMathCallback, type LaunchMathView } from "@/lib/launch-reports/telegram"
 import { queueLaunchReport, runLaunchReportJobs } from "@/lib/launch-report-jobs"
 import { isTelegramWebhookRequest } from "@/lib/telegram-webhook-auth"
+import { nextTouchAbraReply } from "@/lib/touchabra"
 
 type InlineButton = { text: string; callback_data?: string; url?: string; web_app?: { url: string } }
 
@@ -168,6 +169,7 @@ async function setBotCommands(token: string) {
       { command: "guardlink", description: "Admin: show, refresh, or revoke team enrollment" },
       { command: "subscribe", description: "Subscribe this chat to scheduled updates" },
       { command: "subscriptions", description: "Show scheduled updates for this chat" },
+      { command: "touchabra", description: "Hands off Abra" },
     ],
   })
 }
@@ -213,6 +215,7 @@ function helpMessage() {
     "🗓️ /schedule - open the trader planner (Management Chat or admin DM)",
     "🛡️ Admins: /guardlink show|refresh|revoke",
     "📣 /subscribe launches|fees (within the matching chat profile)",
+    "🙌 /touchabra - hands off Abra",
   ].join("\n")
 }
 
@@ -3394,6 +3397,12 @@ async function handleCallback(token: string, chatId: number | string, telegramId
 async function routeText(token: string, chatId: number | string, telegramId: number, text: string, req: NextRequest, messageDateMs: number, message?: any) {
   const commandText = stripBotCommandSuffix(text)
   const context = await botPermissions(telegramId, chatId)
+  if (isBotCommand(commandText, "touchabra")) {
+    const caller = message?.from?.username
+      ? `@${escapeHtml(message.from.username)}`
+      : `<a href="tg://user?id=${telegramId}">${escapeHtml(message?.from?.first_name || "YOU")}</a>`
+    return sendMessage(token, chatId, nextTouchAbraReply(chatId, caller))
+  }
   if (/^\/schedule(?:@\w+)?$/i.test(commandText)) {
     if (!canOpenTraderSchedule(context)) return sendMessage(token, chatId, "⛔ The trader planner is available to Management Chat members and GhostBot admins in DM.")
     if (!context.isGroup) {
