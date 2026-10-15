@@ -1,3 +1,4 @@
+import { calculateMeteora, isMeteora } from './meteora'
 import { applyStockFunding } from './stock-funding-math'
 import { calculateSolana, graduationCounts } from './adapters-solana'
 import { calculateEvm } from './adapters-evm'
@@ -145,7 +146,8 @@ function v3Adapter(context: AdapterContext): AdapterResult {
 }
 
 function adapter(context: AdapterContext): AdapterResult {
-  if (context.liquidityRaw !== 0n && !['raydium-cpmm', 'uniswap-v2', 'uniswap-v3'].includes(context.request.modelId)) throw new Error('This launch model derives its opening liquidity; remove the initial-liquidity sweep')
+  if (context.liquidityRaw !== 0n && !['raydium-cpmm', 'uniswap-v2', 'uniswap-v3'].includes(context.request.modelId) && !isMeteora(context.request.modelId)) throw new Error('This launch model derives its opening liquidity; remove the initial-liquidity sweep')
+  if (isMeteora(context.request.modelId)) return calculateMeteora(context)
   if (CORE_SOLANA.has(context.request.modelId)) return calculateSolana(context)
   if (context.request.modelId === 'pons') return ponsAdapter(context)
   if (context.request.modelId === 'uniswap-v2') return v2Adapter(context)

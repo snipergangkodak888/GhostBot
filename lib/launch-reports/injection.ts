@@ -2,7 +2,7 @@ import type { LaunchReportRequest } from './types'
 import { ceilDiv, parseAmount } from './utils'
 
 export const GHOST_INJECTION_VERSION = 'ghost-injection-v1' as const
-const SOLANA_MODELS = new Set(['pumpfun', 'pumpfun-custom', 'launchlab', 'stonkfun', 'raydium-cpmm'])
+const SOLANA_MODELS = new Set(['pumpfun', 'pumpfun-custom', 'launchlab', 'stonkfun', 'raydium-cpmm', 'meteora-damm-v2', 'meteora-damm-v2-usdc'])
 const USD_UNIT = 10n ** 30n
 export const injectionReference = (modelId: string): 'SOL' | 'ETH' => SOLANA_MODELS.has(modelId) ? 'SOL' : 'ETH'
 

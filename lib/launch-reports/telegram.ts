@@ -146,7 +146,7 @@ export function launchMathReviewView(selection: LaunchMathSelection): LaunchMath
   keyboard.push([{ text: `Change aged wallets (${request.operations.agedWalletCount})`, callback_data: selectionData('wallets', checked) }])
   const tax = launchTaxConfig(checked.modelId, checked.stockQuoteId)
   if (tax) {
-    if (tax.custom) keyboard.push([{ text: 'Change creator tax', callback_data: selectionData('tax', checked) }])
+    if (tax.custom) keyboard.push([{ text: `Change ${tax.label.toLowerCase()}`, callback_data: selectionData('tax', checked) }])
     else keyboard.push(tax.options.map(percent => ({ text: `${launchTaxPercent(request) === percent ? '✓ ' : ''}${percent}%${percent === 0 ? ' default' : ''}`, callback_data: selectionData('review', { ...checked, taxPercent: percent }) })))
   }
   const amounts = createDefaultRequest(checked.modelId).liquidityAmounts

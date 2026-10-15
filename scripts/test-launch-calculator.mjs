@@ -29,7 +29,7 @@ for (const model of getModelCatalog()) {
   assert.equal(supply.lines.some(line => line.key === 'operations'), false, 'Operating allowances belong in the combined supply accumulation line')
   assert.match(formatLaunchQuote(supply), /Capital requirement:.*supply control.*launch MC/s)
   assert.doesNotMatch(formatLaunchQuote(supply), /FDV|MM is held separately|aged wallets ×/)
-  assert.equal(supply.lines.find(x => x.key === 'aged').amount, model.id === 'pumpfun-custom' ? '1250' : prepared.quote.symbol === 'SOL' ? '12.5' : prepared.quote.symbol === 'BNB' ? '2.5' : '1.25')
+  assert.equal(supply.lines.find(x => x.key === 'aged').amount, prepared.quote.symbol === 'USDC' ? '1250' : prepared.quote.symbol === 'SOL' ? '12.5' : prepared.quote.symbol === 'BNB' ? '2.5' : '1.25')
   const defaultAged = BigInt(supply.lines.find(x => x.key === 'aged').raw)
   for (const agedWalletCount of [0, 50, 250]) {
     const changed = calculateLaunchQuote({ ...input, agedWalletCount }, prepared)
@@ -88,4 +88,4 @@ assert(Math.abs(automatic.launchMarketCapUsd - migrated.launchMarketCapUsd) < 0.
 failPreparation = true
 await assert.rejects(() => prepareLaunchQuote(pump), /Protocol configuration unavailable/, 'No fallback quote on failed refresh')
 for (const [input, value] of [['70%', 70], ['$500k', 500000], ['1m', 1000000], ['garbage', null], ['-1', null]]) assert.equal(parseLaunchNumber(input), value)
-console.log('PASS: all 16 venues share LaunchMath calculations, both target modes, frozen live inputs, explicit unsupported-target errors and concise text output.')
+console.log('PASS: all catalogue venues share LaunchMath calculations, both target modes, frozen live inputs, explicit unsupported-target errors and concise text output.')

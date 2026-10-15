@@ -28,11 +28,11 @@ for (const [name, hash] of Object.entries(manifest.files)) {
 }
 
 equals(GHOST_WALLET_PRICING, { SOL: '0.10', ETH: '0.01', BNB: '0.02' })
-equals(getModelCatalog().length, 16)
+equals(getModelCatalog().length, 18)
 const needsTerms = new Set(['lunch-v3', 'lunch-v4-tax', 'lunch-v4-rewards', 'sushi-launchpad', 'fourmeme'])
 for (const model of getModelCatalog()) {
   const request = createDefaultRequest(model.id)
-  if (model.id === 'pumpfun-custom') {
+  if (request.operations.currencySymbol !== request.quote.symbol) {
     equals(request.operations.currencySymbol, 'SOL'); equals(request.operations.agedWalletCount, 125)
     throws(() => calculateLaunchReport(request), /currency/i)
     continue
@@ -171,4 +171,4 @@ equals(evm(four, 50).buyRaw, 5n * 10n ** 18n)
 check(evm(four, 85).buyRaw > 20n * 10n ** 18n)
 throws(() => evm(four, 55), /exactly 55/)
 
-console.log(`Launch report engine: ${assertions} assertions passed across all 16 model entries, funding, FX, limits, transfer fees, graduation and immutable source hashes.`)
+console.log(`Launch report engine: ${assertions} assertions passed across all 18 model entries, funding, FX, limits, transfer fees, graduation and immutable source hashes.`)

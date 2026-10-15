@@ -366,8 +366,9 @@ for (const venue of catalogue) {
   const quote = load('lib/launch-calculator.ts').calculateLaunchQuote({ venueId: venue.id, metric: 'supply', target: 67.37, ...(venue.requiresLiquidity ? { initialLp: venue.defaultLp } : {}) }, prepared)
   for (const [metric, value] of [['supply', '67.37%'], ['market_cap', String(quote.launchMarketCapUsd)], ['budget', String(Math.ceil(Number(quote.capitalTotal) * Number(prepared.quote.usdPrice)))]]) {
     await callback(memberId, `launch:metric:${metric}:${venue.id}`)
-    if (load('lib/launch-reports/tax.ts').launchTaxConfig(venue.id)) await callback(memberId, `launch:initialtax:0:${venue.id}`)
+    if (load('lib/launch-reports/tax.ts').launchTaxConfig(venue.id)) await callback(memberId, `launch:initialtax:${venue.id.startsWith("meteora-") ? 1 : 0}:${venue.id}`)
     if (venue.requiresLiquidity) await callback(memberId, `launch:lp:default:${venue.id}`)
+    if (venue.id.startsWith("meteora-")) await callback(memberId, `launch:bundle:default:${venue.id}`)
     assert.match(await timingReply(value), /Capital requirement/, `${venue.id} ${metric} Telegram flow`)
     assert(messages.at(-1).text.length < 4096, `${venue.id} text fits Telegram`)
     assert.equal(reportJobs.length, 0, 'All calculator venues return text without queueing images')
@@ -376,6 +377,43 @@ for (const venue of catalogue) {
     assert.match(await timingReply('50'), /Capital requirement/, `${venue.id} ${metric} wallet adjustment`)
     assert(lastButtons().some(button => button.text === 'Change aged wallets (50)'))
   }
+}
+// Meteora configuration is collected up front and survives every result edit.
+for (const venueId of ['meteora-damm-v2', 'meteora-damm-v2-usdc']) {
+  const symbol = venueId.endsWith('usdc') ? 'USDC' : 'SOL'
+  assert.match(await callback(memberId, `launch:venue:${venueId}`), /pool trading fee/)
+  assert(lastButtons().some(b => b.callback_data === `launch:initialtax:1:${venueId}`))
+  assert.match(await timingReply('0'), /0.01% to 99%/)
+  assert.match(await timingReply('3.25%'), /What should the calculator solve for/)
+  await callback(memberId, buttonWithText('🎯 Desired supply control'))
+  assert.match(await timingReply(symbol === 'SOL' ? '35' : '3500'), /bundle wallets/)
+  assert.match(await callback(adminId, `launch:bundle:default:${venueId}`), /expired/)
+  for (const bad of ['0', '65', '2.5']) assert.match(await timingReply(bad), /whole number of bundle wallets/)
+  assert.match(await timingReply('32'), /desired total supply control/)
+  assert.match(await timingReply('70%'), /32 bundle wallets/)
+  assert.match(messages.at(-1).text, /Pool fee: 3.25%/)
+  assert(lastButtons().some(b => b.callback_data === 'launch:adjust:lp'))
+  await callback(memberId, 'launch:adjust:bundle')
+  assert.match(await timingReply('8'), /8 bundle wallets/)
+  await callback(memberId, 'launch:adjust:lp')
+  assert.match(await timingReply(symbol === 'SOL' ? '40' : '4000'), new RegExp(`Assuming a ${symbol === 'SOL' ? 40 : 4000} ${symbol} initial LP`))
+  await callback(memberId, 'launch:adjust:tax')
+  assert.match(await timingReply('5%'), /Pool fee: 5%/)
+  await callback(memberId, 'launch:adjust:wallets')
+  assert.match(await timingReply('50'), /8 bundle wallets/)
+  assert.match(messages.at(-1).text, /Pool fee: 5%/)
+  await callback(memberId, 'launch:adjust:mm')
+  assert.match(await timingReply('10'), /10 .*initial MM trading liquidity \(custom\)/)
+  await callback(memberId, 'launch:adjust:target')
+  assert.match(await timingReply('75%'), /75% supply control/)
+  const state = await db.collection('opsBotStates').findOne({ telegramId: memberId })
+  assert.equal(state.launchBundleWalletCount, 8)
+  assert.equal(state.launchAgedWalletCount, 50)
+  assert.equal(state.launchTaxPercent, 5)
+  assert.equal(state.launchMmOverride, 10)
+  assert.equal(state.launchInitialLp, symbol === 'SOL' ? 40 : 4000)
+  for (const b of lastButtons()) if (b.callback_data) assert(Buffer.byteLength(b.callback_data) <= 64)
+  assert.equal(reportJobs.length, 0)
 }
 // A new taxed quote chooses its rate immediately after the venue, before either target mode.
 for (const [venueId, rates, label, marketCap] of [

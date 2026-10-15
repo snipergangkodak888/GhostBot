@@ -1,7 +1,9 @@
+import { isMeteora } from './meteora'
 import type { LaunchReportRequest } from './types'
 import { parseAmount } from './utils'
 
 export function launchTaxConfig(modelId: string, stockQuoteId?: string) {
+  if (isMeteora(modelId)) return { label: 'Pool fee', options: [1], custom: true }
   if (modelId.startsWith('pumpfun') && stockQuoteId) return { label: 'Creator fee', options: [0], custom: true }
   if (modelId === 'pons') return { label: 'Creator tax', options: [0, 1, 3, 5, 10], custom: true }
   if (modelId === 'stonkfun' || modelId === 'launchlab') return { label: 'Holder tax', options: [0, 1, 3], custom: false }
@@ -10,6 +12,7 @@ export function launchTaxConfig(modelId: string, stockQuoteId?: string) {
 
 export function launchTaxPercent(request: LaunchReportRequest): number | undefined {
   if (!launchTaxConfig(request.modelId, request.stockQuoteId)) return undefined
+  if (isMeteora(request.modelId)) return Number(request.terms.poolFeeBps) / 100
   if (request.modelId.startsWith('pumpfun')) return Number(request.terms.creatorFeeOverrideBps || 0) / 100
   return request.modelId === 'pons' ? Number(request.terms.creatorTaxBps ?? 0) / 100
     : Number((request.terms.transferFee as { basisPoints?: number } | undefined)?.basisPoints ?? 0) / 100
@@ -18,6 +21,10 @@ export function launchTaxPercent(request: LaunchReportRequest): number | undefin
 export function validateLaunchTax(modelId: string, percent: number, stockQuoteId?: string) {
   const config = launchTaxConfig(modelId, stockQuoteId)
   if (!config) throw new Error('This venue does not offer a configurable launch tax.')
+  if (isMeteora(modelId)) {
+    if (!Number.isFinite(percent) || percent < 0.01 || percent > 99 || Math.abs(percent * 100 - Math.round(percent * 100)) > 1e-8) throw new Error('Enter a pool fee from 0.01% to 99%, with at most two decimal places.')
+    return
+  }
   if (!Number.isFinite(percent) || percent < 0 || percent > 10 || Math.abs(percent * 100 - Math.round(percent * 100)) > 1e-8) throw new Error('Enter a tax from 0% to 10%, with at most two decimal places.')
   if (!config.custom && !config.options.includes(percent)) throw new Error('Choose 0% standard, 1% or 3% Stonkfun holder tax. Available reward rates are verified when generating.')
 }
@@ -26,7 +33,8 @@ export function validateLaunchTax(modelId: string, percent: number, stockQuoteId
 export function applyLaunchTax(request: LaunchReportRequest, percent: number): LaunchReportRequest {
   validateLaunchTax(request.modelId, percent, request.stockQuoteId)
   const next = structuredClone(request), bps = Math.round(percent * 100)
-  if (next.modelId.startsWith('pumpfun')) {
+  if (isMeteora(next.modelId)) next.terms.poolFeeBps = bps
+  else if (next.modelId.startsWith('pumpfun')) {
     if (bps) next.terms.creatorFeeOverrideBps = bps
     else delete next.terms.creatorFeeOverrideBps
   }

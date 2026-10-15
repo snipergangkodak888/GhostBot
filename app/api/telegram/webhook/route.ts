@@ -27,6 +27,7 @@ import { receiptAvailableAmount, receiptAvailableUsd } from "@/lib/revenue-alloc
 import { LAUNCH_CHAINS, type LaunchChainId } from "@/lib/launch-math"
 import { operationalLaunchVenue, operationalVenuesForChain } from "@/lib/launch-venues"
 import { dailyProjectReviewButtons, dailyProjectReviewId, dailyProjectReviewText, type DailyProjectReviewRecord } from "@/lib/daily-project-review"
+import { isMeteora, validateBundleWalletCount } from "@/lib/launch-reports/meteora"
 import { launchTaxConfig, launchTaxPercent, validateLaunchTax } from "@/lib/launch-reports/tax"
 import { GHOST_DEFAULT_AGED_WALLET_COUNT, validateAgedWalletCount } from "@/lib/launch-reports/pricing"
 import { getLaunchVenues, launchVenue as launchPad, launchVenueGroups } from "@/lib/launch-reports/venues"
@@ -892,7 +893,7 @@ async function sendStockPairPicker(token: string, chatId: number | string, teleg
   })
 }
 
-const launchTaxPrompt = (modelId: string) => modelId.startsWith('pumpfun') ? 'Reply with the creator fee percentage, or 0 to use the venue default.' : ponsCreatorTaxPrompt
+const launchTaxPrompt = (modelId: string) => isMeteora(modelId) ? 'Reply with the pool trading fee (0.01–99%). Default: 1%.\n\nFull-range pool; fees collected in the quote token. Dynamic fees are off.' : modelId.startsWith('pumpfun') ? 'Reply with the creator fee percentage, or 0 to use the venue default.' : ponsCreatorTaxPrompt
 
 async function sendLaunchMetricPicker(token: string, chatId: number | string, venueId: string, messageId?: number | null, taxPercent?: number, stockQuoteId?: string) {
   const pad = launchPad(venueId)
@@ -917,7 +918,7 @@ async function sendLaunchInitialTax(token: string, chatId: number | string, tele
     state: { action: "launch_calc_initial_tax", launchVenueId: venueId, launchStockQuoteId: stockQuoteId, ...(metric ? { launchMetric: metric } : {}) },
     text: tax.custom ? launchTaxPrompt(venueId) : `${pad.name}\n\nChoose the holder tax.`,
     buttons: [
-      tax.custom ? [{ text: venueId.startsWith('pumpfun') ? "Use venue default" : "Use 0% (default)", callback_data: `launch:initialtax:0:${venueId}` }]
+      tax.custom ? [{ text: venueId.startsWith('pumpfun') ? "Use venue default" : `Use ${isMeteora(venueId) ? 1 : 0}% (default)`, callback_data: `launch:initialtax:${isMeteora(venueId) ? 1 : 0}:${venueId}` }]
         : tax.options.map(percent => ({ text: `${percent}%${percent === 0 ? " (default)" : ""}`, callback_data: `launch:initialtax:${percent}:${venueId}` })),
       [{ text: "⬅️ Venues", callback_data: `launch:chain:${pad.chainId}` }],
     ],
@@ -930,11 +931,35 @@ async function beginLaunchTarget(token: string, chatId: number | string, telegra
   if (taxPercent != null) validateLaunchTax(venueId, taxPercent, stockQuoteId)
   await clearState(telegramId)
   const state = { launchVenueId: venueId, launchStockQuoteId: stockQuoteId, launchMetric: metric, ...(taxPercent == null ? {} : { launchTaxPercent: taxPercent }) }
-  if (pad.type === "amm") return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: messageId, state: { ...state, action: "launch_calc_lp" }, text: `💧 What initial LP should ${pad.name} use?\n\nThis sets the opening price. Type another amount or use the suggested default.`, buttons: [
+  if (pad.type === "amm") return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: messageId, state: { ...state, action: "launch_calc_lp" }, text: `💧 What initial LP should ${pad.name} use?\n\nEnter the ${pad.symbol} side of the pool. This sets the opening price. Type an amount or use the default.`, buttons: [
     [{ text: `Use ${pad.defaultLp} ${pad.symbol}`, callback_data: `launch:lp:default:${pad.id}` }],
     [{ text: "⬅️ Target type", callback_data: `launch:venue:${pad.id}` }],
   ] })
   return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: messageId, state: { ...state, action: "launch_calc_value" }, text: launchTargetPrompt(metric, pad.name) })
+}
+
+function bundleWalletPrompt(count = 25) {
+  return `How many bundle wallets? Reply with 1–64. Default: ${count}.\n\nThese execute the buys; aged wallets are configured separately.`
+}
+
+async function acceptLaunchLp(token: string, chatId: number | string, telegramId: number, state: Record<string, any>, initialLp: number, messageId?: number | null) {
+  const pad = launchPad(state.launchVenueId)!
+  if (state.launchEditingLp) return sendCalculatedLaunchQuote(token, chatId, telegramId, state, { initialLp }, messageId)
+  const next = { ...state, launchInitialLp: initialLp }
+  if (isMeteora(pad.id)) return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: messageId,
+    state: { ...next, action: "launch_calc_bundle" }, text: bundleWalletPrompt(),
+    buttons: [[{ text: "Use 25 wallets", callback_data: `launch:bundle:default:${pad.id}` }]],
+  })
+  return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: messageId, state: { ...next, action: "launch_calc_value" }, text: launchTargetPrompt(state.launchMetric as LaunchTargetMetric, pad.name) })
+}
+
+async function acceptBundleWallets(token: string, chatId: number | string, telegramId: number, state: Record<string, any>, count: number, messageId?: number | null) {
+  validateBundleWalletCount(count)
+  if (!isMeteora(state.launchVenueId)) throw new Error('Choose a Meteora quote first.')
+  if (state.launchEditingBundle) return sendCalculatedLaunchQuote(token, chatId, telegramId, state, { bundleWalletCount: count }, messageId)
+  return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: messageId,
+    state: { ...state, launchBundleWalletCount: count, action: "launch_calc_value" }, text: launchTargetPrompt(state.launchMetric, launchPad(state.launchVenueId)!.name),
+  })
 }
 
 async function acceptLaunchInitialTax(token: string, chatId: number | string, telegramId: number, state: Record<string, any>, taxPercent: number, messageId?: number | null) {
@@ -950,7 +975,7 @@ async function sendCalculatedLaunchQuote(
   chatId: number | string,
   telegramId: number,
   state: Record<string, any>,
-  overrides: { target?: number; mmLiquidity?: number; taxPercent?: number; agedWalletCount?: number } = {},
+  overrides: { target?: number; mmLiquidity?: number; taxPercent?: number; agedWalletCount?: number; bundleWalletCount?: number; initialLp?: number } = {},
   messageId?: number | null,
 ) {
   const pad = launchPad(String(state.launchVenueId || ""))
@@ -961,15 +986,17 @@ async function sendCalculatedLaunchQuote(
   const mmLiquidity = overrides.mmLiquidity ?? (state.launchMmOverride == null ? undefined : Number(state.launchMmOverride))
   const taxPercent = overrides.taxPercent ?? (state.launchTaxPercent == null ? undefined : Number(state.launchTaxPercent))
   const agedWalletCount = overrides.agedWalletCount ?? (state.launchAgedWalletCount == null ? undefined : Number(state.launchAgedWalletCount))
+  const bundleWalletCount = overrides.bundleWalletCount ?? (state.launchBundleWalletCount == null ? undefined : Number(state.launchBundleWalletCount))
   const quote = await prepareLaunchQuote({
     venueId: pad.id,
     stockQuoteId: state.launchStockQuoteId,
     metric,
     target,
-    ...(pad.type === "amm" ? { initialLp: Number(state.launchInitialLp) } : {}),
+    ...(pad.type === "amm" ? { initialLp: overrides.initialLp ?? Number(state.launchInitialLp) } : {}),
     ...(mmLiquidity == null ? {} : { mmLiquidity }),
     ...(taxPercent == null ? {} : { taxPercent }),
     ...(agedWalletCount == null ? {} : { agedWalletCount }),
+    ...(bundleWalletCount == null ? {} : { bundleWalletCount }),
   })
   await setState(telegramId, {
     action: "launch_calc_result",
@@ -980,6 +1007,9 @@ async function sendCalculatedLaunchQuote(
     ...(pad.type === "amm" ? { launchInitialLp: quote.initialLp } : {}),
     launchTaxPercent: launchTaxPercent(quote.report.request) ?? null,
     launchAgedWalletCount: quote.report.request.operations.agedWalletCount,
+    launchBundleWalletCount: isMeteora(pad.id) ? quote.report.request.operations.buyerCount : null,
+    launchEditingLp: false,
+    launchEditingBundle: false,
     launchMmOverride: mmLiquidity ?? null,
     launchFundingSymbol: quote.report.fundingCurrency?.symbol || pad.symbol,
     launchMmLiquidity: quote.lines.find((line) => line.key === "mm")?.amount,
@@ -987,7 +1017,8 @@ async function sendCalculatedLaunchQuote(
   return editOrSendWorkflowMessage(token, chatId, messageId, formatLaunchQuote(quote), [
     [{ text: metric === "budget" ? "💰 Change budget" : "🎯 Change target", callback_data: "launch:adjust:target" }, { text: "💧 Change MM reserve", callback_data: "launch:adjust:mm" }],
     [{ text: `Change aged wallets (${quote.report.request.operations.agedWalletCount})`, callback_data: "launch:adjust:wallets" }],
-    ...(launchTaxConfig(pad.id, state.launchStockQuoteId) ? [[{ text: "Change tax", callback_data: "launch:adjust:tax" }]] : []),
+    ...(isMeteora(pad.id) ? [[{ text: "Change initial LP", callback_data: "launch:adjust:lp" }, { text: `Bundle wallets (${quote.report.request.operations.buyerCount})`, callback_data: "launch:adjust:bundle" }]] : []),
+    ...(launchTaxConfig(pad.id, state.launchStockQuoteId) ? [[{ text: isMeteora(pad.id) ? "Change pool fee" : "Change tax", callback_data: "launch:adjust:tax" }]] : []),
     [{ text: "🆕 New launch quote", callback_data: "launch:start" }],
   ])
 }
@@ -2093,8 +2124,18 @@ async function processState(token: string, chatId: number | string, telegramId: 
       await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
       return true
     }
-    await setState(telegramId, { action: "launch_calc_value", launchInitialLp: initialLp }, chatId)
-    await editOrSendWorkflowMessage(token, chatId, workflowMessageId, launchTargetPrompt(state.launchMetric as LaunchTargetMetric, pad.name))
+    try { await acceptLaunchLp(token, chatId, telegramId, state, Number(initialLp), workflowMessageId) }
+    catch (error) { await editOrSendWorkflowMessage(token, chatId, workflowMessageId, `⚠️ ${error instanceof Error ? error.message : "Could not update initial LP."}\n\nTry another amount or send /cancel.`) }
+    await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
+    return true
+  }
+
+  if (state.action === "launch_calc_bundle") {
+    const workflowMessageId = Number(state.reviewMessageId || state.promptMessageId || 0) || null
+    try {
+      if (!/^\d+$/.test(text.trim())) throw new Error('Enter a whole number of bundle wallets from 1 to 64.')
+      await acceptBundleWallets(token, chatId, telegramId, state, Number(text.trim()), workflowMessageId)
+    } catch (error) { await editOrSendWorkflowMessage(token, chatId, workflowMessageId, `⚠️ ${error instanceof Error ? error.message : "Could not update bundle wallets."}\n\nTry another count or send /cancel.`) }
     await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
     return true
   }
@@ -3058,8 +3099,13 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     const state = await takeState(telegramId, chatId)
     if (!pad || state?.launchVenueId !== pad.id || state?.action !== "launch_calc_lp") return sendLaunchCalculatorStart(token, chatId, telegramId, callbackMessageId)
     if (id === "default") {
-      return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId, state: { ...state, action: "launch_calc_value", launchInitialLp: pad.defaultLp }, text: launchTargetPrompt(state.launchMetric as LaunchTargetMetric, pad.name) })
+      return acceptLaunchLp(token, chatId, telegramId, state, pad.defaultLp!, callbackMessageId)
     }
+  }
+  if (area === "launch" && action === "bundle") {
+    const state = await takeState(telegramId, chatId)
+    if (id !== "default" || state?.action !== "launch_calc_bundle" || state.launchVenueId !== extra || !isMeteora(extra)) return workflowReply("This wallet selection expired. Start a new launch quote.")
+    return acceptBundleWallets(token, chatId, telegramId, state, 25, callbackMessageId)
   }
   if (area === "launch" && action === "tax") {
     const state = await takeState(telegramId, chatId)
@@ -3075,6 +3121,12 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     const pad = launchPad(String(state?.launchVenueId || ""))
     const pendingBudget = state?.action === 'launch_calc_value' && state.launchMetric === 'budget' && Number(state.launchTarget) > 0
     if (!pad || (state?.action !== "launch_calc_result" && !pendingBudget)) return sendLaunchCalculatorStart(token, chatId, telegramId, callbackMessageId)
+    if (id === "lp" && isMeteora(pad.id)) return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId,
+      state: { ...state, action: "launch_calc_lp", launchEditingLp: true }, text: `Enter the initial LP in ${pad.symbol}. Current: ${state.launchInitialLp} ${pad.symbol}.`,
+    })
+    if (id === "bundle" && isMeteora(pad.id)) return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId,
+      state: { ...state, action: "launch_calc_bundle", launchEditingBundle: true }, text: `Current bundle wallets: ${state.launchBundleWalletCount}.\n\nReply with a whole number from 1 to 64.`,
+    })
     if (id === "tax") {
       const tax = launchTaxConfig(pad.id, state.launchStockQuoteId)
       if (!tax) return workflowReply("This venue does not offer a configurable launch tax.")

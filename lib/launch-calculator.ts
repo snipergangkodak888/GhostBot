@@ -1,3 +1,4 @@
+import { applyBundleWalletCount, isMeteora, validateBundleWalletCount } from './launch-reports/meteora'
 import { fundStockReport, stockSwapQuote } from './launch-reports/stock-funding'
 import { applyStockFunding } from './launch-reports/stock-funding-math'
 import { nativeDecimals } from './launch-reports/funding'
@@ -22,6 +23,7 @@ export type LaunchQuoteInput = {
   mmLiquidity?: number
   taxPercent?: number
   agedWalletCount?: number
+  bundleWalletCount?: number
 }
 export type LaunchQuoteLine = { key: string; amount: string; raw: string; label: string }
 export type LaunchQuote = {
@@ -50,6 +52,10 @@ function validateInput(input: LaunchQuoteInput) {
   if (input.mmLiquidity != null && (!Number.isFinite(input.mmLiquidity) || input.mmLiquidity < 0)) throw new Error('MM liquidity must be a nonnegative amount.')
   if (input.taxPercent != null) validateLaunchTax(input.venueId, input.taxPercent, input.stockQuoteId)
   if (input.agedWalletCount != null) validateAgedWalletCount(input.agedWalletCount)
+  if (input.bundleWalletCount != null) {
+    if (!isMeteora(venue.id)) throw new Error('Bundle-wallet editing is available for Meteora quotes.')
+    validateBundleWalletCount(input.bundleWalletCount)
+  }
   return venue
 }
 
@@ -60,6 +66,7 @@ export async function prepareLaunchQuote(input: LaunchQuoteInput): Promise<Launc
   if (input.stockQuoteId) base.stockQuoteId = input.stockQuoteId
   let request = input.taxPercent == null ? base : applyLaunchTax(base, input.taxPercent)
   if (input.agedWalletCount != null) request = applyAgedWalletCount(request, input.agedWalletCount)
+  if (input.bundleWalletCount != null) request = applyBundleWalletCount(request, input.bundleWalletCount)
   if (venue.requiresLiquidity) request.liquidityAmounts = [plainAmount(input.initialLp!)]
   if (input.metric === 'supply') request.targetsPct = [input.target]
   const prepared = await prepareLaunchReport(request)
@@ -265,6 +272,7 @@ function quoteRequest(input: LaunchQuoteInput, prepared: LaunchReportRequest) {
   if (prepared.modelId !== venue.id || prepared.stockQuoteId !== input.stockQuoteId || !prepared.injectionLiquidity) throw new Error('Refresh the venue settings before calculating a quote.')
   let request = input.taxPercent == null ? structuredClone(prepared) : applyLaunchTax(prepared, input.taxPercent)
   if (input.agedWalletCount != null) request = applyAgedWalletCount(request, input.agedWalletCount)
+  if (input.bundleWalletCount != null) request = applyBundleWalletCount(request, input.bundleWalletCount)
   if (['stonkfun', 'launchlab'].includes(venue.id) && JSON.stringify(request.terms.transferFee) !== JSON.stringify(prepared.terms.transferFee)) throw new Error('Refresh Stonkfun settings after changing the holder tax.')
   request.liquidityAmounts = venue.requiresLiquidity ? [plainAmount(input.initialLp!)] : undefined
   return request
@@ -322,6 +330,7 @@ export function formatLaunchQuote(quote: LaunchQuote) {
   ]
   return [
     `<b>${request.stockQuoteId ? quote.venue.name.replace(/ · (SOL|USDC)$/, '') : quote.venue.name}${request.stockQuoteId ? ` · ${request.quote.symbol} pair` : ''}</b>`,
+    ...(isMeteora(request.modelId) ? [`Full range · ${request.operations.buyerCount} bundle wallets · fees in ${request.quote.symbol}.`] : []),
     ...(launchTaxLabel(request) ? [launchTaxLabel(request)!] : []),
     ...(quote.initialLp ? [`Assuming a ${display(quote.initialLp)} ${symbol} initial LP:`] : []),
     ...(quote.budget ? [`Total budget: <b>${compactUsd(quote.budget.usd)}</b>.`] : []),
