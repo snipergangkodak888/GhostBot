@@ -38,6 +38,8 @@ export interface LaunchOperations {
   /** Every amount in this object is denominated in this quote currency. */
   currencySymbol: string
   buyerCount: number
+  /** Meteora-only separate MM wallets; total aged wallets = buyers + injection. */
+  injectionWalletCount?: number
   curveBuyerCount?: number
   poolBuyerCount?: number
   retainedPct: number

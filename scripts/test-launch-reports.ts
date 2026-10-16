@@ -33,7 +33,7 @@ const needsTerms = new Set(['lunch-v3', 'lunch-v4-tax', 'lunch-v4-rewards', 'sus
 for (const model of getModelCatalog()) {
   const request = createDefaultRequest(model.id)
   if (request.operations.currencySymbol !== request.quote.symbol) {
-    equals(request.operations.currencySymbol, 'SOL'); equals(request.operations.agedWalletCount, 125)
+    equals(request.operations.currencySymbol, 'SOL'); equals(request.operations.agedWalletCount, model.id.startsWith('meteora-') ? 25 : 125)
     throws(() => calculateLaunchReport(request), /currency/i)
     continue
   }

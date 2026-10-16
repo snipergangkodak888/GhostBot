@@ -1,3 +1,4 @@
+import { isMeteora, validateBundleWalletCount } from './meteora'
 import { supportsStockPairs, validateStockId, resolveStockPair } from './stock-pairs'
 import { fundStockReport } from './stock-funding'
 import { createDefaultRequest, getModelCatalog } from './catalog'
@@ -33,7 +34,7 @@ function checkedSelection(selection: LaunchMathSelection): LaunchMathSelection &
     throw new Error('Choose an initial liquidity amount from the Launch Math menu.')
   }
   if (selection.taxPercent != null) validateLaunchTax(selection.modelId, selection.taxPercent, selection.stockQuoteId)
-  if (selection.agedWalletCount != null) validateAgedWalletCount(selection.agedWalletCount)
+  if (selection.agedWalletCount != null) (isMeteora(selection.modelId) ? validateBundleWalletCount : validateAgedWalletCount)(selection.agedWalletCount)
   return { modelId: selection.modelId, liquidity, ...(selection.stockQuoteId ? { stockQuoteId: selection.stockQuoteId } : {}), ...(selection.taxPercent == null ? {} : { taxPercent: selection.taxPercent }), ...(selection.agedWalletCount == null ? {} : { agedWalletCount: selection.agedWalletCount }) }
 }
 
@@ -143,7 +144,7 @@ export function launchMathReviewView(selection: LaunchMathSelection): LaunchMath
   lines.push('The image shows estimated funding, fees and reserves. It does not launch a token or move funds.')
   const keyboard: LaunchMathButton[][] = [[{ text: '📊 Generate image', callback_data: selectionData('generate', checked) }]]
   if (supportsStockPairs(checked.modelId)) keyboard.push([{ text: 'Change pair', callback_data: selectionData('pair', checked) }])
-  keyboard.push([{ text: `Change aged wallets (${request.operations.agedWalletCount})`, callback_data: selectionData('wallets', checked) }])
+  keyboard.push([{ text: `Change ${isMeteora(request.modelId) ? 'bundle' : 'aged'} wallets (${isMeteora(request.modelId) ? request.operations.buyerCount : request.operations.agedWalletCount})`, callback_data: selectionData('wallets', checked) }])
   const tax = launchTaxConfig(checked.modelId, checked.stockQuoteId)
   if (tax) {
     if (tax.custom) keyboard.push([{ text: `Change ${tax.label.toLowerCase()}`, callback_data: selectionData('tax', checked) }])

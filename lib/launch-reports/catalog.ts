@@ -1,4 +1,5 @@
 import type { LaunchReportRequest, ModelCatalogEntry, ModelPreset } from './types'
+import { meteoraWalletOperations } from './meteora'
 import { createGhostOperations } from './pricing'
 import { EVM_PRESETS } from './catalog-evm'
 
@@ -54,6 +55,7 @@ raydium.termsSource = { kind: 'snapshot', label: 'Raydium CPMM configuration 0; 
 const meteora = baseRequest('meteora-damm-v2')
 meteora.targetsPct = [40, 50, 60, 70, 80, 90]
 meteora.liquidityAmounts = ['15', '25', '30', '50']
+meteora.operations = meteoraWalletOperations(meteora.operations)
 meteora.operations.retainedPct = 0
 meteora.terms = { poolFeeBps: 25, collectFeeMode: 'OnlyB', dynamicFee: false }
 meteora.termsSource = { kind: 'user', label: 'Meteora DAMM v2 full-range pool; fixed quote-token fee; no dynamic fee or transfer tax', url: 'https://github.com/MeteoraAg/damm-v2-sdk/tree/79ebbfe59a225e641a2f37cd03404f26de1b0c8e' }

@@ -1,5 +1,7 @@
 'use client'
 
+import { currentWalletPricingDraft } from '@/lib/launch-reports/pricing'
+import { isMeteora } from '@/lib/launch-reports/meteora'
 import { applyLaunchTax, launchTaxConfig, launchTaxPercent, launchTaxTargets } from '@/lib/launch-reports/tax'
 import { useEffect, useRef, useState } from 'react'
 import { Calculator, Download, Upload, Save, RefreshCw, ArrowRight, ChevronDown, Check, FileText, Layers, Trash2 } from 'lucide-react'
@@ -83,7 +85,7 @@ export function LaunchMathBuilder() {
   }
 
   function load(request: LaunchReportRequest, rates = catalog?.pricing) {
-    const next = clone(request)
+    const next = currentWalletPricingDraft(request)
     const fixedPrice = rates?.[next.operations.currencySymbol.toUpperCase()]
     if (fixedPrice) next.operations.agedWalletUnitAmount = fixedPrice
     setDraft(next); setTargets(next.targetsPct.join(', ')); setLiquidity(next.liquidityAmounts?.join(', ') || '')
@@ -145,7 +147,15 @@ export function LaunchMathBuilder() {
   const standardLiquidity = draft && catalog?.presets[draft.modelId]?.quote.symbol === draft.quote.symbol
     ? catalog.presets[draft.modelId].liquidityAmounts || [] : []
   const field = (key: 'title' | 'client', value: string) => setDraft(d => d && ({ ...d, [key]: value }))
-  const operation = (key: string, value: string | number | boolean) => setDraft(d => d && ({ ...d, fundingConversion: undefined, operations: { ...(d.fundingConversion?.nativeOperations || d.operations), [key]: value } }))
+  const operation = (key: string, value: string | number | boolean) => setDraft(d => {
+    if (!d) return d
+    let operations = { ...(d.fundingConversion?.nativeOperations || d.operations), [key]: value }
+    if (isMeteora(d.modelId) && ['buyerCount', 'injectionWalletCount'].includes(key)) {
+      // Allow incomplete input while typing; validation runs before generation.
+      operations = { ...operations, agedWalletCount: operations.buyerCount + (operations.injectionWalletCount ?? 0) }
+    }
+    return { ...d, fundingConversion: undefined, operations }
+  })
   function launchChoice(key: string, value: string | number) { try { const next = JSON.parse(terms); next[key] = value; setTerms(JSON.stringify(next, null, 2)) } catch { setError('Load a valid saved launch configuration first.') } }
   function changeQuote(symbol: string) {
     const decimals = { SOL: 9, ETH: 18, BNB: 18, USDC: 6, USDT: 6 }[symbol]!
@@ -242,8 +252,8 @@ export function LaunchMathBuilder() {
           <label>Report title<input value={draft.title} maxLength={120} onChange={e => field('title', e.target.value)} /></label>
           <label>Share of total token supply (%)<input value={targets} onChange={e => setTargets(e.target.value)} placeholder="40, 50, 60, 70, 80" /><span className="lm-help">Each percentage becomes a comparison row. This includes purchased tokens and any retained allocation in the setup.</span></label>
           <div className="lm-chips">{['40, 50, 60, 70, 75, 80', '50, 60, 70, 80, 90'].map(v => <button key={v} onClick={() => setTargets(v)}>{v}%</button>)}</div>
-          <div className="lm-pair"><label>Number of aged wallets<input type="number" min="0" max="1000" value={displayedOperations!.agedWalletCount} onChange={e => operation('agedWalletCount', Number(e.target.value))} /></label><div className="lm-wallet-total"><small>Wallet budget</small><strong>{number(displayedOperations!.agedWalletCount * Number(displayedOperations!.agedWalletUnitAmount))} {displayedOperations!.currencySymbol}</strong></div></div>
-          <p className="lm-help">{fixedPrice ? `Fixed price: ${fixedPrice} ${displayedOperations!.currencySymbol} per aged wallet.` : 'This setup uses its saved wallet allowance.'} Wallet purchases, buying wallets and holder wallets are separate counts.</p>
+          <div className="lm-pair"><label>{isMeteora(draft.modelId) ? 'Bundle wallets' : 'Number of aged wallets'}<input type="number" min={isMeteora(draft.modelId) ? 1 : 0} max={isMeteora(draft.modelId) ? 200 : 1000} value={isMeteora(draft.modelId) ? displayedOperations!.buyerCount : displayedOperations!.agedWalletCount} onChange={e => operation(isMeteora(draft.modelId) ? 'buyerCount' : 'agedWalletCount', Number(e.target.value))} /></label><div className="lm-wallet-total"><small>Wallet budget</small><strong>{number(displayedOperations!.agedWalletCount * Number(displayedOperations!.agedWalletUnitAmount))} {displayedOperations!.currencySymbol}</strong></div></div>
+          <p className="lm-help">{fixedPrice ? `Fixed price: ${fixedPrice} ${displayedOperations!.currencySymbol} per aged wallet.` : 'This setup uses its saved wallet allowance.'} {isMeteora(draft.modelId) ? 'Total wallets = bundle + injection wallets. Injection wallets default to 0.' : 'Wallet purchases, buying wallets and holder wallets are separate counts.'}</p>
           {draft.modelId === 'letscash' && <label>Launch configuration<select value={String(current?.terms.configId || 1000)} onChange={e => launchChoice('configId', Number(e.target.value))}>{[1000,1001,1002,1004,1006,1016,1017,1018,1020,1022].map(id => <option key={id} value={id}>Configuration {id}{id === 1000 ? ' · standard' : ''}</option>)}</select></label>}
           <div className="lm-top-actions"><input ref={upload} type="file" accept=".json,application/json" hidden onChange={e => importSetup(e.target.files?.[0])} /><button disabled={!!busy} onClick={() => upload.current?.click()}><Upload size={15} /> Import settings</button><button onClick={saveSetup} disabled={!!busy}><Save size={15} /> Save setup</button></div>
         </details>
@@ -259,8 +269,8 @@ export function LaunchMathBuilder() {
           <label className="lm-check"><input type="checkbox" checked={useLiveSettings} onChange={e => setUseLiveSettings(e.target.checked)} />Fetch current network settings and prices</label>
           {!useLiveSettings && <p className="lm-help">Frozen snapshot mode: uses the exact saved terms and price, including their original dates.</p>}
           <p className="lm-help">Every allowance below is denominated in {displayedOperations!.currencySymbol}. For stablecoin launches, native costs are converted automatically when you generate.</p>
-          <div className="lm-pair">{(['buyerCount', 'poolBuyerCount', 'retainedPct', 'holderCount'] as const).map(key => <label key={key}>{human(key)}<input type="number" value={displayedOperations![key] ?? ''} onChange={e => operation(key, Number(e.target.value))} /></label>)}</div>
-          <div className="lm-pair">{(['setupAmount', 'buyerGasAmount', 'cleanupAmount', 'holderAmount', 'tipAmount', 'launchFeeAmount', 'recipientBufferAmount', 'sourceGasAmount'] as const).map(key => <label key={key}>{human(key)}<input value={displayedOperations![key]} onChange={e => operation(key, e.target.value)} /></label>)}</div>
+          <div className="lm-pair">{(isMeteora(draft.modelId) ? ['injectionWalletCount', 'retainedPct'] as const : ['buyerCount', 'poolBuyerCount', 'retainedPct', 'holderCount'] as const).map(key => <label key={key}>{human(key)}<input type="number" value={displayedOperations![key] ?? ''} onChange={e => operation(key, Number(e.target.value))} /></label>)}</div>
+          <div className="lm-pair">{(['setupAmount', 'buyerGasAmount', 'cleanupAmount', 'holderAmount', 'tipAmount', 'launchFeeAmount', 'recipientBufferAmount', 'sourceGasAmount'] as const).filter(key => !isMeteora(draft.modelId) || !['cleanupAmount', 'holderAmount'].includes(key)).map(key => <label key={key}>{human(key)}<input value={displayedOperations![key]} onChange={e => operation(key, e.target.value)} /></label>)}</div>
           <div className="lm-pair"><label>Provider fee (bps)<input type="number" value={displayedOperations!.providerFeeBps} onChange={e => operation('providerFeeBps', Number(e.target.value))} /></label><label>Funded recipients<input type="number" value={displayedOperations!.recipientCount} onChange={e => operation('recipientCount', Number(e.target.value))} /></label></div>
           {!fixedPrice && <label>Wallet allowance per wallet ({displayedOperations!.currencySymbol})<input value={displayedOperations!.agedWalletUnitAmount} onChange={e => operation('agedWalletUnitAmount', e.target.value)} /></label>}
           <label className="lm-check"><input type="checkbox" checked={displayedOperations!.includeInitialLiquidity} onChange={e => operation('includeInitialLiquidity', e.target.checked)} />Include supplied pool liquidity in funding</label>

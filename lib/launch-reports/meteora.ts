@@ -1,4 +1,4 @@
-import type { AdapterContext, AdapterResult, LaunchReportRequest } from './types'
+import type { AdapterContext, AdapterResult, LaunchReportRequest, LaunchOperations } from './types'
 import { ceilDiv, integerTerm, splitRaw } from './utils'
 
 // DAMM v2 SDK 1.5.1, commit 79ebbfe59a225e641a2f37cd03404f26de1b0c8e.
@@ -12,15 +12,28 @@ const U64_MAX = (1n << 64n) - 1n
 export const isMeteora = (id: string) => id === 'meteora-damm-v2' || id === 'meteora-damm-v2-usdc'
 
 export function validateBundleWalletCount(count: number) {
-  if (!Number.isSafeInteger(count) || count < 1 || count > 64) throw new Error('Enter a whole number of bundle wallets from 1 to 64.')
+  if (!Number.isSafeInteger(count) || count < 1 || count > 200) throw new Error('Enter a whole number of bundle wallets from 1 to 200.')
 }
 
-/** Execution count is independent of the number of aged wallets purchased. */
+/** Meteora distributes directly to bundle wallets, without a holder/cleanup phase.
+ * MM capital does not imply extra wallets. Separate injection wallets default to
+ * zero; when configured they count once toward wallet acquisition, not buys.
+ */
+export function meteoraWalletOperations(operations: LaunchOperations, count = operations.buyerCount): LaunchOperations {
+  validateBundleWalletCount(count)
+  const injectionWalletCount = operations.injectionWalletCount ?? 0
+  if (!Number.isSafeInteger(injectionWalletCount) || injectionWalletCount < 0 || injectionWalletCount > 10000) throw new Error('Injection wallets must be a whole number from 0 to 10,000.')
+  if (count + injectionWalletCount > 10000) throw new Error('Total wallet count cannot exceed 10,000.')
+  return { ...operations, buyerCount: count, injectionWalletCount, agedWalletCount: count + injectionWalletCount,
+    holderCount: 0, holderAmount: '0', cleanupAmount: '0' }
+}
+
+/** Keep native and converted costs on the same wallet allocation. */
 export function applyBundleWalletCount(request: LaunchReportRequest, count: number) {
   validateBundleWalletCount(count)
   const next = structuredClone(request)
-  next.operations.buyerCount = count
-  if (next.fundingConversion) next.fundingConversion.nativeOperations.buyerCount = count
+  next.operations = meteoraWalletOperations(next.operations, count)
+  if (next.fundingConversion) next.fundingConversion.nativeOperations = meteoraWalletOperations(next.fundingConversion.nativeOperations, count)
   return next
 }
 

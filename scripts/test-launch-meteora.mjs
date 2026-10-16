@@ -27,7 +27,7 @@ for (const id of ['meteora-damm-v2', 'meteora-damm-v2-usdc']) {
   const quote = calculateLaunchQuote(input, prepared)
   assert.match(quote.report.sourceVersion, /meteora-damm-v2-sdk@1.5.1/)
   assert.equal(quote.report.request.operations.buyerCount, 32)
-  assert.equal(quote.report.request.operations.agedWalletCount, 125)
+  assert.equal(quote.report.request.operations.agedWalletCount, 32)
   assert.match(formatLaunchQuote(quote), /Pool fee: 3%/)
   assert.match(formatLaunchQuote(quote), /32 bundle wallets/)
   assert.equal(quote.report.request.injectionLiquidity.referenceSymbol, 'SOL')
@@ -45,9 +45,46 @@ for (const id of ['meteora-damm-v2', 'meteora-damm-v2-usdc']) {
   assert.equal(quote.launchMarketCapUsd, lowerFee.launchMarketCapUsd, 'Claimed fees cannot inflate active pool price')
   const fewer = calculateLaunchQuote({ ...input, bundleWalletCount: 1 }, prepared)
   assert(BigInt(quote.report.rows[0].raw.operations) > BigInt(fewer.report.rows[0].raw.operations))
-  assert.equal(quote.lines.find(x => x.key === 'aged').raw, fewer.lines.find(x => x.key === 'aged').raw)
+  assert.equal(BigInt(quote.lines.find(x => x.key === 'aged').raw), 32n * BigInt(fewer.lines.find(x => x.key === 'aged').raw))
+  assert.equal(quote.report.request.operations.holderCount, 0)
+  assert.equal(quote.report.request.operations.cleanupAmount, '0')
+  for (const count of [1, 65, 125, 200]) {
+    const direct = calculateLaunchQuote({ ...input, bundleWalletCount: count }, prepared)
+    assert.equal(direct.report.request.operations.agedWalletCount, count)
+    assert.equal(direct.lines.find(x => x.key === 'aged').amount, String(count * (id.endsWith('usdc') ? 10 : 0.1)))
+    assert.equal(direct.capitalTotalRaw, direct.lines.reduce((sum, x) => sum + BigInt(x.raw), 0n).toString())
+    const roundTrip = calculateLaunchQuote({ ...input, bundleWalletCount: count, metric: 'market_cap', target: direct.launchMarketCapUsd }, prepared)
+    assert(Math.abs(roundTrip.supplyControlPct - 70) < 0.00001)
+    const capped = calculateLaunchQuote({ ...input, bundleWalletCount: count, metric: 'budget', target: Math.ceil(Number(direct.capitalTotal) * Number(prepared.quote.usdPrice)) }, prepared)
+    assert(BigInt(capped.capitalTotalRaw) <= BigInt(capped.budget.currencyRaw))
+  }
+  // Explicit bundles win over a stale independent aged count from an old bot session.
+  assert.equal(calculateLaunchQuote({ ...input, agedWalletCount: 125 }, prepared).report.request.operations.agedWalletCount, 32)
+  // A new generation upgrades legacy drafts, without modifying the saved request.
+  const legacy = createDefaultRequest(id)
+  legacy.operations = { ...legacy.operations, holderCount: 100, holderAmount: '0.02', cleanupAmount: '0.25', agedWalletCount: 125 }
+  delete legacy.operations.injectionWalletCount
+  const upgraded = await prepareCalculatorFixture(legacy)
+  assert.equal(upgraded.operations.agedWalletCount, 25)
+  assert.equal(upgraded.operations.holderCount, 0)
+  assert.equal(legacy.operations.agedWalletCount, 125)
+  // Separate injection wallets add acquisition cost once and never execute bundle buys.
+  const extra = createDefaultRequest(id)
+  extra.operations.injectionWalletCount = 10
+  const withInjection = await prepareCalculatorFixture(extra)
+  const extraQuote = calculateLaunchQuote({ ...input, bundleWalletCount: 200 }, withInjection)
+  assert.equal(extraQuote.report.request.operations.buyerCount, 200)
+  assert.equal(extraQuote.report.request.operations.agedWalletCount, 210)
+  assert.equal(extraQuote.lines.find(x => x.key === 'aged').amount, id.endsWith('usdc') ? '2100' : '21')
+  const mismatch = structuredClone(withInjection)
+  mismatch.operations.agedWalletCount = 125
+  assert.throws(() => calculateLaunchReport(mismatch), /wallet total/)
+  const invalid = createDefaultRequest(id)
+  invalid.operations.injectionWalletCount = 10001
+  await assert.rejects(() => prepareCalculatorFixture(invalid), /Injection wallets/)
+
   for (const bad of [0, 100, -1, 0.001, NaN, Infinity]) assert.throws(() => validateLaunchTax(id, bad))
-  for (const bad of [0, 65, 1.5, NaN]) assert.throws(() => validateBundleWalletCount(bad))
+  for (const bad of [0, 201, 1.5, NaN, Infinity]) assert.throws(() => validateBundleWalletCount(bad))
   assert.throws(() => calculateLaunchQuote({ ...input, initialLp: 0 }, prepared))
   assert.throws(() => calculateLaunchQuote({ ...input, target: 100 }, prepared))
   assert.equal(calculateLaunchQuote({ ...input, target: 1 }, prepared).supplyControlPct, 1, 'No implicit team allocation')

@@ -65,7 +65,7 @@ export async function prepareLaunchQuote(input: LaunchQuoteInput): Promise<Launc
   const base = createDefaultRequest(venue.id)
   if (input.stockQuoteId) base.stockQuoteId = input.stockQuoteId
   let request = input.taxPercent == null ? base : applyLaunchTax(base, input.taxPercent)
-  if (input.agedWalletCount != null) request = applyAgedWalletCount(request, input.agedWalletCount)
+  if (input.agedWalletCount != null && (!isMeteora(venue.id) || input.bundleWalletCount == null)) request = applyAgedWalletCount(request, input.agedWalletCount)
   if (input.bundleWalletCount != null) request = applyBundleWalletCount(request, input.bundleWalletCount)
   if (venue.requiresLiquidity) request.liquidityAmounts = [plainAmount(input.initialLp!)]
   if (input.metric === 'supply') request.targetsPct = [input.target]
@@ -271,7 +271,7 @@ function quoteRequest(input: LaunchQuoteInput, prepared: LaunchReportRequest) {
   const venue = validateInput(input)
   if (prepared.modelId !== venue.id || prepared.stockQuoteId !== input.stockQuoteId || !prepared.injectionLiquidity) throw new Error('Refresh the venue settings before calculating a quote.')
   let request = input.taxPercent == null ? structuredClone(prepared) : applyLaunchTax(prepared, input.taxPercent)
-  if (input.agedWalletCount != null) request = applyAgedWalletCount(request, input.agedWalletCount)
+  if (input.agedWalletCount != null && (!isMeteora(venue.id) || input.bundleWalletCount == null)) request = applyAgedWalletCount(request, input.agedWalletCount)
   if (input.bundleWalletCount != null) request = applyBundleWalletCount(request, input.bundleWalletCount)
   if (['stonkfun', 'launchlab'].includes(venue.id) && JSON.stringify(request.terms.transferFee) !== JSON.stringify(prepared.terms.transferFee)) throw new Error('Refresh Stonkfun settings after changing the holder tax.')
   request.liquidityAmounts = venue.requiresLiquidity ? [plainAmount(input.initialLp!)] : undefined

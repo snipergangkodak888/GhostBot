@@ -1,3 +1,4 @@
+import { applyBundleWalletCount, isMeteora } from './meteora'
 import type { LaunchOperations, LaunchReportRequest } from './types'
 
 /** Ghost commercial policy. These prices are not network or launchpad fees. */
@@ -11,6 +12,7 @@ export function validateAgedWalletCount(count: number) {
 
 /** Keep the native and converted funding snapshots consistent when changing the count. */
 export function applyAgedWalletCount(request: LaunchReportRequest, count: number): LaunchReportRequest {
+  if (isMeteora(request.modelId)) return applyBundleWalletCount(request, count)
   validateAgedWalletCount(count)
   const next = structuredClone(request)
   next.operations.agedWalletCount = count
@@ -18,9 +20,9 @@ export function applyAgedWalletCount(request: LaunchReportRequest, count: number
   return next
 }
 
-/** Refresh old ETH setups at today's commercial rate; saved report rows stay intact. */
+/** Upgrade draft wallet policy; persisted report rows stay intact. */
 export function currentWalletPricingDraft(request: LaunchReportRequest): LaunchReportRequest {
-  const next = structuredClone(request)
+  const next = isMeteora(request?.modelId) && request?.operations ? applyBundleWalletCount(request, (request.fundingConversion?.nativeOperations || request.operations).buyerCount) : structuredClone(request)
   const native = next?.fundingConversion?.nativeOperations || next?.operations
   if (native?.currencySymbol === 'ETH' && /^0\.10*$/.test(native.agedWalletUnitAmount)) native.agedWalletUnitAmount = GHOST_WALLET_PRICING.ETH
   return next

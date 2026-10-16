@@ -939,7 +939,7 @@ async function beginLaunchTarget(token: string, chatId: number | string, telegra
 }
 
 function bundleWalletPrompt(count = 25) {
-  return `How many bundle wallets? Reply with 1–64. Default: ${count}.\n\nThese execute the buys; aged wallets are configured separately.`
+  return `How many bundle wallets? Reply with 1–200. Current: ${count}.\n\nWallet funding uses this count at 0.1 SOL per wallet.`
 }
 
 async function acceptLaunchLp(token: string, chatId: number | string, telegramId: number, state: Record<string, any>, initialLp: number, messageId?: number | null) {
@@ -1016,7 +1016,7 @@ async function sendCalculatedLaunchQuote(
   }, chatId)
   return editOrSendWorkflowMessage(token, chatId, messageId, formatLaunchQuote(quote), [
     [{ text: metric === "budget" ? "💰 Change budget" : "🎯 Change target", callback_data: "launch:adjust:target" }, { text: "💧 Change MM reserve", callback_data: "launch:adjust:mm" }],
-    [{ text: `Change aged wallets (${quote.report.request.operations.agedWalletCount})`, callback_data: "launch:adjust:wallets" }],
+    ...(!isMeteora(pad.id) ? [[{ text: `Change aged wallets (${quote.report.request.operations.agedWalletCount})`, callback_data: "launch:adjust:wallets" }]] : []),
     ...(isMeteora(pad.id) ? [[{ text: "Change initial LP", callback_data: "launch:adjust:lp" }, { text: `Bundle wallets (${quote.report.request.operations.buyerCount})`, callback_data: "launch:adjust:bundle" }]] : []),
     ...(launchTaxConfig(pad.id, state.launchStockQuoteId) ? [[{ text: isMeteora(pad.id) ? "Change pool fee" : "Change tax", callback_data: "launch:adjust:tax" }]] : []),
     [{ text: "🆕 New launch quote", callback_data: "launch:start" }],
@@ -2133,7 +2133,7 @@ async function processState(token: string, chatId: number | string, telegramId: 
   if (state.action === "launch_calc_bundle") {
     const workflowMessageId = Number(state.reviewMessageId || state.promptMessageId || 0) || null
     try {
-      if (!/^\d+$/.test(text.trim())) throw new Error('Enter a whole number of bundle wallets from 1 to 64.')
+      if (!/^\d+$/.test(text.trim())) throw new Error('Enter a whole number of bundle wallets from 1 to 200.')
       await acceptBundleWallets(token, chatId, telegramId, state, Number(text.trim()), workflowMessageId)
     } catch (error) { await editOrSendWorkflowMessage(token, chatId, workflowMessageId, `⚠️ ${error instanceof Error ? error.message : "Could not update bundle wallets."}\n\nTry another count or send /cancel.`) }
     await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
@@ -2154,7 +2154,7 @@ async function processState(token: string, chatId: number | string, telegramId: 
     } catch (error) {
       const budget = state.launchMetric === 'budget'
       if (budget) await setState(telegramId, { ...state, launchTarget: Number(target) }, chatId)
-      await editOrSendWorkflowMessage(token, chatId, workflowMessageId, `⚠️ ${error instanceof Error ? error.message : "I could not calculate that launch."}\n\nTry another ${budget ? 'budget' : 'target'} or send /cancel.`, budget ? [[{ text: 'Change aged wallets', callback_data: 'launch:adjust:wallets' }, { text: 'Change MM reserve', callback_data: 'launch:adjust:mm' }]] : [])
+      await editOrSendWorkflowMessage(token, chatId, workflowMessageId, `⚠️ ${error instanceof Error ? error.message : "I could not calculate that launch."}\n\nTry another ${budget ? 'budget' : 'target'} or send /cancel.`, budget ? [[{ text: isMeteora(state.launchVenueId) ? 'Change bundle wallets' : 'Change aged wallets', callback_data: 'launch:adjust:wallets' }, { text: 'Change MM reserve', callback_data: 'launch:adjust:mm' }]] : [])
     }
     await deleteWorkflowMessages(token, chatId, [telegramMessageId(message)])
     return true
@@ -2164,14 +2164,16 @@ async function processState(token: string, chatId: number | string, telegramId: 
     const workflowMessageId = Number(state.reviewMessageId || state.promptMessageId || 0) || null
     try {
       const raw = text.trim()
-      if (!/^\d+$/.test(raw)) throw new Error("Enter a whole number of aged wallets from 0 to 10,000.")
+      const meteora = isMeteora(state.launchMathSelection?.modelId || state.launchVenueId)
+      if (!/^\d+$/.test(raw)) throw new Error(meteora ? "Enter a whole number of bundle wallets from 1 to 200." : "Enter a whole number of aged wallets from 0 to 10,000.")
       const agedWalletCount = Number(raw)
-      validateAgedWalletCount(agedWalletCount)
+      if (meteora) validateBundleWalletCount(agedWalletCount)
+      else validateAgedWalletCount(agedWalletCount)
       if (state.action === "launch_math_wallets") {
         const view = await launchMathReviewWithPair({ ...state.launchMathSelection, agedWalletCount })
         await clearState(telegramId)
         await editOrSendWorkflowMessage(token, chatId, workflowMessageId, view.text, view.replyMarkup.inline_keyboard)
-      } else await sendCalculatedLaunchQuote(token, chatId, telegramId, state, { agedWalletCount }, workflowMessageId)
+      } else await sendCalculatedLaunchQuote(token, chatId, telegramId, state, meteora ? { bundleWalletCount: agedWalletCount } : { agedWalletCount }, workflowMessageId)
     } catch (error) {
       await editOrSendWorkflowMessage(token, chatId, workflowMessageId, `⚠️ ${error instanceof Error ? error.message : "I could not update the wallet count."}\n\nTry another count or send /cancel.`)
     }
@@ -2456,7 +2458,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     if (choice.action === "group") return show(launchMathGroupView(choice.group))
     if (choice.action === 'pair' || (choice.action === 'review' && !choice.selection.stockQuoteId && data.split(':').length === 4 && supportsStockPairs(choice.selection.modelId))) return sendStockPairPicker(token, chatId, telegramId, choice.selection, 'math', callbackMessage?.photo || callbackMessage?.document ? null : callbackMessageId)
     if (choice.action === "tax") return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessage?.photo || callbackMessage?.document ? null : callbackMessageId, state: { action: "launch_math_tax", launchMathSelection: choice.selection }, text: launchTaxPrompt(choice.selection.modelId) })
-    if (choice.action === "wallets") return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessage?.photo || callbackMessage?.document ? null : callbackMessageId, state: { action: "launch_math_wallets", launchMathSelection: choice.selection }, text: agedWalletPrompt(choice.selection.agedWalletCount ?? GHOST_DEFAULT_AGED_WALLET_COUNT) })
+    if (choice.action === "wallets") return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessage?.photo || callbackMessage?.document ? null : callbackMessageId, state: { action: "launch_math_wallets", launchMathSelection: choice.selection }, text: isMeteora(choice.selection.modelId) ? bundleWalletPrompt(choice.selection.agedWalletCount ?? 25) : agedWalletPrompt(choice.selection.agedWalletCount ?? GHOST_DEFAULT_AGED_WALLET_COUNT) })
     if (choice.action === "review" || callbackMessage?.document || callbackMessage?.photo) return show(await launchMathReviewWithPair(choice.selection))
     if (!callbackMessageId) return show(await launchMathReviewWithPair(choice.selection))
     try {
@@ -3124,8 +3126,8 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     if (id === "lp" && isMeteora(pad.id)) return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId,
       state: { ...state, action: "launch_calc_lp", launchEditingLp: true }, text: `Enter the initial LP in ${pad.symbol}. Current: ${state.launchInitialLp} ${pad.symbol}.`,
     })
-    if (id === "bundle" && isMeteora(pad.id)) return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId,
-      state: { ...state, action: "launch_calc_bundle", launchEditingBundle: true }, text: `Current bundle wallets: ${state.launchBundleWalletCount}.\n\nReply with a whole number from 1 to 64.`,
+    if (["bundle", "wallets"].includes(id) && isMeteora(pad.id)) return beginTextWorkflow({ token, chatId, telegramId, reviewMessageId: callbackMessageId,
+      state: { ...state, action: "launch_calc_bundle", launchEditingBundle: true }, text: bundleWalletPrompt(state.launchBundleWalletCount ?? 25),
     })
     if (id === "tax") {
       const tax = launchTaxConfig(pad.id, state.launchStockQuoteId)

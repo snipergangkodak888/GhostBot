@@ -29,9 +29,9 @@ for (const model of getModelCatalog()) {
   assert.equal(supply.lines.some(line => line.key === 'operations'), false, 'Operating allowances belong in the combined supply accumulation line')
   assert.match(formatLaunchQuote(supply), /Capital requirement:.*supply control.*launch MC/s)
   assert.doesNotMatch(formatLaunchQuote(supply), /FDV|MM is held separately|aged wallets ×/)
-  assert.equal(supply.lines.find(x => x.key === 'aged').amount, prepared.quote.symbol === 'USDC' ? '1250' : prepared.quote.symbol === 'SOL' ? '12.5' : prepared.quote.symbol === 'BNB' ? '2.5' : '1.25')
+  assert.equal(supply.lines.find(x => x.key === 'aged').amount, model.id.startsWith('meteora-') ? (prepared.quote.symbol === 'USDC' ? '250' : '2.5') : prepared.quote.symbol === 'USDC' ? '1250' : prepared.quote.symbol === 'SOL' ? '12.5' : prepared.quote.symbol === 'BNB' ? '2.5' : '1.25')
   const defaultAged = BigInt(supply.lines.find(x => x.key === 'aged').raw)
-  for (const agedWalletCount of [0, 50, 250]) {
+  for (const agedWalletCount of model.id.startsWith('meteora-') ? [] : [0, 50, 250]) {
     const changed = calculateLaunchQuote({ ...input, agedWalletCount }, prepared)
     const expectedAged = defaultAged / 125n * BigInt(agedWalletCount)
     assert.equal(BigInt(changed.lines.find(x => x.key === 'aged').raw), expectedAged, `${model.id} custom wallet pricing`)

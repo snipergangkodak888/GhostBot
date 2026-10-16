@@ -10,7 +10,7 @@ const BN = require(path.join(modules, 'bn.js'))
 const fs = require('node:fs')
 const vectors=[]
 for (const [symbol,decimals,lp] of [['SOL',9,'25'],['USDC',6,'2500'],['USDC',6,'50000']]) {
- for (const [feeBps,count,control] of [[1,1,30],[100,25,67.37],[500,1,90],[500,64,90],[9900,32,70]]) {
+ for (const [feeBps,count,control] of [[1,1,30],[100,25,67.37],[500,1,90],[500,64,90],[500,65,90],[500,125,90],[500,200,90],[1,200,67.37],[9900,200,70],[9900,32,70]]) {
   const base=new BN('1000000000000000'), quote=new BN(lp).mul(new BN(10).pow(new BN(decimals)))
   let price=sdk.calculateInitSqrtPrice(base,quote,sdk.MIN_SQRT_PRICE,sdk.MAX_SQRT_PRICE)
   const la=sdk.getLiquidityDeltaFromAmountAForConcentratedLiquidity(base,price,sdk.MAX_SQRT_PRICE)

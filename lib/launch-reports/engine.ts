@@ -46,7 +46,13 @@ export function validateRequest(request: LaunchReportRequest): void {
   if (!request.terms || typeof request.terms !== 'object' || Array.isArray(request.terms) || JSON.stringify(request.terms).length > 50000) throw new Error('Model terms must be a JSON object smaller than 50 KB')
   const op = request.operations
   if (!op || op.currencySymbol !== request.quote.symbol) throw new Error('Operating allowances need automatic conversion into the quote currency. Generate with current settings before using snapshot mode.')
-  assertCount(op.buyerCount, 'Buyer count', 64, 1)
+  assertCount(op.buyerCount, 'Buyer count', isMeteora(request.modelId) ? 200 : 64, 1)
+  if (op.injectionWalletCount !== undefined) {
+    if (!isMeteora(request.modelId)) throw new Error('Separate injection wallet counts are supported for Meteora only.')
+    assertCount(op.injectionWalletCount, 'Injection wallet count', 10000)
+    if (op.agedWalletCount !== op.buyerCount + op.injectionWalletCount) throw new Error('Meteora wallet total must equal bundle wallets plus injection wallets.')
+    if (op.holderCount !== 0 || parseAmount(op.holderAmount, request.quote.decimals) !== 0n || parseAmount(op.cleanupAmount, request.quote.decimals) !== 0n) throw new Error('Meteora uses bundle wallets directly, without separate holder or cleanup funding.')
+  }
   for (const key of ['curveBuyerCount', 'poolBuyerCount'] as const) if (op[key] !== undefined) assertCount(op[key]!, key, 64, 1)
   for (const key of ['holderCount', 'recipientCount', 'agedWalletCount'] as const) assertCount(op[key], key, 10000)
   assertCount(op.providerFeeBps, 'Funding provider fee basis points', 9999)
