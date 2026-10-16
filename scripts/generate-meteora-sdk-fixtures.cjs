@@ -11,13 +11,13 @@ const fs = require('node:fs')
 const vectors=[]
 for (const [symbol,decimals,lp] of [['SOL',9,'25'],['USDC',6,'2500'],['USDC',6,'50000']]) {
  for (const [feeBps,count,control] of [[1,1,30],[100,25,67.37],[500,1,90],[500,64,90],[9900,32,70]]) {
-  const base=new BN('700000000000000'), quote=new BN(lp).mul(new BN(10).pow(new BN(decimals)))
+  const base=new BN('1000000000000000'), quote=new BN(lp).mul(new BN(10).pow(new BN(decimals)))
   let price=sdk.calculateInitSqrtPrice(base,quote,sdk.MIN_SQRT_PRICE,sdk.MAX_SQRT_PRICE)
   const la=sdk.getLiquidityDeltaFromAmountAForConcentratedLiquidity(base,price,sdk.MAX_SQRT_PRICE)
   const lb=sdk.getLiquidityDeltaFromAmountBForConcentratedLiquidity(quote,sdk.MIN_SQRT_PRICE,price)
   const liquidity=BN.min(la,lb), initialSqrtPrice=price.toString()
   const initialQuote=sdk.getAmountBFromLiquidityDeltaForConcentratedLiquidity(sdk.MIN_SQRT_PRICE,price,liquidity,sdk.Rounding.Up)
-  const target=BigInt(Math.round(control*1e6))*1000000000000000n/100000000n-300000000000000n
+  const target=BigInt(Math.round(control*1e6))*1000000000000000n/100000000n
   let total=new BN(0)
   for(let i=0;i<count;i++) {
    const amount=target/BigInt(count)+(BigInt(i)<target%BigInt(count)?1n:0n)

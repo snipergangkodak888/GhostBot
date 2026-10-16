@@ -25,6 +25,7 @@ for (const id of ['meteora-damm-v2', 'meteora-damm-v2-usdc']) {
   const prepared = await prepareCalculatorFixture(createDefaultRequest(id))
   const input = { venueId: id, metric: 'supply', target: 70, initialLp: id.endsWith('usdc') ? 3500 : 35, taxPercent: 3, bundleWalletCount: 32 }
   const quote = calculateLaunchQuote(input, prepared)
+  assert.match(quote.report.sourceVersion, /meteora-damm-v2-sdk@1.5.1/)
   assert.equal(quote.report.request.operations.buyerCount, 32)
   assert.equal(quote.report.request.operations.agedWalletCount, 125)
   assert.match(formatLaunchQuote(quote), /Pool fee: 3%/)
@@ -49,7 +50,7 @@ for (const id of ['meteora-damm-v2', 'meteora-damm-v2-usdc']) {
   for (const bad of [0, 65, 1.5, NaN]) assert.throws(() => validateBundleWalletCount(bad))
   assert.throws(() => calculateLaunchQuote({ ...input, initialLp: 0 }, prepared))
   assert.throws(() => calculateLaunchQuote({ ...input, target: 100 }, prepared))
-  assert.throws(() => calculateLaunchQuote({ ...input, target: 20 }, prepared), /retained supply/)
+  assert.equal(calculateLaunchQuote({ ...input, target: 1 }, prepared).supplyControlPct, 1, 'No implicit team allocation')
   for (const terms of [{ dynamicFee: true }, { collectFeeMode: 'BothToken' }, { transferFee: { basisPoints: 1 } }]) {
     const report = calculateLaunchReport({ ...prepared, terms: { ...prepared.terms, ...terms }, targetsPct: [70], liquidityAmounts: [String(input.initialLp)] })
     assert.equal(report.rows[0].status, 'unavailable')

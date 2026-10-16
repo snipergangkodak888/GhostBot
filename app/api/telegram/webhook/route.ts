@@ -893,7 +893,7 @@ async function sendStockPairPicker(token: string, chatId: number | string, teleg
   })
 }
 
-const launchTaxPrompt = (modelId: string) => isMeteora(modelId) ? 'Reply with the pool trading fee (0.01–99%). Default: 1%.\n\nFull-range pool; fees collected in the quote token. Dynamic fees are off.' : modelId.startsWith('pumpfun') ? 'Reply with the creator fee percentage, or 0 to use the venue default.' : ponsCreatorTaxPrompt
+const launchTaxPrompt = (modelId: string) => isMeteora(modelId) ? 'Reply with the pool trading fee (0.01–99%). Default: 0.25%.\n\nFull-range pool; fees collected in the quote token. Dynamic fees are off.' : modelId.startsWith('pumpfun') ? 'Reply with the creator fee percentage, or 0 to use the venue default.' : ponsCreatorTaxPrompt
 
 async function sendLaunchMetricPicker(token: string, chatId: number | string, venueId: string, messageId?: number | null, taxPercent?: number, stockQuoteId?: string) {
   const pad = launchPad(venueId)
@@ -918,7 +918,7 @@ async function sendLaunchInitialTax(token: string, chatId: number | string, tele
     state: { action: "launch_calc_initial_tax", launchVenueId: venueId, launchStockQuoteId: stockQuoteId, ...(metric ? { launchMetric: metric } : {}) },
     text: tax.custom ? launchTaxPrompt(venueId) : `${pad.name}\n\nChoose the holder tax.`,
     buttons: [
-      tax.custom ? [{ text: venueId.startsWith('pumpfun') ? "Use venue default" : `Use ${isMeteora(venueId) ? 1 : 0}% (default)`, callback_data: `launch:initialtax:${isMeteora(venueId) ? 1 : 0}:${venueId}` }]
+      tax.custom ? [{ text: venueId.startsWith('pumpfun') ? "Use venue default" : `Use ${isMeteora(venueId) ? 0.25 : 0}% (default)`, callback_data: `launch:initialtax:${isMeteora(venueId) ? 0.25 : 0}:${venueId}` }]
         : tax.options.map(percent => ({ text: `${percent}%${percent === 0 ? " (default)" : ""}`, callback_data: `launch:initialtax:${percent}:${venueId}` })),
       [{ text: "⬅️ Venues", callback_data: `launch:chain:${pad.chainId}` }],
     ],

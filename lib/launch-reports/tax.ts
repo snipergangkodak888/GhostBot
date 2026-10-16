@@ -3,7 +3,7 @@ import type { LaunchReportRequest } from './types'
 import { parseAmount } from './utils'
 
 export function launchTaxConfig(modelId: string, stockQuoteId?: string) {
-  if (isMeteora(modelId)) return { label: 'Pool fee', options: [1], custom: true }
+  if (isMeteora(modelId)) return { label: 'Pool fee', options: [0.25], custom: true }
   if (modelId.startsWith('pumpfun') && stockQuoteId) return { label: 'Creator fee', options: [0], custom: true }
   if (modelId === 'pons') return { label: 'Creator tax', options: [0, 1, 3, 5, 10], custom: true }
   if (modelId === 'stonkfun' || modelId === 'launchlab') return { label: 'Holder tax', options: [0, 1, 3], custom: false }

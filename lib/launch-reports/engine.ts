@@ -201,7 +201,7 @@ export function calculateLaunchReport(request: LaunchReportRequest): LaunchRepor
     rows.push(row)
   }
   const report: LaunchReport = {
-    schemaVersion: 1, modelVersion: MODEL_VERSION, sourceVersion: `${sourceManifest.package}@${sourceManifest.version}`, sourceHashes: sourceManifest.files, pricingVersion: GHOST_PRICING_VERSION,
+    schemaVersion: 1, modelVersion: MODEL_VERSION, sourceVersion: isMeteora(request.modelId) ? 'meteora-damm-v2-sdk@1.5.1 / Ghost integer adapter' : `${sourceManifest.package}@${sourceManifest.version}`, sourceHashes: isMeteora(request.modelId) ? {} : sourceManifest.files, pricingVersion: GHOST_PRICING_VERSION,
     generatedAt: new Date().toISOString(), title: request.title, ...(request.client ? { client: request.client } : {}), modelId: request.modelId, request: structuredClone(request), rows, warnings,
     assumptions: [
       `Network: ${request.chain || 'As specified by the supplied launch configuration'}.`,

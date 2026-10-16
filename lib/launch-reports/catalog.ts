@@ -53,14 +53,14 @@ raydium.termsSource = { kind: 'snapshot', label: 'Raydium CPMM configuration 0; 
 // DAMM v2: fixed fee, full range, fees collected in quote token (OnlyB).
 const meteora = baseRequest('meteora-damm-v2')
 meteora.targetsPct = [40, 50, 60, 70, 80, 90]
-meteora.liquidityAmounts = ['25', '30', '40', '50']
-meteora.operations.retainedPct = 30
-meteora.terms = { poolFeeBps: 100, collectFeeMode: 'OnlyB', dynamicFee: false }
+meteora.liquidityAmounts = ['15', '25', '30', '50']
+meteora.operations.retainedPct = 0
+meteora.terms = { poolFeeBps: 25, collectFeeMode: 'OnlyB', dynamicFee: false }
 meteora.termsSource = { kind: 'user', label: 'Meteora DAMM v2 full-range pool; fixed quote-token fee; no dynamic fee or transfer tax', url: 'https://github.com/MeteoraAg/damm-v2-sdk/tree/79ebbfe59a225e641a2f37cd03404f26de1b0c8e' }
 const meteoraUsdc = structuredClone(meteora)
 meteoraUsdc.modelId = 'meteora-damm-v2-usdc'
 meteoraUsdc.quote = { symbol: 'USDC', decimals: 6 }
-meteoraUsdc.liquidityAmounts = ['2500', '3000', '4000', '5000']
+meteoraUsdc.liquidityAmounts = ['1500', '2500', '3000', '5000']
 
 const v2 = baseRequest('uniswap-v2', 'ETH', 18, 18)
 v2.targetsPct = [40, 50, 60, 70, 80, 90]; v2.liquidityAmounts = ['2', '4']
@@ -68,14 +68,14 @@ v2.terms = { feeBps: 30 }; v2.operations.retainedPct = 30
 const v3 = structuredClone(v2); v3.modelId = 'uniswap-v3'; v3.terms = { feePips: 3000, tokenIsToken0: true }
 
 const CORE_PRESETS: Record<string, ModelPreset> = {
-  'meteora-damm-v2': { label: 'Meteora DAMM v2 · SOL', group: 'Solana', description: 'Full-range SOL pool with a configurable fixed pool fee, collected in SOL.', requiresLiquidity: true, request: meteora },
-  'meteora-damm-v2-usdc': { label: 'Meteora DAMM v2 · USDC', group: 'Solana', description: 'Full-range USDC pool; native wallet and operating costs convert at current prices.', requiresLiquidity: true, request: meteoraUsdc },
   pumpfun: { label: 'Pump.fun · native SOL', group: 'Solana', description: 'Native curve and graduated PumpSwap pool with a dated fee snapshot.', request: pump },
   'pumpfun-custom': { label: 'Pump.fun · USDC', group: 'Solana', description: 'Automatic USDC registry and stable fee tiers; SOL wallet and operating costs convert at current prices.', request: pumpCustom },
   launchlab: { label: 'LaunchLab · Stonkfun profile', group: 'Solana', description: 'Raydium LaunchLab using Stonkfun’s current standard SOL launch configuration.', request: launchlab },
   stonkfun: { label: 'Stonkfun · LaunchLab', group: 'Solana', description: 'Stonkfun standard LaunchLab reference; terms can be replaced for reward mode.', request: stonk },
   pons: { label: 'Pons V2', group: 'EVM launchpads', description: 'Curve and graduated full-range pool, including creator and hook fees.', request: pons },
   'raydium-cpmm': { label: 'Raydium CPMM', group: 'Solana', description: 'Quote-liquidity sensitivity with protocol and fund fee accounting.', requiresLiquidity: true, request: raydium },
+  'meteora-damm-v2': { label: 'Meteora DAMM v2 · SOL', group: 'Solana', description: 'Full-range SOL pool with a configurable fixed pool fee, collected in SOL.', requiresLiquidity: true, request: meteora },
+  'meteora-damm-v2-usdc': { label: 'Meteora DAMM v2 · USDC', group: 'Solana', description: 'Full-range USDC pool; native wallet and operating costs convert at current prices.', requiresLiquidity: true, request: meteoraUsdc },
   'uniswap-v2': { label: 'Uniswap V2 / V2-compatible', group: 'DEX math', description: 'Constant-product pool with a configurable fee and retained supply.', requiresLiquidity: true, request: v2 },
   'uniswap-v3': { label: 'Uniswap V3 · full range', group: 'DEX math', description: 'Single full-range position with canonical integer rounding.', requiresLiquidity: true, request: v3 },
 }
