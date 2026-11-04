@@ -84,6 +84,12 @@ assert.equal(recurringAfterTodaysTime.text, "post the morning risk check")
 assert.equal(recurringAfterTodaysTime.dueAt, "2026-08-28T13:00:00.000Z")
 assert.equal(recurringAfterTodaysTime.recurrence, "daily")
 
+const intervalRecurring = parse("remind us about USPR injection every 4 hours starting at 9pm ET tonight")
+assert.equal(intervalRecurring.ok, true)
+assert.equal(intervalRecurring.text, "USPR injection")
+assert.equal(intervalRecurring.dueAt, "2026-08-28T01:00:00.000Z")
+assert.equal(intervalRecurring.recurrence, "every_4_hours")
+
 const relative = parse("remind me in 20 minutes to check WWR")
 assert.equal(relative.ok, true)
 assert.equal(relative.text, "check WWR")

@@ -28,6 +28,7 @@ import {
   parseTeamDateTime,
   partsInTimeZone,
   reminderRecurrenceFromText,
+  reminderRecurrenceLabel,
   temporalDateConflict,
   TEAM_TIME_ZONE,
 } from "@/lib/team-timezone"
@@ -1055,7 +1056,7 @@ async function resolveActionPreview(actionType: string, payload: any, context: {
     }
     if (actionType === "create_reminder" && nextPayload.targetChatTitle) preview.push(`💬 Deliver to: ${nextPayload.targetChatTitle}`)
     if (actionType === "create_reminder") preview.push(`👥 Notify: ${reminderTargetsLabel(nextPayload.targetMode, nextPayload.targetMembers)}`)
-    if (actionType === "create_reminder" && nextPayload.recurrence && nextPayload.recurrence !== "none") preview.push(`🔁 Repeats: ${nextPayload.recurrence}`)
+    if (actionType === "create_reminder" && nextPayload.recurrence && nextPayload.recurrence !== "none") preview.push(`🔁 Repeats: ${reminderRecurrenceLabel(nextPayload.recurrence)}`)
     if (actionType === "create_payroll" && nextPayload.member) preview.push(`💸 Payroll member: ${nextPayload.member}`)
   }
 
@@ -1194,7 +1195,7 @@ export async function proposeOpsAiAction(textInput: string, telegramId?: number 
           "• A scheduled project is not active until a trusted Launch Chat member confirms the launch. Never mark a newly scheduled launch active.",
           "• Reminders create scheduled Telegram deliveries. They are different from project launches.",
           "• A request to add, post, log, or record a project note must use create_project_note. Never place a timestamped note in update_project.notes.",
-          "• Reminder recurrence must be none, hourly, daily, or weekly. Preserve explicit phrases such as every day, daily, weekly, or every Monday.",
+          "• Reminder recurrence must be none, hourly, daily, weekly, or every_N_hours (for example every_4_hours). Preserve explicit phrases such as every 4 hours, every day, daily, weekly, or every Monday.",
           "• Payroll actions add or remove payroll rows. Data-row actions modify a project's existing data file.",
           "Payload shapes:",
           "create_project: {name, referrer, referrerWallet, referrerStatus, status, service, startDate, launchAt, tentativeLaunchDate, launchTimingStatus, launchTimeZone, launchVenue, launchFundingAsset, launchMethod, chain, quoteToken, acceptedRevenueAssets, quoteTokenAddress, dailyTradingFeeEnabled, dailyTradingFeeUsd, launchFeeUsd, feeConfigurationConfirmed, endDate, currentProfitLoss, notes, tags}",
@@ -1593,7 +1594,7 @@ export async function executeOpsAiAction(actionId: string, telegramId?: number |
     })
     const reminderTimeZone = normalized.timeZone
     const recurrence = reminderRecurrenceFromText(action.request, payload.recurrence)
-    done = `✅ Reminder created: ${text}\n📅 Due: ${formatTeamDateTime(dueAt, reminderTimeZone)}${recurrence !== "none" ? `\n🔁 Repeats: ${recurrence}` : ""}\n👥 Notify: ${reminderTargetsLabel(payload.targetMode, payload.targetMembers)}${payload.targetChatTitle ? `\n💬 Deliver to: ${payload.targetChatTitle}` : ""}`
+    done = `✅ Reminder created: ${text}\n📅 Due: ${formatTeamDateTime(dueAt, reminderTimeZone)}${recurrence !== "none" ? `\n🔁 Repeats: ${reminderRecurrenceLabel(recurrence)}` : ""}\n👥 Notify: ${reminderTargetsLabel(payload.targetMode, payload.targetMembers)}${payload.targetChatTitle ? `\n💬 Deliver to: ${payload.targetChatTitle}` : ""}`
   }
 
   if (action.actionType === "create_payroll") {

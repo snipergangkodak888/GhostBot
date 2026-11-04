@@ -438,15 +438,61 @@ export function normalizeReminderDueAt(payload: { dueAt?: unknown; timeZone?: un
   return { dueAt: parsed.toISOString(), timeZone }
 }
 
-export type ReminderRecurrence = "none" | "hourly" | "daily" | "weekly"
+export type ReminderRecurrence = "none" | "hourly" | "daily" | "weekly" | `every_${number}_hours`
+
+const REMINDER_INTERVAL_WORDS: Record<string, number> = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+}
+
+function reminderIntervalHours(value: unknown, allowBare = false) {
+  const normalized = String(value || "").trim().toLowerCase()
+  const encoded = normalized.match(/^every_(\d{1,3})_hours$/)
+  const natural = normalized.match(/\b(?:every|each)\s+(\d{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s*(?:hours?|hrs?|hr|h)\b/)
+  const bare = allowBare
+    ? normalized.match(/^(\d{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s*(?:hours?|hrs?|hr|h)$/)
+    : null
+  const raw = encoded?.[1] || natural?.[1] || bare?.[1] || ""
+  const hours = REMINDER_INTERVAL_WORDS[raw] || Number(raw)
+  return Number.isInteger(hours) && hours >= 1 && hours <= 168 ? hours : null
+}
+
+export function isReminderRecurrence(value: unknown): value is ReminderRecurrence {
+  const normalized = String(value || "").trim().toLowerCase()
+  return ["none", "hourly", "daily", "weekly"].includes(normalized) || reminderIntervalHours(normalized, true) !== null
+}
+
+export function reminderRecurrenceLabel(value: unknown) {
+  const normalized = String(value || "none").trim().toLowerCase()
+  const intervalHours = reminderIntervalHours(normalized, true)
+  if (intervalHours === 1 || normalized === "hourly") return "Hourly"
+  if (intervalHours) return `Every ${intervalHours} hours`
+  if (normalized === "daily") return "Daily"
+  if (normalized === "weekly") return "Weekly"
+  return "Does not repeat"
+}
 
 export function reminderRecurrenceFromText(text: unknown, requested?: unknown): ReminderRecurrence {
   const normalizedRequested = String(requested || "").trim().toLowerCase()
   if (["hourly", "daily", "weekly"].includes(normalizedRequested)) {
     return normalizedRequested as ReminderRecurrence
   }
+  const requestedIntervalHours = reminderIntervalHours(normalizedRequested, true)
+  if (requestedIntervalHours) return requestedIntervalHours === 1 ? "hourly" : `every_${requestedIntervalHours}_hours`
 
   const normalized = String(text || "").trim().toLowerCase()
+  const intervalHours = reminderIntervalHours(normalized)
+  if (intervalHours) return intervalHours === 1 ? "hourly" : `every_${intervalHours}_hours`
   if (/\b(?:every|each)\s+hour\b|\bhourly\b/.test(normalized)) return "hourly"
   if (/\b(?:every|each)\s+(?:day|morning|afternoon|evening|night)\b|\bdaily\b/.test(normalized)) return "daily"
   if (/\b(?:every|each)\s+week\b|\bweekly\b|\bevery\s+(?:mon|tues|wednes|thurs|fri|satur|sun)day\b/.test(normalized)) return "weekly"
@@ -461,9 +507,10 @@ export function nextRecurringDueAt(
 ) {
   const current = new Date(currentDueAt)
   if (Number.isNaN(current.getTime())) return null
-  if (recurrence === "hourly") {
+  const intervalHours = recurrence === "hourly" ? 1 : reminderIntervalHours(recurrence, true)
+  if (intervalHours) {
     const next = new Date(current)
-    while (next.getTime() <= now.getTime()) next.setTime(next.getTime() + 60 * 60 * 1000)
+    while (next.getTime() <= now.getTime()) next.setTime(next.getTime() + intervalHours * 60 * 60 * 1000)
     return next.toISOString()
   }
   const days = recurrence === "daily" ? 1 : recurrence === "weekly" ? 7 : 0

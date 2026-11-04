@@ -5,7 +5,7 @@ import { getMemberTimeZone, getTeamAccess, guardCodeFromText, redeemGuardInviteC
 import { getDb } from "@/lib/db"
 import { deleteProjectCascade, renameProject } from "@/lib/platform-data"
 import { getSheetSchema, SHEET_KIND_ORDER, valuesForKind, type SheetKind } from "@/lib/sheet-schemas"
-import { dateKeyInTimeZone, detectExplicitTimeZone, formatTeamDateTime, parseContextualTeamDateTime, parseNaturalTeamDate, parseNaturalTeamDateTime, parseTeamDateTime, teamZoneLabel, TIME_ZONE_OPTIONS, timeZoneFromOption, TEAM_TIME_ZONE } from "@/lib/team-timezone"
+import { dateKeyInTimeZone, detectExplicitTimeZone, formatTeamDateTime, parseContextualTeamDateTime, parseNaturalTeamDate, parseNaturalTeamDateTime, parseTeamDateTime, reminderRecurrenceLabel, teamZoneLabel, TIME_ZONE_OPTIONS, timeZoneFromOption, TEAM_TIME_ZONE } from "@/lib/team-timezone"
 import { parseReminderRequest, reminderRequestError, type ParsedReminderRequest } from "@/lib/reminder-parser"
 import { reminderText } from "@/lib/reminder-text"
 import { listReminderEligibleMembers, reminderTargetForTelegramId, reminderTargetsLabel, resolveReminderTargetUsernames, type ReminderTarget } from "@/lib/reminder-targets"
@@ -3429,7 +3429,7 @@ async function handleCallback(token: string, chatId: number | string, telegramId
     const workflowMessageId = Number(callbackMessage?.message_id || 0) || null
     const reminder = await db.collection("opsReminders").findOne({ _id: id, deliveryScope: "chat", telegramChatId: String(chatId) })
     if (!reminder) return sendReminders(token, chatId, workflowMessageId)
-    return editOrSendWorkflowMessage(token, chatId, workflowMessageId, `🔔 ${reminderText(reminder)}\n\nDue: ${dateLabel(reminder.dueAt, String(reminder.timeZone || TEAM_TIME_ZONE))}\nRepeat: ${reminder.recurrence || "none"}\nNotify: ${reminderTargetsLabel(reminder.targetMode, reminder.targetMembers)}\nStatus: ${reminder.status || "scheduled"}`, [
+    return editOrSendWorkflowMessage(token, chatId, workflowMessageId, `🔔 ${reminderText(reminder)}\n\nDue: ${dateLabel(reminder.dueAt, String(reminder.timeZone || TEAM_TIME_ZONE))}\nRepeat: ${reminderRecurrenceLabel(reminder.recurrence)}\nNotify: ${reminderTargetsLabel(reminder.targetMode, reminder.targetMembers)}\nStatus: ${reminder.status || "scheduled"}`, [
       [{ text: "✅ Mark Done", callback_data: `reminder:done:${id}` }, { text: "🗑 Remove", callback_data: `reminder:delete:${id}` }],
       [{ text: "⬅️ Reminders", callback_data: "reminders:list" }],
     ])

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
-import { normalizeReminderDueAt, TEAM_TIME_ZONE } from '@/lib/team-timezone'
+import { isReminderRecurrence, normalizeReminderDueAt, reminderRecurrenceFromText, TEAM_TIME_ZONE } from '@/lib/team-timezone'
 import { reminderText, reminderWriteText } from '@/lib/reminder-text'
 
 export const dynamic = 'force-dynamic'
@@ -13,7 +13,7 @@ function cleanReminder(body: any) {
     projectId: body.projectId ? String(body.projectId) : null,
     dueAt: normalized?.dueAt || '',
     timeZone: normalized?.timeZone || TEAM_TIME_ZONE,
-    recurrence: ['none', 'hourly', 'daily', 'weekly'].includes(body.recurrence) ? body.recurrence : 'none',
+    recurrence: isReminderRecurrence(body.recurrence) ? reminderRecurrenceFromText('', body.recurrence) : 'none',
     audience: body.audience === 'team' ? 'team' : 'individual',
     deliveryScope: telegramChatId ? 'chat' : 'team',
     telegramChatId,

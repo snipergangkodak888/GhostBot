@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react"
 import { Bell, Plus, Save, X } from "lucide-react"
 import { toast } from "sonner"
 import { reminderText } from "@/lib/reminder-text"
+import { reminderRecurrenceLabel } from "@/lib/team-timezone"
 
 type Project = { _id: string; name: string }
 type HostedGroup = { chatId: string; title: string }
@@ -122,6 +123,7 @@ export default function RemindersPage() {
             <select value={form.recurrence} onChange={(event) => setForm({ ...form, recurrence: event.target.value })} className="h-10 rounded-lg border border-white/[0.08] bg-black px-3 text-sm text-white outline-none focus:border-[#ff4d5e]/60">
               <option value="none">No repeat</option>
               <option value="hourly">Hourly</option>
+              <option value="every_4_hours">Every 4 hours</option>
               <option value="daily">Daily</option>
               <option value="weekly">Weekly</option>
             </select>
@@ -146,7 +148,7 @@ export default function RemindersPage() {
                 <h2 className="truncate text-base font-bold text-white">{reminderText(reminder)}</h2>
                 <p className="mt-1 text-sm text-white/45">
                   {reminder.dueAt ? new Date(reminder.dueAt).toLocaleString(undefined, { timeZone: reminder.timeZone || undefined }) : "No date"}
-                  {reminder.recurrence ? ` · ${reminder.recurrence}` : ""}
+                  {reminder.recurrence ? ` · ${reminderRecurrenceLabel(reminder.recurrence)}` : ""}
                   {reminder.targetChatTitle ? ` · → ${reminder.targetChatTitle}` : ""}
                 </p>
               </div>

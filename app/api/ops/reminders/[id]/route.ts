@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
 import { ObjectId } from '@/lib/object-id'
-import { normalizeReminderDueAt, TEAM_TIME_ZONE } from '@/lib/team-timezone'
+import { isReminderRecurrence, normalizeReminderDueAt, reminderRecurrenceFromText, TEAM_TIME_ZONE } from '@/lib/team-timezone'
 import { reminderWriteText } from '@/lib/reminder-text'
 
 export const dynamic = 'force-dynamic'
@@ -25,7 +25,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     update.timeZone = normalized.timeZone
   }
   if (body.deliveryScope === 'chat' || body.deliveryScope === 'team') update.deliveryScope = body.deliveryScope
-  if (['none', 'hourly', 'daily', 'weekly'].includes(body.recurrence)) update.recurrence = body.recurrence
+  if (isReminderRecurrence(body.recurrence)) update.recurrence = reminderRecurrenceFromText('', body.recurrence)
   if (body.audience === 'team' || body.audience === 'individual') update.audience = body.audience
   if (body.status === 'scheduled' || body.status === 'done') update.status = body.status
 

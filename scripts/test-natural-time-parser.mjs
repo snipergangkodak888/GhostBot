@@ -54,7 +54,15 @@ assert.equal(relativeReminder?.timeZone, "America/Mexico_City")
 assert.equal(reminderRecurrenceFromText("remind us every day at 9 AM"), "daily")
 assert.equal(reminderRecurrenceFromText("every Monday at noon"), "weekly")
 assert.equal(reminderRecurrenceFromText("check this hourly"), "hourly")
+assert.equal(reminderRecurrenceFromText("USPR injection every 4 hours starting at 9 PM tonight"), "every_4_hours")
+assert.equal(reminderRecurrenceFromText("USPR injection every four hours starting at 9 PM tonight"), "every_4_hours")
+assert.equal(reminderRecurrenceFromText("USPR injection", "4 hours"), "every_4_hours")
 assert.equal(reminderRecurrenceFromText("tomorrow at 3 PM"), "none")
+assert.equal(
+  nextRecurringDueAt("2026-11-04T02:00:00.000Z", "every_4_hours", "America/New_York", new Date("2026-11-04T02:01:00.000Z")),
+  "2026-11-04T06:00:00.000Z",
+  "four-hour reminders should advance from the original schedule anchor",
+)
 assert.equal(
   nextRecurringDueAt("2026-10-31T13:00:00.000Z", "daily", "America/New_York", new Date("2026-10-31T14:00:00.000Z")),
   "2026-11-01T14:00:00.000Z",
