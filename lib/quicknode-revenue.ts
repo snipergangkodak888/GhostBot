@@ -79,6 +79,8 @@ export function cleanWebhookChain(value: unknown): RevenueChain | null {
     "robinhood-mainnet": "robinhood",
     arc: "arc",
     "arc-mainnet": "arc",
+    elysium: "elysium",
+    "elysium-mainnet": "elysium",
     sol: "solana",
     solana: "solana",
     "solana-mainnet": "solana",
@@ -306,7 +308,7 @@ function normalizeEvmTemplatePayload(payload: any, chain: RevenueChain, walletRo
       eventIndex: -1,
       blockNumber: transaction?.blockNumber ?? null,
       blockTime: timeValue(transaction),
-      asset: chain === "bnb" ? "BNB" : "ETH",
+      asset: chain === "bnb" ? "BNB" : chain === "elysium" ? "HYPE" : "ETH",
       decimals: 18,
       amount,
       raw: transaction,
@@ -521,9 +523,9 @@ function itemReceipt(item: any, chain: RevenueChain, walletRole: RevenueWalletRo
   if (tokenAddress && !metadata) return null
   const decimals = metadata?.decimals ?? (item.decimals == null ? null : Number(item.decimals))
   const rawAmount = item.amount ?? item.changeAmount ?? item.uiAmount ?? item.tokenAmount ?? item.value
-  const asset = String(metadata?.asset ?? item.asset ?? item.symbol ?? item.tokenSymbol ?? item.currency ?? (item.mint ? "TOKEN" : chain === "solana" ? "SOL" : chain === "bnb" ? "BNB" : "ETH")).trim().toUpperCase()
+  const asset = String(metadata?.asset ?? item.asset ?? item.symbol ?? item.tokenSymbol ?? item.currency ?? (item.mint ? "TOKEN" : chain === "solana" ? "SOL" : chain === "bnb" ? "BNB" : chain === "elysium" ? "HYPE" : "ETH")).trim().toUpperCase()
   const valueIsRaw = item.rawAmount != null || item.valueIsRaw === true || (typeof rawAmount === "string" && rawAmount.startsWith("0x"))
-  const fallbackDecimals = asset === "USDC" ? 6 : chain === "solana" && asset === "SOL" ? 9 : chain !== "solana" && ["ETH", "BNB"].includes(asset) ? 18 : null
+  const fallbackDecimals = asset === "USDC" ? 6 : chain === "solana" && asset === "SOL" ? 9 : chain !== "solana" && ["ETH", "BNB", "HYPE"].includes(asset) ? 18 : null
   const amount = numeric(item.rawAmount ?? rawAmount, valueIsRaw ? decimals ?? fallbackDecimals : null)
   if (amount == null || amount <= 0) return null
   const eventIndex = Number(item.eventIndex ?? item.logIndex ?? item.instructionIndex ?? item.index ?? fallbackIndex)

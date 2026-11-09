@@ -44,8 +44,11 @@ function localRequire(id) {
     { id: "aero", name: "Aerodrome", chainId: "base", symbol: "ETH" },
     { id: "uni-rh-v4", name: "Uniswap V4", chainId: "rh", symbol: "ETH" },
     { id: "pons", name: "Pons V2", chainId: "rh", symbol: "ETH" },
+    { id: "montra", name: "Montra", chainId: "elysium", symbol: "HYPE" },
+    { id: "volta", name: "Volta", chainId: "elysium", symbol: "HYPE" },
+    { id: "ascend", name: "Ascend", chainId: "elysium", symbol: "HYPE" },
   ] }
-  if (id === "@/lib/revenue-projects") return { cleanRevenueChain: (value) => ["solana", "base", "ethereum", "bnb", "robinhood"].includes(String(value)) ? String(value) : "" }
+  if (id === "@/lib/revenue-projects") return { cleanRevenueChain: (value) => ["solana", "base", "ethereum", "bnb", "robinhood", "elysium"].includes(String(value)) ? String(value) : "" }
   if (id === "@/lib/team-timezone") return {
     TEAM_TIME_ZONE: "America/New_York",
     dateKeyInTimeZone: (date, timeZone) => {
@@ -66,6 +69,9 @@ const exactRequestConfig = lifecycle.inferLaunchConfiguration("add KOLCOIN launc
 assert.deepEqual(JSON.parse(JSON.stringify(exactRequestConfig)), { launchVenue: "pumpfun", launchVenueLabel: "Pump.fun", launchFundingAsset: "SOL", chain: "solana", quoteToken: "SOL" })
 assert.deepEqual(JSON.parse(JSON.stringify(lifecycle.inferLaunchConfiguration("Weave on Robinhood Uniswap V4 with ETH quote"))), { launchVenue: "uni-rh-v4", launchVenueLabel: "Uniswap V4", launchFundingAsset: "ETH", chain: "robinhood", quoteToken: "ETH" })
 assert.deepEqual(JSON.parse(JSON.stringify(lifecycle.inferLaunchConfiguration("Test launch on Pons V2 Robinhood with custom quote token AAPL, CA 0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9"))), { launchVenue: "pons", launchVenueLabel: "Pons V2", launchFundingAsset: "ETH", chain: "robinhood", quoteToken: "AAPL", quoteTokenAddress: "0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9" })
+for (const venue of ["Montra", "Volta", "Ascend"]) {
+  assert.deepEqual(JSON.parse(JSON.stringify(lifecycle.inferLaunchConfiguration(`Schedule Nova on Elysium ${venue}`))), { launchVenue: venue.toLowerCase(), launchVenueLabel: venue, launchFundingAsset: "HYPE", chain: "elysium", quoteToken: "HYPE" })
+}
 assert.equal(lifecycle.cleanLaunchProjectName("add KOLCOIN"), "KOLCOIN")
 assert.equal(lifecycle.cleanLaunchProjectName("please schedule the project alpha coin"), "Alpha Coin")
 assert.equal(lifecycle.cleanLaunchProjectNameFromRequest("SnapGame pumpfun sol", "SnapGame pumpfun sol launch at 5:10 pm ET today"), "SnapGame")

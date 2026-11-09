@@ -14,7 +14,7 @@ function loadTypeScriptModule(path, overrides = {}) {
   const localRequire = (id) => {
     if (Object.hasOwn(overrides, id)) return overrides[id]
     if (id === "@/lib/revenue-types") return {
-      REVENUE_CHAINS: ["ethereum", "base", "bnb", "robinhood", "solana", "arc"],
+      REVENUE_CHAINS: ["ethereum", "base", "bnb", "robinhood", "solana", "arc", "elysium"],
       REVENUE_WALLET_ROLES: ["revenue", "treasury"],
       isGlobalRevenueFeeType: (value) => ["fee_rebate", "sumo_ref_claim"].includes(String(value || "")),
     }
@@ -110,6 +110,7 @@ assert.equal(explorer.revenueTransactionUrl("base", "0xabc"), "https://basescan.
 assert.equal(explorer.revenueTransactionUrl("bnb", "0xabc"), "https://bscscan.com/tx/0xabc")
 assert.equal(explorer.revenueTransactionUrl("robinhood", "0xabc"), "https://robinhoodchain.blockscout.com/tx/0xabc")
 assert.equal(explorer.revenueTransactionUrl("solana", "sol-signature"), "https://solscan.io/tx/sol-signature")
+assert.equal(explorer.revenueTransactionUrl("elysium", "0xabc"), "https://elysium.kinetiq.xyz/tx/0xabc")
 assert.equal(dust.isRevenueReceiptDust({ direction: "incoming", amountUsd: 0.99 }, 1), true)
 assert.equal(dust.isRevenueReceiptDust({ direction: "incoming", amountUsd: 1 }, 1), false)
 assert.equal(dust.isRevenueReceiptDust({ direction: "outgoing", amountUsd: 0.01 }, 1), false)
@@ -389,6 +390,15 @@ assert.equal(evmNative.receipts[0].amount, 1)
 assert.equal(evmNative.receipts[0].direction, "incoming")
 assert.equal(evmNative.receipts[0].counterparty, evmSender)
 assert.equal(evmNative.receipts[0].blockTime, "2026-08-21T00:22:11.000Z")
+
+const elysiumNative = quicknode.normalizeQuickNodeRevenuePayload({
+  matchingTransactions: [{ to: evmWallet, from: evmSender, hash: "0xelysium", value: "0x0de0b6b3a7640000" }],
+  matchingReceipts: null,
+}, "elysium-mainnet")
+assert.equal(quicknode.cleanWebhookChain("elysium-mainnet"), "elysium")
+assert.equal(elysiumNative.receipts.length, 1)
+assert.equal(elysiumNative.receipts[0].asset, "HYPE")
+assert.equal(elysiumNative.receipts[0].amount, 1)
 
 // Literal minimized form of the live QuickNode evmWalletFilter receipt payload.
 const addressTopic = (address) => `0x${address.slice(2).padStart(64, "0")}`

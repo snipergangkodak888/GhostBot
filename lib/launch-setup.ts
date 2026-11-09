@@ -9,7 +9,7 @@ import type { RevenueChain } from "@/lib/revenue-types"
 
 export type LaunchSetupButton = { text: string; callback_data: string }
 
-export const LAUNCH_QUOTE_TOKENS = ["SOL", "ETH", "BNB", "USDC", "USDT"] as const
+export const LAUNCH_QUOTE_TOKENS = ["SOL", "ETH", "BNB", "HYPE", "USDC", "USDT"] as const
 
 const REVENUE_CHAIN_BY_LAUNCH_CHAIN: Record<LaunchChainId, RevenueChain> = {
   sol: "solana",
@@ -18,6 +18,7 @@ const REVENUE_CHAIN_BY_LAUNCH_CHAIN: Record<LaunchChainId, RevenueChain> = {
   base: "base",
   rh: "robinhood",
   arc: "arc",
+  elysium: "elysium",
 }
 
 function escapeHtml(value: unknown) {
@@ -178,6 +179,7 @@ export function launchQuoteTokensForChain(chain: unknown) {
   if (chainId === "sol") return ["SOL", "USDC", "USDT"] as const
   if (chainId === "bsc") return ["BNB", "USDC", "USDT"] as const
   if (chainId === "arc") return ["USDC"] as const
+  if (chainId === "elysium") return ["HYPE", "USDC"] as const
   if (["eth", "base", "rh"].includes(String(chainId || ""))) return ["ETH", "USDC", "USDT"] as const
   return LAUNCH_QUOTE_TOKENS
 }

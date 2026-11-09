@@ -9,6 +9,7 @@ export const CHAIN_LABELS: Record<RevenueChain, string> = {
   robinhood: "Robinhood Chain",
   solana: "Solana",
   arc: "Arc",
+  elysium: "Elysium",
 }
 
 export const DEFAULT_CHAIN_ASSETS: Record<RevenueChain, string[]> = {
@@ -18,6 +19,7 @@ export const DEFAULT_CHAIN_ASSETS: Record<RevenueChain, string[]> = {
   robinhood: ["ETH", "USDC"],
   solana: ["SOL", "USDC"],
   arc: ["USDC"],
+  elysium: ["HYPE", "USDC"],
 }
 
 export function cleanRevenueChain(value: unknown): RevenueChain | "" {

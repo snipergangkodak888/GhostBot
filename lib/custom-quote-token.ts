@@ -6,6 +6,7 @@ const EVM_RPC_URLS: Partial<Record<RevenueChain, string>> = {
   bnb: process.env.REVENUE_BNB_RPC_URL || "https://bsc-dataseed.binance.org",
   robinhood: process.env.REVENUE_ROBINHOOD_RPC_URL || "https://rpc.mainnet.chain.robinhood.com",
   arc: process.env.REVENUE_ARC_RPC_URL || "https://rpc.mainnet.arc.io",
+  elysium: process.env.REVENUE_ELYSIUM_RPC_URL || "https://rpc.elysium.kinetiq.xyz",
 }
 
 const BLOCKSCOUT_TOKEN_URLS: Partial<Record<RevenueChain, string>> = {

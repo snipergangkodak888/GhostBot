@@ -9,6 +9,7 @@ const COIN_IDS: Record<string, string> = {
   ETH: "ethereum",
   SOL: "solana",
   BNB: "binancecoin",
+  HYPE: "hyperliquid",
 }
 
 const cache = new Map<string, { expiresAt: number; quote: PriceQuote }>()

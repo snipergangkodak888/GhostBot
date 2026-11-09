@@ -26,6 +26,7 @@
     "bot:test:daily-subscriptions": "node ./scripts/test-daily-update-subscriptions.mjs",
     "revenue:test": "node ./scripts/test-revenue-storage.mjs && node ./scripts/test-revenue-automation.mjs",
     "arc:test": "node ./scripts/test-arc-integration.mjs",
+    "elysium:test": "node ./scripts/test-arc-integration.mjs",
     "dev:cron": "node ./scripts/dev-cron.mjs",
     "db:init": "node ./scripts/init-db.mjs",
     "seed:july-payroll": "node ./scripts/seed-july-payroll.mjs",

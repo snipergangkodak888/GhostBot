@@ -1213,7 +1213,8 @@ function calendarLaunchLocation(project: any) {
         : chain === "ethereum" ? "Ethereum"
           : chain === "base" ? "Base"
             : chain === "arc" ? "Arc"
-              : "Chain TBD"
+              : chain === "elysium" ? "Elysium"
+                : "Chain TBD"
   const venue = (operationalLaunchVenue(project.launchVenue)?.name || String(project.launchVenueLabel || ""))
     ?.replace(/^Uniswap\s+/i, "Uni ")
     .replace(/\s*\(full range\)$/i, "")

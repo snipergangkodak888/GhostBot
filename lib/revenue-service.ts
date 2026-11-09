@@ -668,7 +668,7 @@ export async function updateReceiptClassification(receiptId: string, status: Rev
 export async function valuePendingRevenueReceipts(date = teamDateKey(0)) {
   const db = await getDb()
   const receipts = (await db.collection(RECEIPTS).find({ date, direction: "incoming" }).toArray())
-    .filter((receipt: any) => receipt.amountUsd == null && (["ETH", "SOL", "BNB"].includes(String(receipt.asset || "").toUpperCase()) || (receipt.chain === "robinhood" && receipt.tokenAddress)))
+    .filter((receipt: any) => receipt.amountUsd == null && (["ETH", "SOL", "BNB", "HYPE"].includes(String(receipt.asset || "").toUpperCase()) || (receipt.chain === "robinhood" && receipt.tokenAddress)))
   let valued = 0
   let pending = 0
   for (const receipt of receipts) {

@@ -25,6 +25,7 @@ const CHAIN_COLOR_MARKERS: Record<RevenueChain, string> = {
   solana: "🟣",
   robinhood: "🟢",
   arc: "⚪",
+  elysium: "🟢",
 }
 
 export function revenueChainLabel(chain: RevenueChain) {

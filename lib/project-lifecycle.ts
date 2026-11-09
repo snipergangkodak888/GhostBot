@@ -15,6 +15,7 @@ const CHAIN_BY_LAUNCH_CHAIN = {
   base: "base",
   rh: "robinhood",
   arc: "arc",
+  elysium: "elysium",
 } as const
 
 function validDate(value: unknown) {
@@ -112,8 +113,9 @@ export function inferLaunchConfiguration(text: unknown) {
       : /\bbase\b/i.test(raw) ? "base"
         : /\brobinhood(?: chain)?\b/i.test(raw) ? "robinhood"
           : /\barc(?: chain| mainnet)?\b/i.test(raw) ? "arc"
-            : /\b(?:ethereum|mainnet)\b/i.test(raw) ? "ethereum"
-              : ""
+            : /\belysium(?: chain| mainnet)?\b/i.test(raw) ? "elysium"
+              : /\b(?:ethereum|mainnet)\b/i.test(raw) ? "ethereum"
+                : ""
   const venue = OPERATIONAL_LAUNCH_VENUES.find((pad) => {
     if (explicitChain && CHAIN_BY_LAUNCH_CHAIN[pad.chainId] !== explicitChain) return false
     const aliases = [pad.id, pad.name]
@@ -124,8 +126,8 @@ export function inferLaunchConfiguration(text: unknown) {
     return aliases.some((alias) => new RegExp(`\\b${escapedPattern(alias)}\\b`, "i").test(lower))
   })
   const chain = cleanRevenueChain(explicitChain || (venue ? CHAIN_BY_LAUNCH_CHAIN[venue.chainId] : ""))
-  const quoteMatch = raw.match(/\b(SOL|ETH|BNB|USDC|USDT)\s+(?:quote(?:\s+token)?|pair)\b/i)
-    || raw.match(/\b(?:quote(?:\s+token)?|quoted\s+in|pair(?:ed)?\s+with)\s*(?:is|:)?\s*(SOL|ETH|BNB|USDC|USDT)\b/i)
+  const quoteMatch = raw.match(/\b(SOL|ETH|BNB|HYPE|USDC|USDT)\s+(?:quote(?:\s+token)?|pair)\b/i)
+    || raw.match(/\b(?:quote(?:\s+token)?|quoted\s+in|pair(?:ed)?\s+with)\s*(?:is|:)?\s*(SOL|ETH|BNB|HYPE|USDC|USDT)\b/i)
   const customQuoteMatch = raw.match(/\bcustom\s+quote(?:\s+token)?\s*(?:is|:)?\s*([A-Z0-9][A-Z0-9._-]{0,19})\b/i)
   const quoteTokenAddress = raw.match(/\b(?:ca|contract(?:\s+address)?|token\s+address)\s*(?:is|:)?\s*(0x[0-9a-fA-F]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})\b/i)?.[1] || ""
   const quoteToken = String(customQuoteMatch?.[1] || quoteMatch?.[1] || venue?.symbol || "").toUpperCase()

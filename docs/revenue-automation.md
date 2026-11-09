@@ -37,6 +37,7 @@ Create one signed wallet webhook/stream per network. Point each delivery at the 
 - `/api/webhooks/quicknode/revenue?chain=robinhood`
 - `/api/webhooks/quicknode/revenue?chain=solana`
 - `/api/webhooks/quicknode/revenue?chain=arc` (`arc-mainnet`, chain ID 5042)
+- `/api/webhooks/quicknode/revenue?chain=elysium` (`elysium-mainnet`, chain ID 99901)
 
 Filter EVM activity to `REVENUE_EVM_WALLET` and Solana activity to `REVENUE_SOLANA_WALLET`. Configure the same HMAC secret in QuickNode and `QUICKNODE_WEBHOOK_SECRET`. Production rejects unsigned or stale deliveries.
 
@@ -59,6 +60,14 @@ Arc launch scheduling supports **Uniswap V3** (`uni-arc-v3`) and **Argus** (`arg
 Validation: `npm run arc:test` exercises deterministic normalization and launch setup; `npm run arc:test -- --live` additionally reads current Arc mainnet logs and checks actual system-event receipts without moving funds or saving revenue. `npm run bot:test:launch` exercises scheduling in the isolated test database only.
 
 References: [Arc USDC system events](https://docs.arc.io/arc/references/usdc-system-events), [Arc contract addresses](https://docs.arc.io/arc/references/contract-addresses), [Arc RPC endpoints](https://docs.arc.io/arc/references/rpc-endpoints).
+
+### Elysium mainnet
+
+Elysium launch scheduling supports **Montra**, **Volta**, and **Ascend**, with HYPE as the default quote and USDC also available. These are calendar/setup venues, not capital-calculator models. Natural-language scheduling recognizes the chain and venue names. Elysium uses chain ID `99901`, native HYPE with 18 decimals, and the same EVM revenue wallet and signed delivery endpoint. Native HYPE receipts are valued through the existing CoinGecko/DefiLlama pricing path.
+
+QuickNode RPC supports Elysium mainnet, but its Webhooks support table still lists Elysium testnet only. GhostBot advertises and parses `elysium-mainnet` deliveries now; do not create a production webhook until QuickNode exposes Elysium mainnet in Webhooks. No endpoint or webhook is provisioned by this repository change. Validation: `npm run elysium:test`.
+
+References: [QuickNode Elysium mainnet announcement](https://www.quicknode.com/blog/quicknode-now-supports-elysium-mainnet), [QuickNode Webhooks network support](https://www.quicknode.com/docs/webhooks/rest-api/getting-started), [Volta Elysium network settings](https://www.volta.family/docs).
 
 The QuickNode management API key is needed only to create/manage streams or webhooks. It is not used by the running app and must not be committed. Rotate any key that has been pasted into chat before production setup.
 

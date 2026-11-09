@@ -17,6 +17,7 @@ function load(path) {
   const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
   const localRequire = (id) => {
     if (id === "@/lib/db") return { getDb: () => { throw new Error("Arc unit tests must not access a database") } }
+    if (id === "@/lib/team-timezone") return { TEAM_TIME_ZONE: "America/New_York", dateKeyInTimeZone: (value) => new Date(value).toISOString().slice(0, 10), formatTeamDateTime: (value) => new Date(value).toISOString() }
     return id.startsWith("@/") ? load(`${id.slice(2)}.ts`) : require(id)
   }
   vm.runInNewContext(`(function(exports, require, module) { ${code}\n})(module.exports, require, module)`, { module, require: localRequire, process, Buffer, Intl, Date, URL, fetch })
@@ -105,7 +106,25 @@ for (const label of ["Uniswap V3", "univ3", "uni v3"]) {
 assert.equal(lifecycle.inferLaunchConfiguration("Alpha on Argus").chain, "arc")
 assert.equal(lifecycle.inferLaunchConfiguration("Alpha on Argus").launchVenue, "argus")
 assert.notEqual(lifecycle.inferLaunchConfiguration("Alpha on Base Uniswap V3").launchVenue, "uni-arc-v3")
-console.log("PASS: Arc USDC precision, canonical events, mirror deduplication, split transfers, failure handling, project matching, launch configuration and venue parsing.")
+assert.equal(qn.cleanWebhookChain("elysium-mainnet"), "elysium")
+const elysiumNative = qn.normalizeQuickNodeRevenuePayload({ matchingTransactions: [{ hash: "0xelysium", value: "0xde0b6b3a7640000", from: sender, to: wallet }], matchingReceipts: null }, "elysium-mainnet")
+assert.equal(elysiumNative.receipts[0].asset, "HYPE")
+assert.equal(elysiumNative.receipts[0].amount, 1)
+assert.deepEqual(Array.from(projects.DEFAULT_CHAIN_ASSETS.elysium), ["HYPE", "USDC"])
+assert.equal(load("lib/revenue-explorer.ts").revenueTransactionUrl("elysium", "0xabc"), "https://elysium.kinetiq.xyz/tx/0xabc")
+assert.deepEqual(Array.from(venues.operationalVenuesForChain("elysium"), (venue) => venue.id), ["montra", "volta", "ascend"])
+assert.ok(venues.operationalVenuesForChain("elysium").every((venue) => venue.symbol === "HYPE" && !venue.calculatorSupported))
+assert.equal(load("lib/launch-math.ts").padsForChain("elysium").length, 0)
+assert.equal(setup.launchChainConfig("elysium").nativeQuoteToken, "HYPE")
+assert.deepEqual(Array.from(setup.launchQuoteTokensForChain("elysium")), ["HYPE", "USDC"])
+assert.equal(setup.launchVenueButtons("test", "elysium").length, 3)
+for (const id of ["montra", "volta", "ascend"]) {
+  const selection = setup.launchVenueSelection(id)
+  assert.equal(selection.chain, "elysium")
+  assert.equal(selection.quoteToken, "HYPE")
+  assert.equal(lifecycle.inferLaunchConfiguration(`Nova on Elysium ${id}`).launchVenue, id)
+}
+console.log("PASS: Arc receipts plus Elysium HYPE receipts, launch configuration and venue parsing.")
 
 if (process.argv.includes("--live")) {
   const url = process.env.REVENUE_ARC_RPC_URL || "https://rpc.quicknode.mainnet.arc.io"
